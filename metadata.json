@@ -1,0 +1,6 @@
+{
+  "name": "Rentify — Rental Property Management System",
+  "description": "Comprehensive rental property management platform for managing properties, units, tenants, unique tenant references, rent payments, maintenance, and financial expenses.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
