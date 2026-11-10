@@ -191,14 +191,17 @@ export const rentalApi = {
       });
     } catch (err: any) {
       const errMsg = String(err?.message || '');
-      const isEndpointMissing =
+      const isRecoverableBackendError =
         errMsg.includes('not found') ||
         errMsg.includes('404') ||
+        errMsg.includes('500') ||
+        errMsg.includes('unexpected error') ||
+        errMsg.includes('FUNCTION_INVOCATION_FAILED') ||
         errMsg.includes('Failed to fetch') ||
         errMsg.includes('NetworkError');
 
       // If backend gave a standard credential error or Supabase client isn't configured, propagate immediately
-      if (!isEndpointMissing || !supabase) {
+      if (!isRecoverableBackendError || !supabase) {
         throw err;
       }
 

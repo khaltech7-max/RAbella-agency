@@ -44,10 +44,44 @@ function broadcastRealtime(event, data) {
   }
 }
 const isServerless = Boolean(process.env.VERCEL === '1' || process.env.AWS_LAMBDA_FUNCTION_NAME);
+
+function getClientIp(req: any): string {
+  try {
+    const forwarded = req?.headers?.["x-forwarded-for"];
+    if (typeof forwarded === "string") {
+      const first = forwarded.split(",")[0]?.trim();
+      if (first) return first;
+    }
+    const realIp = req?.headers?.["x-real-ip"];
+    if (typeof realIp === "string" && realIp.trim()) {
+      return realIp.trim();
+    }
+    if (req?.socket?.remoteAddress) {
+      return req.socket.remoteAddress;
+    }
+    if (req?.connection?.remoteAddress) {
+      return req.connection.remoteAddress;
+    }
+    if (typeof req?.ip === "string" && req.ip) {
+      return req.ip;
+    }
+  } catch {}
+  return "127.0.0.1";
+}
+
+function safeReadSqlFile(filePath: string): string {
+  try {
+    if (fs.existsSync(filePath)) {
+      return fs.readFileSync(filePath, "utf-8");
+    }
+  } catch {}
+  return "";
+}
+
 const envPort = process.env.PORT ? parseInt(process.env.PORT, 10) : NaN;
 const portArgIdx = process.argv.indexOf("--port");
 const cliPort = portArgIdx !== -1 && process.argv[portArgIdx + 1] ? parseInt(process.argv[portArgIdx + 1], 10) : NaN;
-const PORT = (!isNaN(cliPort) && cliPort > 0) ? cliPort : (!isNaN(envPort) && envPort > 0) ? envPort : 3000;
+const PORT = (!isNaN(cliPort) && cliPort > 0) ? cliPort : (process.env.NODE_ENV === "production" && !isNaN(envPort) && envPort > 0) ? envPort : 3000;
 const PG_DATA_DIR = isServerless ? path.resolve('/tmp', 'pgdata') : path.resolve(process.cwd(), "data", "pgdata");
 const SCHEMA_SQL_PATH = path.resolve(process.cwd(), "supabase", "migrations", "001_rental_management_schema.sql");
 const AUTH_RBAC_SQL_PATH = path.resolve(process.cwd(), "supabase", "migrations", "002_management_authentication_rbac.sql");
@@ -284,84 +318,333 @@ async function resolveValidProfileUuid(candidateId) {
   }
   return firstProf?.id || null;
 }
-async function initPostgresDatabase() {
-  fs.mkdirSync(PG_DATA_DIR, { recursive: true });
-  const pidFile = path.join(PG_DATA_DIR, "postmaster.pid");
-  if (fs.existsSync(pidFile)) {
-    try {
-      fs.rmSync(pidFile, { force: true });
-    } catch {
-    }
+const EMBEDDED_BASE_SCHEMA = `
+CREATE TABLE IF NOT EXISTS public.profiles (
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::TEXT,
+  email TEXT UNIQUE NOT NULL,
+  password_hash TEXT NOT NULL DEFAULT 'owner',
+  full_name TEXT NOT NULL,
+  phone TEXT DEFAULT '',
+  role TEXT NOT NULL DEFAULT 'owner',
+  tenant_ref TEXT,
+  avatar_bg TEXT DEFAULT '#D5F267',
+  token TEXT NOT NULL DEFAULT gen_random_uuid()::TEXT,
+  job_title TEXT DEFAULT 'Super Admin (Owner)',
+  assigned_property_id TEXT DEFAULT '',
+  assigned_property_name TEXT DEFAULT 'All Properties',
+  account_status TEXT DEFAULT 'Active',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS public.properties (
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::TEXT,
+  code_prefix CHAR(1) NOT NULL UNIQUE,
+  name TEXT NOT NULL UNIQUE,
+  address TEXT NOT NULL,
+  total_units INTEGER NOT NULL DEFAULT 1,
+  occupied_units INTEGER NOT NULL DEFAULT 0,
+  monthly_revenue NUMERIC(12,2) NOT NULL DEFAULT 0,
+  manager_name TEXT NOT NULL DEFAULT '',
+  rating NUMERIC(3,2) NOT NULL DEFAULT 5.00,
+  variant TEXT NOT NULL DEFAULT 'deluxe',
+  cover_image_url TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS public.unit_types (
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::TEXT,
+  property_id TEXT,
+  property_name TEXT NOT NULL,
+  name TEXT NOT NULL,
+  variant TEXT NOT NULL DEFAULT 'deluxe',
+  size_sqm INTEGER NOT NULL DEFAULT 65,
+  bedrooms TEXT NOT NULL,
+  max_tenants INTEGER NOT NULL DEFAULT 2,
+  monthly_rent NUMERIC(12,2) NOT NULL,
+  occupied_count INTEGER NOT NULL DEFAULT 0,
+  total_count INTEGER NOT NULL DEFAULT 1,
+  status TEXT NOT NULL DEFAULT 'Available',
+  description TEXT NOT NULL,
+  long_description TEXT NOT NULL,
+  features JSONB NOT NULL DEFAULT '[]'::jsonb,
+  amenities JSONB NOT NULL DEFAULT '[]'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS public.units (
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::TEXT,
+  property_id TEXT,
+  property_name TEXT NOT NULL,
+  unit_type_id TEXT,
+  unit_number TEXT NOT NULL,
+  unit_type_name TEXT NOT NULL DEFAULT 'Deluxe',
+  floor_number INTEGER DEFAULT 1,
+  monthly_rent NUMERIC(12,2) NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'Available',
+  tenant_ref TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS public.tenants (
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::TEXT,
+  user_id TEXT,
+  property_id TEXT,
+  property_name TEXT NOT NULL,
+  tenant_ref TEXT UNIQUE NOT NULL,
+  full_name TEXT NOT NULL,
+  phone TEXT NOT NULL,
+  email TEXT NOT NULL,
+  dob TEXT NOT NULL DEFAULT '',
+  gender TEXT NOT NULL DEFAULT 'Resident',
+  nationality TEXT NOT NULL DEFAULT '',
+  id_number TEXT NOT NULL,
+  tier TEXT NOT NULL DEFAULT 'Verified Tenant',
+  on_time_streak TEXT NOT NULL DEFAULT 'Active Lease',
+  security_deposit NUMERIC(12,2) NOT NULL DEFAULT 0.00,
+  vehicle_info TEXT NOT NULL DEFAULT 'None',
+  avatar_bg TEXT NOT NULL DEFAULT '#D8F3E5',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS public.leases (
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::TEXT,
+  lease_code TEXT UNIQUE NOT NULL,
+  tenant_id TEXT,
+  tenant_ref TEXT NOT NULL,
+  unit_id TEXT,
+  unit_number TEXT NOT NULL,
+  unit_type TEXT NOT NULL DEFAULT 'Deluxe',
+  property_name TEXT NOT NULL,
+  monthly_rent NUMERIC(12,2) NOT NULL DEFAULT 0,
+  base_rent NUMERIC(12,2) NOT NULL DEFAULT 0,
+  utility_package NUMERIC(12,2) NOT NULL DEFAULT 0,
+  maintenance_fee NUMERIC(12,2) NOT NULL DEFAULT 0,
+  parking_fee NUMERIC(12,2) NOT NULL DEFAULT 0,
+  occupants TEXT NOT NULL DEFAULT '1 Adult',
+  lease_duration TEXT NOT NULL DEFAULT '12 Months',
+  lease_start TEXT NOT NULL,
+  lease_end TEXT NOT NULL,
+  lease_notes TEXT DEFAULT '',
+  perks JSONB DEFAULT '[]'::jsonb,
+  payment_method TEXT DEFAULT 'M-Pesa / Bank Transfer',
+  is_active BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS public.rent_payments (
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::TEXT,
+  payment_code TEXT NOT NULL,
+  lease_id TEXT,
+  tenant_id TEXT,
+  tenant_ref TEXT NOT NULL,
+  tenant_name TEXT NOT NULL,
+  avatar_bg TEXT NOT NULL DEFAULT '#D8F3E5',
+  property_name TEXT NOT NULL,
+  unit_type TEXT NOT NULL DEFAULT 'Deluxe',
+  unit_number TEXT NOT NULL,
+  payment_note TEXT DEFAULT '',
+  lease_term TEXT DEFAULT '12 Months',
+  due_date TEXT NOT NULL,
+  paid_date TEXT,
+  amount_due NUMERIC(12,2) NOT NULL DEFAULT 0,
+  amount_paid NUMERIC(12,2) NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'Pending',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS public.expenses (
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::TEXT,
+  expense_code TEXT UNIQUE NOT NULL,
+  property_name TEXT NOT NULL,
+  title TEXT NOT NULL,
+  category TEXT NOT NULL,
+  amount NUMERIC(12,2) NOT NULL DEFAULT 0,
+  date TEXT NOT NULL,
+  vendor TEXT NOT NULL,
+  paid_by TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'Paid',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS public.maintenance_requests (
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::TEXT,
+  ticket_code TEXT UNIQUE NOT NULL,
+  property_name TEXT NOT NULL,
+  unit_number TEXT NOT NULL,
+  tenant_name TEXT NOT NULL,
+  tenant_ref TEXT NOT NULL,
+  issue_title TEXT NOT NULL,
+  description TEXT NOT NULL,
+  category TEXT NOT NULL,
+  priority TEXT NOT NULL DEFAULT 'Medium',
+  status TEXT NOT NULL DEFAULT 'In Progress',
+  reported_date TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS public.chat_threads (
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::TEXT,
+  recipient_name TEXT NOT NULL,
+  recipient_phone TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'tenant',
+  tenant_ref TEXT,
+  property_name TEXT,
+  unread INTEGER NOT NULL DEFAULT 0,
+  avatar_bg TEXT NOT NULL DEFAULT '#D5F267',
+  last_message TEXT NOT NULL,
+  last_message_time TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS public.property_tasks (
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::TEXT,
+  title TEXT NOT NULL,
+  assignee TEXT NOT NULL,
+  property_name TEXT NOT NULL,
+  priority TEXT NOT NULL DEFAULT 'Medium',
+  due_date TEXT NOT NULL,
+  completed BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS public.property_reviews (
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::TEXT,
+  reviewer_name TEXT NOT NULL,
+  property_name TEXT NOT NULL,
+  unit_number TEXT NOT NULL,
+  rating NUMERIC(2,1) NOT NULL DEFAULT 5.0,
+  comment TEXT NOT NULL,
+  review_date TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS public.activity_logs (
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::TEXT,
+  activity_type TEXT NOT NULL,
+  title TEXT NOT NULL,
+  description TEXT NOT NULL,
+  actor_name TEXT NOT NULL,
+  tenant_ref TEXT,
+  tone TEXT NOT NULL DEFAULT 'mint',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS public.property_images (
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::TEXT,
+  property_id TEXT NOT NULL,
+  image_url TEXT NOT NULL,
+  storage_path TEXT,
+  is_cover BOOLEAN NOT NULL DEFAULT FALSE,
+  display_order INTEGER NOT NULL DEFAULT 0,
+  caption TEXT DEFAULT '',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS public.security_audit_logs (
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::TEXT,
+  event_type TEXT NOT NULL,
+  actor_email TEXT NOT NULL,
+  target_email TEXT,
+  role_label TEXT NOT NULL,
+  portal TEXT NOT NULL,
+  ip_address TEXT NOT NULL,
+  description TEXT NOT NULL,
+  severity TEXT NOT NULL DEFAULT 'info',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS public.staff_invitations (
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::TEXT,
+  email TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'property_manager',
+  full_name TEXT NOT NULL,
+  invite_token TEXT NOT NULL,
+  invite_link TEXT NOT NULL,
+  assigned_property_name TEXT DEFAULT 'All Properties',
+  resend_id TEXT,
+  delivery_status TEXT DEFAULT 'pending',
+  delivery_error TEXT,
+  status TEXT DEFAULT 'Pending',
+  expires_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  used_at TIMESTAMPTZ
+);
+CREATE TABLE IF NOT EXISTS public.sms_logs (
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::TEXT,
+  recipient_phone TEXT NOT NULL,
+  recipient_name TEXT NOT NULL,
+  tenant_ref TEXT,
+  property_name TEXT,
+  message_text TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'sent',
+  sms_type TEXT NOT NULL DEFAULT 'transactional',
+  provider_message_id TEXT,
+  error_message TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS public.sms_notification_settings (
+  id TEXT PRIMARY KEY DEFAULT 'default',
+  sender_id TEXT NOT NULL DEFAULT 'Sozuri',
+  sms_type TEXT NOT NULL DEFAULT 'promotional',
+  api_key_configured BOOLEAN NOT NULL DEFAULT FALSE,
+  master_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  auto_tenant_registered BOOLEAN NOT NULL DEFAULT TRUE,
+  auto_rent_due_soon BOOLEAN NOT NULL DEFAULT TRUE,
+  auto_rent_overdue BOOLEAN NOT NULL DEFAULT TRUE,
+  auto_payment_confirmed BOOLEAN NOT NULL DEFAULT TRUE,
+  auto_admin_announcement BOOLEAN NOT NULL DEFAULT TRUE,
+  prevent_duplicates_hours INTEGER NOT NULL DEFAULT 24,
+  updated_by TEXT NOT NULL DEFAULT 'System Default',
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+`;
+
+async function executeMigrationSql(sqlText: string) {
+  if (!sqlText || !pg) return;
+  try {
+    await pg.exec(sqlText);
+  } catch (err) {
+    console.warn("[Migration Notice]", err);
   }
+}
+
+async function initPostgresDatabase() {
+  try {
+    fs.mkdirSync(PG_DATA_DIR, { recursive: true });
+    const pidFile = path.join(PG_DATA_DIR, "postmaster.pid");
+    if (fs.existsSync(pidFile)) {
+      try {
+        fs.rmSync(pidFile, { force: true });
+      } catch {}
+    }
+  } catch {}
+
+  let pgReady = false;
   try {
     pg = new PGlite(PG_DATA_DIR);
-    const schemaSql = fs.readFileSync(SCHEMA_SQL_PATH, "utf-8");
-    await pg.exec(schemaSql);
-    if (fs.existsSync(AUTH_RBAC_SQL_PATH)) {
-      const authSql = fs.readFileSync(AUTH_RBAC_SQL_PATH, "utf-8");
-      await pg.exec(authSql).catch(() => {
-      });
-    }
-    if (fs.existsSync(SMS_SQL_PATH)) {
-      const smsSql = fs.readFileSync(SMS_SQL_PATH, "utf-8");
-      await pg.exec(smsSql).catch(() => {
-      });
-    }
-    if (fs.existsSync(PROPERTY_IMAGES_SQL_PATH)) {
-      const propImgSql = fs.readFileSync(PROPERTY_IMAGES_SQL_PATH, "utf-8");
-      await pg.exec(propImgSql).catch(() => {
-      });
-    }
-    if (fs.existsSync(PERFORMANCE_INDEXES_SQL_PATH)) {
-      const perfIdxSql = fs.readFileSync(PERFORMANCE_INDEXES_SQL_PATH, "utf-8");
-      await pg.exec(perfIdxSql).catch(() => {
-      });
-    }
-    if (fs.existsSync(RESEND_STAFF_SQL_PATH)) {
-      const resendStaffSql = fs.readFileSync(RESEND_STAFF_SQL_PATH, "utf-8");
-      await pg.exec(resendStaffSql).catch(() => {
-      });
-    }
-    if (fs.existsSync(SOZURI_SMS_SQL_PATH)) {
-      const sozuriSql = fs.readFileSync(SOZURI_SMS_SQL_PATH, "utf-8");
-      await pg.exec(sozuriSql).catch(() => {
-      });
-    }
-  } catch {
-    pg = new PGlite();
-    const schemaSql = fs.readFileSync(SCHEMA_SQL_PATH, "utf-8");
-    await pg.exec(schemaSql);
-    if (fs.existsSync(AUTH_RBAC_SQL_PATH)) {
-      const authSql = fs.readFileSync(AUTH_RBAC_SQL_PATH, "utf-8");
-      await pg.exec(authSql).catch(() => {
-      });
-    }
-    if (fs.existsSync(SMS_SQL_PATH)) {
-      const smsSql = fs.readFileSync(SMS_SQL_PATH, "utf-8");
-      await pg.exec(smsSql).catch(() => {
-      });
-    }
-    if (fs.existsSync(PROPERTY_IMAGES_SQL_PATH)) {
-      const propImgSql = fs.readFileSync(PROPERTY_IMAGES_SQL_PATH, "utf-8");
-      await pg.exec(propImgSql).catch(() => {
-      });
-    }
-    if (fs.existsSync(PERFORMANCE_INDEXES_SQL_PATH)) {
-      const perfIdxSql = fs.readFileSync(PERFORMANCE_INDEXES_SQL_PATH, "utf-8");
-      await pg.exec(perfIdxSql).catch(() => {
-      });
-    }
-    if (fs.existsSync(RESEND_STAFF_SQL_PATH)) {
-      const resendStaffSql = fs.readFileSync(RESEND_STAFF_SQL_PATH, "utf-8");
-      await pg.exec(resendStaffSql).catch(() => {
-      });
-    }
-    if (fs.existsSync(SOZURI_SMS_SQL_PATH)) {
-      const sozuriSql = fs.readFileSync(SOZURI_SMS_SQL_PATH, "utf-8");
-      await pg.exec(sozuriSql).catch(() => {
-      });
+    await pg.waitReady;
+    pgReady = true;
+  } catch (dirErr) {
+    console.warn("[PGlite dir init failed, falling back to memory]", dirErr);
+  }
+
+  if (!pgReady) {
+    try {
+      pg = new PGlite();
+      await pg.waitReady;
+      pgReady = true;
+    } catch (memErr) {
+      console.warn("[PGlite in-memory init failed]", memErr);
     }
   }
+
+  const baseSql = safeReadSqlFile(SCHEMA_SQL_PATH) || EMBEDDED_BASE_SCHEMA;
+  await executeMigrationSql(baseSql);
+
+  const authSql = safeReadSqlFile(AUTH_RBAC_SQL_PATH);
+  if (authSql) await executeMigrationSql(authSql);
+
+  const smsSql = safeReadSqlFile(SMS_SQL_PATH);
+  if (smsSql) await executeMigrationSql(smsSql);
+
+  const propImgSql = safeReadSqlFile(PROPERTY_IMAGES_SQL_PATH);
+  if (propImgSql) await executeMigrationSql(propImgSql);
+
+  const perfIdxSql = safeReadSqlFile(PERFORMANCE_INDEXES_SQL_PATH);
+  if (perfIdxSql) await executeMigrationSql(perfIdxSql);
+
+  const resendStaffSql = safeReadSqlFile(RESEND_STAFF_SQL_PATH);
+  if (resendStaffSql) await executeMigrationSql(resendStaffSql);
+
+  const sozuriSql = safeReadSqlFile(SOZURI_SMS_SQL_PATH);
+  if (sozuriSql) await executeMigrationSql(sozuriSql);
   const ownerEmail = process.env.USER_EMAIL || "ochiengpeterson507@gmail.com";
   const ownerName = "Peterson Ochieng";
   const existingUsers = await pg.query(`SELECT COUNT(*)::TEXT as count FROM public.profiles;`);
@@ -2046,7 +2329,7 @@ function requireRole(allowedRoles) {
       expandedAllowed.add("caretaker");
     }
     if (!expandedAllowed.has(role)) {
-      logSecurityAudit("permission_denied", user?.email || "unknown", void 0, getRoleLabel(role), role === "tenant" ? "tenant" : "management", req.ip || "127.0.0.1", `Blocked unauthorized role '${getRoleLabel(role)}' from ${req.method} ${req.path}.`, "warning");
+      logSecurityAudit("permission_denied", user?.email || "unknown", void 0, getRoleLabel(role), role === "tenant" ? "tenant" : "management", getClientIp(req), `Blocked unauthorized role '${getRoleLabel(role)}' from ${req.method} ${req.path}.`, "warning");
       return res.status(403).json({ error: `Role Permission Denied: Your assigned role '${getRoleLabel(role)}' is not permitted to perform this operation.` });
     }
     const isScopedStaff = user && (role === "property_manager" || role === "caretaker" || role === "maintenance_staff") && Boolean(user.assignedPropertyId || user.assignedPropertyName && user.assignedPropertyName !== "All Properties");
@@ -2054,19 +2337,19 @@ function requireRole(allowedRoles) {
       const assignedId = user.assignedPropertyId;
       const assignedNameLower = (user.assignedPropertyName || "").trim().toLowerCase();
       if (req.path === "/api/properties" && req.method === "POST") {
-        logSecurityAudit("permission_denied", user.email, void 0, user.roleLabel, "management", req.ip || "127.0.0.1", `Blocked property creation by property-scoped ${user.roleLabel} (${user.assignedPropertyName}).`, "warning");
+        logSecurityAudit("permission_denied", user.email, void 0, user.roleLabel, "management", getClientIp(req), `Blocked property creation by property-scoped ${user.roleLabel} (${user.assignedPropertyName}).`, "warning");
         return res.status(403).json({ error: `Property Scope Restriction: Your account is scoped to "${user.assignedPropertyName}" and cannot create new portfolio properties.` });
       }
       if (req.path.startsWith("/api/properties/") && req.params.id) {
         if (assignedId && req.params.id !== assignedId) {
-          logSecurityAudit("permission_denied", user.email, void 0, user.roleLabel, "management", req.ip || "127.0.0.1", `Blocked unauthorized property modification on property ID ${req.params.id} (Assigned to ${user.assignedPropertyName}).`, "warning");
+          logSecurityAudit("permission_denied", user.email, void 0, user.roleLabel, "management", getClientIp(req), `Blocked unauthorized property modification on property ID ${req.params.id} (Assigned to ${user.assignedPropertyName}).`, "warning");
           return res.status(403).json({ error: `Unauthorized Property Access: You are only authorized to manage "${user.assignedPropertyName}".` });
         }
       }
       const bodyPropId = req.body?.propertyId;
       const bodyPropName = req.body?.property ? String(req.body.property).trim().toLowerCase() : "";
       if (bodyPropId && assignedId && bodyPropId !== assignedId || bodyPropName && assignedNameLower && bodyPropName !== assignedNameLower) {
-        logSecurityAudit("permission_denied", user.email, void 0, user.roleLabel, "management", req.ip || "127.0.0.1", `Blocked cross-property mutation on "${req.body?.property || bodyPropId}" by ${user.email} (Assigned to "${user.assignedPropertyName}").`, "warning");
+        logSecurityAudit("permission_denied", user.email, void 0, user.roleLabel, "management", getClientIp(req), `Blocked cross-property mutation on "${req.body?.property || bodyPropId}" by ${user.email} (Assigned to "${user.assignedPropertyName}").`, "warning");
         return res.status(403).json({ error: `Unauthorized Property Access: Your account is assigned to "${user.assignedPropertyName}" and cannot modify records for "${req.body?.property || bodyPropId}".` });
       }
     }
@@ -2323,7 +2606,7 @@ async function createApp() {
       }
       const cleanEmail = String(email).trim().toLowerCase();
       const requestedPortal = portal === "tenant" ? "tenant" : "management";
-      const clientIp = req.ip || "127.0.0.1";
+      const clientIp = getClientIp(req);
       const rateEntry = loginRateLimiter.get(cleanEmail);
       if (rateEntry && rateEntry.lockUntil > Date.now()) {
         const waitMins = Math.ceil((rateEntry.lockUntil - Date.now()) / 6e4);
@@ -2518,7 +2801,7 @@ async function createApp() {
       revokedTokens.add(bearerToken);
     }
     if (existingSession) {
-      await logSecurityAudit("logout", existingSession.email, void 0, "Authenticated User", "management", req.ip || "127.0.0.1", `User (${existingSession.email}) signed out and session token was revoked.`, "info");
+      await logSecurityAudit("logout", existingSession.email, void 0, "Authenticated User", "management", getClientIp(req), `User (${existingSession.email}) signed out and session token was revoked.`, "info");
     }
     return res.json({ success: true, message: "Signed out and session token revoked." });
   });
@@ -2585,7 +2868,7 @@ async function createApp() {
         }).ilike("email", cleanEmail);
       } catch {}
       await dispatchBrandedRentifyEmail({ templateType: "activation_confirmation", recipientEmail: cleanEmail, recipientName: staffName, subject: "Your ARabella agency Management Account is Now Active", headline: "Account Activated Successfully", bodyParagraphs: [`Your ARabella agency ${getRoleLabel(staffRole)} account has been securely activated.`, "You can now sign in through the ARabella agency Management Portal to access your assigned properties and operational modules."], details: [{ label: "Account Email", value: cleanEmail }, { label: "Assigned Role", value: getRoleLabel(staffRole) }, { label: "Assigned Property", value: meta.assigned_property_name || "All Properties" }, { label: "Account Status", value: "Active" }], ctaLabel: "Sign In to Management Portal", ctaUrl: "/login" });
-      await logSecurityAudit("invite_activated", cleanEmail, cleanEmail, getRoleLabel(staffRole), "management", req.ip || "127.0.0.1", `${staffName} (${cleanEmail}) completed invitation setup and activated their ${getRoleLabel(staffRole)} account.`, "info");
+      await logSecurityAudit("invite_activated", cleanEmail, cleanEmail, getRoleLabel(staffRole), "management", getClientIp(req), `${staffName} (${cleanEmail}) completed invitation setup and activated their ${getRoleLabel(staffRole)} account.`, "info");
       await logActivity("property", `Staff Account Activated (${getRoleLabel(staffRole)})`, `${staffName} (${cleanEmail}) securely set their password and activated their ${getRoleLabel(staffRole)} account.`, staffName, void 0, "mint");
       const fullState = await fetchFullDatabaseState();
       const activatedUser = fullState.users.find((u) => u.email.toLowerCase() === cleanEmail);
@@ -2606,7 +2889,7 @@ async function createApp() {
       const authUser = listData?.users?.find((u) => u.email?.toLowerCase() === cleanEmail);
       const { data: profRow } = await supabaseAdmin.from("profiles").select("*").ilike("email", cleanEmail).maybeSingle();
       if (!authUser && !profRow) {
-        await logSecurityAudit("password_reset", cleanEmail, cleanEmail, "Unknown", "management", req.ip || "127.0.0.1", `Password recovery requested for non-existent email (${cleanEmail}). Non-enumerating response returned.`, "info");
+        await logSecurityAudit("password_reset", cleanEmail, cleanEmail, "Unknown", "management", getClientIp(req), `Password recovery requested for non-existent email (${cleanEmail}). Non-enumerating response returned.`, "info");
         return res.json({ success: true, message: nonEnumeratingMessage });
       }
       const meta = authUser?.user_metadata || {};
@@ -2624,7 +2907,7 @@ async function createApp() {
       const staffName = profRow?.full_name || meta.full_name || cleanEmail.split("@")[0];
       await ensureSupabaseProfile(cleanEmail, staffName, staffRole, void 0, profRow?.phone || meta.phone, { inviteToken: recoveryToken, inviteExpiresAt: expiresIso, inviteUsed: false, inviteRevoked: false });
       await dispatchBrandedRentifyEmail({ templateType: "password_reset", recipientEmail: cleanEmail, recipientName: staffName, subject: "ARabella agency Password Reset Request", headline: "Reset Your ARabella agency Account Password", bodyParagraphs: ["We received a request to reset the password for your ARabella agency account.", "Use the single-use recovery code below on the Activate Invite / Reset Password screen within 60 minutes:"], details: [{ label: "Account Email", value: cleanEmail }, { label: "Single-Use Recovery Code", value: recoveryToken }, { label: "Valid For", value: "60 Minutes" }], ctaLabel: "Complete Password Reset", ctaUrl: "/activate-invite" });
-      await logSecurityAudit("password_reset", req.currentUser?.email || cleanEmail, cleanEmail, getRoleLabel(staffRole), "management", req.ip || "127.0.0.1", `Single-use password reset issued for ${staffName} (${cleanEmail}).`, "info");
+      await logSecurityAudit("password_reset", req.currentUser?.email || cleanEmail, cleanEmail, getRoleLabel(staffRole), "management", getClientIp(req), `Single-use password reset issued for ${staffName} (${cleanEmail}).`, "info");
       await logActivity("property", `Password Recovery Initiated`, `Password recovery requested for ${staffName} (${cleanEmail}).`, req.currentUser?.fullName || staffName, void 0, "lime");
       return res.json({ success: true, message: nonEnumeratingMessage, recoveryToken, recoveryLink });
     }
@@ -2711,7 +2994,7 @@ async function createApp() {
             ctaUrl: "/login",
           });
 
-          await logSecurityAudit("role_changed", req.currentUser?.email || "super_admin", cleanEmail, getRoleLabel(staffRole), "management", req.ip || "127.0.0.1", `Updated existing staff member ${cleanName} (${cleanEmail}) role from ${getRoleLabel(prevRole)} to ${getRoleLabel(staffRole)}. Dispatched role update notification via Resend.`, "warning");
+          await logSecurityAudit("role_changed", req.currentUser?.email || "super_admin", cleanEmail, getRoleLabel(staffRole), "management", getClientIp(req), `Updated existing staff member ${cleanName} (${cleanEmail}) role from ${getRoleLabel(prevRole)} to ${getRoleLabel(staffRole)}. Dispatched role update notification via Resend.`, "warning");
           await logActivity("property", `Staff Role Updated (${getRoleLabel(staffRole)})`, `${cleanName} (${cleanEmail}) role updated to ${getRoleLabel(staffRole)} for ${resolvedPropName}.`, req.currentUser?.fullName || "Super Admin", void 0, "lime");
 
           const fullState = await fetchFullDatabaseState();
@@ -2818,7 +3101,7 @@ async function createApp() {
           directLink: isAlreadyActive ? undefined : directSetupLink,
         });
 
-        await logSecurityAudit(isAlreadyActive ? "staff_updated" : "invite_sent", req.currentUser?.email || "super_admin", cleanEmail, getRoleLabel(staffRole), "management", req.ip || "127.0.0.1", `Refreshed details and dispatched ${isAlreadyActive ? "update notification" : "invitation"} via Resend for ${cleanName || existingProf?.full_name} (${cleanEmail}).`, "info");
+        await logSecurityAudit(isAlreadyActive ? "staff_updated" : "invite_sent", req.currentUser?.email || "super_admin", cleanEmail, getRoleLabel(staffRole), "management", getClientIp(req), `Refreshed details and dispatched ${isAlreadyActive ? "update notification" : "invitation"} via Resend for ${cleanName || existingProf?.full_name} (${cleanEmail}).`, "info");
         await logActivity("property", isAlreadyActive ? `Staff Details Updated` : `Staff Invitation Refreshed`, `${cleanName || existingProf?.full_name} (${cleanEmail}) assignment updated for ${resolvedPropName}.`, req.currentUser?.fullName || "Super Admin", void 0, "lime");
 
         const fullState = await fetchFullDatabaseState();
@@ -2999,7 +3282,7 @@ async function createApp() {
         }).eq("id", createdProf.id);
       } catch {}
 
-      await logSecurityAudit("invite_sent", req.currentUser?.email || "super_admin", cleanEmail, getRoleLabel(staffRole), "management", req.ip || "127.0.0.1", `Created ${getRoleLabel(staffRole)} account for ${cleanName} (${cleanEmail}) assigned to ${resolvedPropName}. Resend delivery status: ${deliveryStatus} (ID: ${resendId || "none"}).`, isFailed ? "warning" : "info");
+      await logSecurityAudit("invite_sent", req.currentUser?.email || "super_admin", cleanEmail, getRoleLabel(staffRole), "management", getClientIp(req), `Created ${getRoleLabel(staffRole)} account for ${cleanName} (${cleanEmail}) assigned to ${resolvedPropName}. Resend delivery status: ${deliveryStatus} (ID: ${resendId || "none"}).`, isFailed ? "warning" : "info");
       await logActivity("property", `Staff Account Created (${getRoleLabel(staffRole)})`, `${cleanName} (${cleanEmail}) invited as ${getRoleLabel(staffRole)} for ${resolvedPropName} via Resend.`, req.currentUser?.fullName || "Super Admin", void 0, "lime");
 
       const fullState = await fetchFullDatabaseState();
@@ -3025,7 +3308,7 @@ async function createApp() {
     const { fullName, phone, jobTitle, role, assignedPropertyId, assignedPropertyName, assignedPropertyIds, permissions, mfaEnabled, status } = req.body;
     if (req.currentUser && req.currentUser.id === staffId) {
       if (role && role !== req.currentUser.role) {
-        await logSecurityAudit("permission_denied", req.currentUser.email, req.currentUser.email, req.currentUser.roleLabel, "management", req.ip || "127.0.0.1", `Blocked self-role modification attempt by ${req.currentUser.email} (${req.currentUser.role} -> ${role}).`, "critical");
+        await logSecurityAudit("permission_denied", req.currentUser.email, req.currentUser.email, req.currentUser.roleLabel, "management", getClientIp(req), `Blocked self-role modification attempt by ${req.currentUser.email} (${req.currentUser.role} -> ${role}).`, "critical");
         return res.status(403).json({ error: "Security Policy Violation: Users cannot change their own role or escalate their own permissions." });
       }
       if (status && status !== "Active") {
@@ -3078,10 +3361,10 @@ async function createApp() {
       if (status && status !== prevStatus && (nextStatus === "Suspended" || nextStatus === "Deactivated")) {
         const revokedCount = revokeAllUserSessions(staffId, existingProf.email);
         await dispatchBrandedRentifyEmail({ templateType: "account_suspended", recipientEmail: existingProf.email, recipientName: nextName, subject: `ARabella agency Account ${nextStatus} Notification`, headline: `Your Management Account Has Been ${nextStatus}`, bodyParagraphs: [`Your ARabella agency ${getRoleLabel(nextRole)} account status has been updated to ${nextStatus} by ${req.currentUser?.fullName || "the Super Administrator"}.`, "All active dashboard sessions have been immediately terminated. Historical operational records remain preserved."], details: [{ label: "Account Email", value: existingProf.email }, { label: "Role", value: getRoleLabel(nextRole) }, { label: "Updated Status", value: nextStatus }] });
-        await logSecurityAudit(nextStatus === "Suspended" ? "account_suspended" : "account_deactivated", req.currentUser?.email || "super_admin", existingProf.email, getRoleLabel(nextRole), "management", req.ip || "127.0.0.1", `${nextName} (${existingProf.email}) status changed from ${prevStatus} to ${nextStatus}. Revoked ${revokedCount} active session(s).`, "critical");
+        await logSecurityAudit(nextStatus === "Suspended" ? "account_suspended" : "account_deactivated", req.currentUser?.email || "super_admin", existingProf.email, getRoleLabel(nextRole), "management", getClientIp(req), `${nextName} (${existingProf.email}) status changed from ${prevStatus} to ${nextStatus}. Revoked ${revokedCount} active session(s).`, "critical");
       } else if (status && status !== prevStatus && nextStatus === "Active") {
         await dispatchBrandedRentifyEmail({ templateType: "account_reactivated", recipientEmail: existingProf.email, recipientName: nextName, subject: "Your ARabella agency Management Account Has Been Reactivated", headline: "Account Access Restored", bodyParagraphs: [`Your ARabella agency ${getRoleLabel(nextRole)} account has been reactivated by ${req.currentUser?.fullName || "the Super Administrator"}.`, "You may now sign in to the ARabella agency Management Portal."], details: [{ label: "Account Email", value: existingProf.email }, { label: "Assigned Role", value: getRoleLabel(nextRole) }, { label: "Assigned Property", value: nextPropName }, { label: "Status", value: "Active" }], ctaLabel: "Sign In to ARabella agency", ctaUrl: "/login" });
-        await logSecurityAudit("account_reactivated", req.currentUser?.email || "super_admin", existingProf.email, getRoleLabel(nextRole), "management", req.ip || "127.0.0.1", `${nextName} (${existingProf.email}) reactivated to Active status.`, "info");
+        await logSecurityAudit("account_reactivated", req.currentUser?.email || "super_admin", existingProf.email, getRoleLabel(nextRole), "management", getClientIp(req), `${nextName} (${existingProf.email}) reactivated to Active status.`, "info");
       }
       if (role && role !== prevRole) {
         // Send role-update notification via Resend
@@ -3107,7 +3390,7 @@ async function createApp() {
           ctaUrl: "/login",
         });
 
-        await logSecurityAudit("role_changed", req.currentUser?.email || "super_admin", existingProf.email, getRoleLabel(nextRole), "management", req.ip || "127.0.0.1", `${nextName} (${existingProf.email}) role updated from ${getRoleLabel(prevRole)} to ${getRoleLabel(nextRole)}. Role update email sent via Resend.`, "warning");
+        await logSecurityAudit("role_changed", req.currentUser?.email || "super_admin", existingProf.email, getRoleLabel(nextRole), "management", getClientIp(req), `${nextName} (${existingProf.email}) role updated from ${getRoleLabel(prevRole)} to ${getRoleLabel(nextRole)}. Role update email sent via Resend.`, "warning");
         await logActivity("property", `Staff Role Changed (${getRoleLabel(nextRole)})`, `${nextName} (${existingProf.email}) role changed from ${getRoleLabel(prevRole)} to ${getRoleLabel(nextRole)}.`, req.currentUser?.fullName || "Super Admin", void 0, "lime");
       }
       if (status && status !== prevStatus) {
@@ -3249,7 +3532,7 @@ async function createApp() {
         ]
       ).catch(() => {});
 
-      await logSecurityAudit("invite_sent", req.currentUser?.email || "super_admin", existingProf.email, getRoleLabel(staffRole), "management", req.ip || "127.0.0.1", `Resent fresh 72h invitation to ${existingProf.full_name} (${existingProf.email}). Resend ID: ${resendId || "none"} [Status: ${deliveryStatus}].`, isFailed ? "warning" : "info");
+      await logSecurityAudit("invite_sent", req.currentUser?.email || "super_admin", existingProf.email, getRoleLabel(staffRole), "management", getClientIp(req), `Resent fresh 72h invitation to ${existingProf.full_name} (${existingProf.email}). Resend ID: ${resendId || "none"} [Status: ${deliveryStatus}].`, isFailed ? "warning" : "info");
       await logActivity("property", `Account Invitation Resent`, `New invitation sent to ${existingProf.full_name} (${existingProf.email}) via Resend.`, req.currentUser?.fullName || "Super Admin", void 0, "lime");
 
       const fullState = await fetchFullDatabaseState();
@@ -3282,7 +3565,7 @@ async function createApp() {
       const staffRole = meta.staff_role || existingProf.role || "property_manager";
       await ensureSupabaseProfile(existingProf.email, existingProf.full_name, staffRole, void 0, existingProf.phone || meta.phone, { status: "Deactivated", inviteToken: "", inviteRevoked: true, passwordSet: false });
       revokeAllUserSessions(staffId, existingProf.email);
-      await logSecurityAudit("invite_revoked", req.currentUser?.email || "super_admin", existingProf.email, getRoleLabel(staffRole), "management", req.ip || "127.0.0.1", `Revoked pending invitation for ${existingProf.full_name} (${existingProf.email}).`, "warning");
+      await logSecurityAudit("invite_revoked", req.currentUser?.email || "super_admin", existingProf.email, getRoleLabel(staffRole), "management", getClientIp(req), `Revoked pending invitation for ${existingProf.full_name} (${existingProf.email}).`, "warning");
       await logActivity("property", `Staff Invitation Revoked`, `Pending invitation for ${existingProf.full_name} (${existingProf.email}) was revoked.`, req.currentUser?.fullName || "Super Admin", void 0, "lime");
       const fullState = await fetchFullDatabaseState();
       const updatedStaff = fullState.users.find((u) => u.id === staffId);
@@ -3318,7 +3601,7 @@ async function createApp() {
       }
       await ensureSupabaseProfile(existingProf.email, existingProf.full_name, staffRole, void 0, existingProf.phone || meta.phone, { status: finalStatus, assignedPropertyId: "", assignedPropertyName: "Unassigned (Offboarded)", assignedPropertyIds: [], inviteToken: "", inviteRevoked: true });
       await dispatchBrandedRentifyEmail({ templateType: "account_suspended", recipientEmail: existingProf.email, recipientName: existingProf.full_name, subject: `ARabella agency Management Access ${finalStatus}`, headline: `Employee Departure & Access ${finalStatus}`, bodyParagraphs: [`Your ARabella agency ${getRoleLabel(staffRole)} account has been marked as ${finalStatus}.`, "All active sessions have been revoked and property assignments have been transitioned. Historical operational records remain archived for compliance."], details: [{ label: "Employee", value: existingProf.full_name }, { label: "Final Status", value: finalStatus }, { label: "Property Handover", value: transferSummary }, ...reason ? [{ label: "Notes", value: reason }] : []] });
-      await logSecurityAudit("employee_offboarded", req.currentUser?.email || "super_admin", existingProf.email, getRoleLabel(staffRole), "management", req.ip || "127.0.0.1", `Offboarded ${existingProf.full_name} (${existingProf.email}) as ${finalStatus}. ${transferSummary}. Revoked ${revokedSessions} session(s). Historical records preserved.`, "critical");
+      await logSecurityAudit("employee_offboarded", req.currentUser?.email || "super_admin", existingProf.email, getRoleLabel(staffRole), "management", getClientIp(req), `Offboarded ${existingProf.full_name} (${existingProf.email}) as ${finalStatus}. ${transferSummary}. Revoked ${revokedSessions} session(s). Historical records preserved.`, "critical");
       await logActivity("property", `Employee Offboarded (${finalStatus})`, `${existingProf.full_name} (${getRoleLabel(staffRole)}) offboarded [${finalStatus}]. ${transferSummary}.`, req.currentUser?.fullName || "Super Admin", void 0, "lime");
       const fullState = await fetchFullDatabaseState();
       const updatedStaff = fullState.users.find((u) => u.id === staffId);
@@ -3340,7 +3623,7 @@ async function createApp() {
       await Promise.all([supabaseAdmin.from("properties").update({ manager_id: null }).eq("manager_id", staffId), supabaseAdmin.from("properties").update({ caretaker_id: null }).eq("caretaker_id", staffId), supabaseAdmin.from("tenants").update({ user_id: null }).eq("user_id", staffId), supabaseAdmin.from("rent_payments").update({ confirmed_by: null }).eq("confirmed_by", staffId), supabaseAdmin.from("expenses").update({ recorded_by: null }).eq("recorded_by", staffId)]);
       await supabaseAdmin.from("profiles").delete().eq("id", staffId);
       await supabaseAdmin.auth.admin.deleteUser(staffId);
-      await logSecurityAudit("account_deactivated", req.currentUser?.email || "super_admin", existingProf.email, existingProf.role || "staff", "management", req.ip || "127.0.0.1", `Removed staff profile ${existingProf.full_name} (${existingProf.email}) while preserving all historical operational and financial records.`, "warning");
+      await logSecurityAudit("account_deactivated", req.currentUser?.email || "super_admin", existingProf.email, existingProf.role || "staff", "management", getClientIp(req), `Removed staff profile ${existingProf.full_name} (${existingProf.email}) while preserving all historical operational and financial records.`, "warning");
       await logActivity("property", `Staff Account Removed`, `${existingProf.full_name} (${existingProf.email}) was removed from staff accounts.`, req.currentUser?.fullName || "Super Admin", void 0, "mint");
       return res.json({ success: true });
     }
@@ -3355,7 +3638,7 @@ async function createApp() {
       const cleanEmail = String(email).trim().toLowerCase();
       const requestedRole = role || "tenant";
       if (isManagementRole(requestedRole)) {
-        await logSecurityAudit("permission_denied", cleanEmail, cleanEmail, getRoleLabel(requestedRole), "management", req.ip || "127.0.0.1", `Blocked public self-registration attempt for management role '${getRoleLabel(requestedRole)}' (${cleanEmail}).`, "critical").catch(() => {});
+        await logSecurityAudit("permission_denied", cleanEmail, cleanEmail, getRoleLabel(requestedRole), "management", getClientIp(req), `Blocked public self-registration attempt for management role '${getRoleLabel(requestedRole)}' (${cleanEmail}).`, "critical").catch(() => {});
         return res.status(403).json({ error: "Public self-registration for management accounts is disabled. Management accounts must be created and invited by the Super Admin." });
       }
       if (supabaseAdmin) {
