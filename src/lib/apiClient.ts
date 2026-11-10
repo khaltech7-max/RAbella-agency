@@ -19,8 +19,6 @@ import {
   SmsLogRecord,
   SmsNotificationSettings,
   SmsTriggerType,
-  getRoleDisplayLabel,
-  getAllowedPagesForRole,
 } from '../data/rentalData';
 import { supabase } from './supabaseClient';
 
@@ -117,15 +115,7 @@ async function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T
         unauthorizedHandler();
       }
     }
-    const fallbackError =
-      response.status === 404
-        ? 'Service endpoint not found (404). Please ensure backend serverless routes are deployed.'
-        : response.status === 401
-        ? 'Invalid email or password. Please verify your credentials.'
-        : response.status === 500
-        ? 'Server encountered an unexpected error. Please try again in a moment.'
-        : `Request failed (${response.status})`;
-    throw new Error(payload.error || fallbackError);
+    throw new Error(payload.error || `Request failed (${response.status})`);
   }
   return payload as T;
 }
@@ -156,7 +146,7 @@ export const rentalApi = {
   getSession: () =>
     apiRequest<{ authenticated: boolean; user: UserSession }>('/api/auth/session'),
 
-  login: async (
+  login: (
     email: string,
     password: string,
     role?: UserRole,
@@ -165,99 +155,23 @@ export const rentalApi = {
       rememberMe?: boolean;
       mfaCode?: string;
     }
-  ): Promise<{
-    user?: UserSession;
-    mfaRequired?: boolean;
-    mfaChallengeCode?: string;
-    message?: string;
-  }> => {
-    const cleanEmail = email.trim().toLowerCase();
-    try {
-      return await apiRequest<{
-        user?: UserSession;
-        mfaRequired?: boolean;
-        mfaChallengeCode?: string;
-        message?: string;
-      }>('/api/auth/login', {
-        method: 'POST',
-        body: JSON.stringify({
-          email: cleanEmail,
-          password,
-          role,
-          portal: options?.portal,
-          rememberMe: options?.rememberMe,
-          mfaCode: options?.mfaCode,
-        }),
-      });
-    } catch (err: any) {
-      const errMsg = String(err?.message || '');
-      const isRecoverableBackendError =
-        errMsg.includes('not found') ||
-        errMsg.includes('404') ||
-        errMsg.includes('500') ||
-        errMsg.includes('unexpected error') ||
-        errMsg.includes('FUNCTION_INVOCATION_FAILED') ||
-        errMsg.includes('Failed to fetch') ||
-        errMsg.includes('NetworkError');
-
-      // If backend gave a standard credential error or Supabase client isn't configured, propagate immediately
-      if (!isRecoverableBackendError || !supabase) {
-        throw err;
-      }
-
-      // Direct Client-Side Fallback via Supabase Auth
-      try {
-        const authPassword = (password === 'owner' || password === 'admin') ? 'Owner#2026!' : password;
-        const { data: authData, error: authErr } = await supabase.auth.signInWithPassword({
-          email: cleanEmail,
-          password: authPassword,
-        });
-
-        if (authErr || !authData?.user) {
-          throw new Error(
-            authErr?.message || 'Invalid email or password. Please verify your credentials.'
-          );
-        }
-
-        const { data: profile } = await supabase
-          .from('profiles')
-          .select('*')
-          .ilike('email', cleanEmail)
-          .maybeSingle();
-
-        const { data: tenant } = await supabase
-          .from('tenants')
-          .select('*')
-          .ilike('email', cleanEmail)
-          .maybeSingle();
-
-        const meta = authData.user.user_metadata || {};
-        const resolvedRole: UserRole = (meta.staff_role || profile?.role || (tenant ? 'tenant' : 'owner')) as UserRole;
-        const resolvedName = profile?.full_name || meta.full_name || tenant?.full_name || cleanEmail.split('@')[0];
-        const nowIso = new Date().toISOString();
-
-        const fallbackUser: UserSession = {
-          id: profile?.id || authData.user.id,
-          email: cleanEmail,
-          fullName: resolvedName,
-          role: resolvedRole,
-          roleLabel: getRoleDisplayLabel(resolvedRole, tenant?.tenant_ref),
-          status: (profile?.account_status || meta.account_status || 'Active') as AccountStatus,
-          lastLoginAt: nowIso,
-          permissions: getAllowedPagesForRole(resolvedRole),
-          tenantRef: tenant?.tenant_ref || undefined,
-          token: authData.session?.access_token || authData.user.id,
-        };
-
-        setAuthContext(fallbackUser, options?.rememberMe);
-        return { user: fallbackUser };
-      } catch (fallbackErr: any) {
-        throw new Error(
-          fallbackErr?.message || 'Invalid email or password. Please verify your credentials.'
-        );
-      }
-    }
-  },
+  ) =>
+    apiRequest<{
+      user?: UserSession;
+      mfaRequired?: boolean;
+      mfaChallengeCode?: string;
+      message?: string;
+    }>('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        email,
+        password,
+        role,
+        portal: options?.portal,
+        rememberMe: options?.rememberMe,
+        mfaCode: options?.mfaCode,
+      }),
+    }),
 
   logout: () =>
     apiRequest<{ success: boolean }>('/api/auth/logout', {

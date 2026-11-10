@@ -1,20 +1,12 @@
 /**
- * Real-Time SMS & Notification WebSocket / SSE / Supabase Synchronization Client
+ * Real-Time SMS & Notification WebSocket / SSE Synchronization Client
  * 
  * Provides instantaneous event streaming between ARabella agency server
  * and browser clients. Listens for real-time Sozuri SMS dispatches,
  * payment verifications, thread messages, and SMS settings updates.
- * 
- * Supports dual-mode:
- * 1. Supabase Realtime (managed WebSocket, zero serverless constraints, works on Vercel)
- * 2. Express Server-Sent Events (SSE) & WebSocket for standalone/Node servers
- * 
- * Automatically detects serverless hosting (Vercel) to eliminate unsupported
- * raw WebSocket connections and prevent repeating 404 reconnect loops.
  */
 
 import { SmsLogRecord } from '../data/rentalData';
-import { supabase } from './supabaseClient';
 
 export type RealtimeEventType = 
   | 'sms:dispatched'
@@ -58,14 +50,11 @@ export type RealtimeEventCallback = (
 class RealtimeSmsClient {
   private ws: WebSocket | null = null;
   private sse: EventSource | null = null;
-  private supabaseChannel: any = null;
   private listeners = new Set<RealtimeEventCallback>();
   private reconnectTimer: any = null;
   private isConnected = false;
   private statusListeners = new Set<(connected: boolean) => void>();
   private recentEventKeys = new Set<string>();
-  private wsDisabled = false;
-  private sseFailures = 0;
 
   constructor() {
     if (typeof window !== 'undefined') {
@@ -105,13 +94,13 @@ class RealtimeSmsClient {
 
   private dispatchEvent(type: RealtimeEventType, payload: any) {
     // Generate a deduplication key
-    const idKey = payload?.log?.id || payload?.threadId || payload?.payment?.id || payload?.timestamp || JSON.stringify(payload).slice(0, 60);
+    const idKey = payload?.log?.id || payload?.threadId || payload?.timestamp || JSON.stringify(payload).slice(0, 50);
     const dedupeKey = `${type}:${idKey}`;
     if (this.recentEventKeys.has(dedupeKey)) {
       return; // Deduplicate
     }
     this.recentEventKeys.add(dedupeKey);
-    if (this.recentEventKeys.size > 250) {
+    if (this.recentEventKeys.size > 200) {
       const first = this.recentEventKeys.values().next().value;
       if (first) this.recentEventKeys.delete(first);
     }
@@ -128,99 +117,24 @@ class RealtimeSmsClient {
   public initConnection() {
     if (typeof window === 'undefined') return;
 
-    // 1. Primary Real-Time Channel: Supabase Realtime (managed WebSocket, 100% Vercel compatible)
-    this.connectSupabaseRealtime();
-
-    // 2. Server-Sent Events (SSE) Stream from backend
+    // Connect SSE immediately (Server-Sent Events work seamlessly across iframe proxies)
     this.connectSse();
 
-    // 3. Optional native WebSocket for standalone Node servers (disabled on Vercel)
+    // Also attempt WebSocket upgrade if supported
     this.connectWebSocket();
-  }
-
-  private connectSupabaseRealtime() {
-    if (this.supabaseChannel || !supabase) return;
-
-    try {
-      this.supabaseChannel = supabase
-        .channel('arabella_realtime_sms_feed')
-        .on(
-          'postgres_changes',
-          { event: 'INSERT', schema: 'public', table: 'sms_logs' },
-          (payload: any) => {
-            const row = payload.new;
-            if (row) {
-              this.dispatchEvent('sms:dispatched', {
-                log: row,
-                triggerType: row.trigger_type || 'system',
-                tenantRef: row.tenant_ref || '',
-                tenantName: row.recipient_name || '',
-                recipientPhone: row.recipient_phone || '',
-                status: row.delivery_status || 'Sent',
-                network: row.network || 'Safaricom',
-                providerMessageId: row.provider_message_id || '',
-                timestamp: row.created_at || new Date().toISOString(),
-              });
-            }
-          }
-        )
-        .on(
-          'postgres_changes',
-          { event: '*', schema: 'public', table: 'rent_payments' },
-          (payload: any) => {
-            if (payload.new) {
-              this.dispatchEvent('payment:confirmed', {
-                payment: payload.new,
-              });
-            }
-          }
-        )
-        .on(
-          'postgres_changes',
-          { event: '*', schema: 'public', table: 'chat_threads' },
-          (payload: any) => {
-            if (payload.new) {
-              this.dispatchEvent('thread:updated', payload.new);
-            }
-          }
-        )
-        .on(
-          'postgres_changes',
-          { event: '*', schema: 'public', table: 'sms_notification_settings' },
-          (payload: any) => {
-            if (payload.new) {
-              this.dispatchEvent('sms:settings_updated', payload.new);
-            }
-          }
-        )
-        .subscribe((status: string) => {
-          if (status === 'SUBSCRIBED') {
-            this.setStatus(true);
-          }
-        });
-    } catch {
-      // Supabase Realtime fallback to SSE
-    }
   }
 
   private connectSse() {
     if (this.sse) return;
-    if (this.sseFailures >= 3 && this.isConnected) {
-      // Supabase Realtime is already active, no need to continuously retry failing SSE
-      return;
-    }
-
     try {
       const sse = new EventSource('/api/realtime/events');
       this.sse = sse;
 
       sse.onopen = () => {
-        this.sseFailures = 0;
         this.setStatus(true);
       };
 
       sse.addEventListener('system:connected', () => {
-        this.sseFailures = 0;
         this.setStatus(true);
       });
 
@@ -259,31 +173,17 @@ class RealtimeSmsClient {
           sse.close();
         } catch {}
         this.sse = null;
-        this.sseFailures += 1;
-
-        if (!this.supabaseChannel && (!this.ws || this.ws.readyState !== WebSocket.OPEN)) {
+        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
           this.setStatus(false);
         }
         this.scheduleReconnect();
       };
     } catch {
-      this.sseFailures += 1;
       this.scheduleReconnect();
     }
   }
 
   private connectWebSocket() {
-    if (this.wsDisabled) return;
-    if (typeof window === 'undefined') return;
-
-    // Vercel serverless functions do not support raw persistent WebSockets.
-    // Detect Vercel host to prevent repetitive "WebSocket handshake 404" errors in the browser console.
-    const hostname = window.location.hostname;
-    if (hostname.endsWith('vercel.app') || hostname.includes('vercel.app')) {
-      this.wsDisabled = true;
-      return;
-    }
-
     if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
       return;
     }
@@ -315,34 +215,29 @@ class RealtimeSmsClient {
       };
 
       socket.onerror = () => {
-        // Disable subsequent WebSocket reconnect attempts if serverless or unsupported
-        this.wsDisabled = true;
+        // SSE handles fallback seamlessly
       };
 
       socket.onclose = () => {
         this.ws = null;
-        if (!this.sse && !this.supabaseChannel) {
+        if (!this.sse) {
           this.setStatus(false);
         }
-        if (!this.wsDisabled) {
-          this.scheduleReconnect();
-        }
+        this.scheduleReconnect();
       };
     } catch {
-      this.wsDisabled = true;
+      // Ignore ws errors - SSE is primary
     }
   }
 
   private scheduleReconnect() {
     if (this.reconnectTimer) return;
-    // Exponential backoff to protect against console noise
-    const delay = Math.min(30000, 4000 * Math.max(1, this.sseFailures));
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       if (!this.isConnected) {
         this.initConnection();
       }
-    }, delay);
+    }, 4000);
   }
 }
 
