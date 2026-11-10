@@ -12,6 +12,11 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import { rentalApi } from '../lib/apiClient';
+import {
+  DiagnosticErrorDetails,
+  SupabaseIntegrationError,
+  getSupabaseConfigDiagnostics,
+} from '../lib/supabaseClient';
 
 export type PublicAuthView = 'login' | 'recover' | 'setup';
 export type PortalMode = 'management' | 'tenant';
@@ -94,6 +99,45 @@ function evaluatePasswordStrength(pw: string): {
   };
 }
 
+function extractDiagnosticsFromError(
+  err: any,
+  fallbackAction: string
+): { summary: string; diagnostics: DiagnosticErrorDetails } {
+  if (err instanceof SupabaseIntegrationError && err.diagnostics) {
+    return {
+      summary: err.diagnostics.supabaseError || err.message,
+      diagnostics: err.diagnostics,
+    };
+  }
+  if (err?.diagnostics && typeof err.diagnostics === 'object') {
+    return {
+      summary: err.diagnostics.supabaseError || err.message || 'Request failed.',
+      diagnostics: err.diagnostics as DiagnosticErrorDetails,
+    };
+  }
+
+  const configDiag = getSupabaseConfigDiagnostics();
+  const rawMessage = String(err?.message || 'Authentication request failed.');
+  const is404 = rawMessage.includes('404') || err?.status === 404 || err?.statusCode === 404;
+
+  return {
+    summary: rawMessage,
+    diagnostics: {
+      failedRequest: fallbackAction,
+      statusCode: err?.status || err?.statusCode || (is404 ? 404 : 'Error'),
+      endpoint: configDiag.configured ? `${configDiag.sanitizedUrl}/auth/v1` : '/api/auth',
+      supabaseError: rawMessage,
+      category: !configDiag.configured
+        ? 'Environment Variables'
+        : is404
+        ? 'Routing'
+        : 'Authentication',
+      hint: configDiag.issueSummary || undefined,
+      timestamp: new Date().toISOString(),
+    },
+  };
+}
+
 export const AuthGatePage: React.FC<AuthGatePageProps> = ({
   initialView = 'login',
   initialPortal,
@@ -121,7 +165,6 @@ export const AuthGatePage: React.FC<AuthGatePageProps> = ({
   const [mfaDemoHint, setMfaDemoHint] = useState<string | null>(null);
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
-  const [contactAdminOpen, setContactAdminOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [validatingInvite, setValidatingInvite] = useState(false);
   const [verifiedInviteInfo, setVerifiedInviteInfo] = useState<{
@@ -132,6 +175,7 @@ export const AuthGatePage: React.FC<AuthGatePageProps> = ({
     expiresAt?: string;
   } | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [errorDiagnostics, setErrorDiagnostics] = useState<DiagnosticErrorDetails | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
   const activeNotice = redirectMessage || redirectNotice || null;
@@ -208,7 +252,9 @@ export const AuthGatePage: React.FC<AuthGatePageProps> = ({
           }
         })
         .catch((err: any) => {
-          setErrorMsg(err?.message || 'Invitation link is invalid or has expired.');
+          const parsed = extractDiagnosticsFromError(err, 'validateInvite()');
+          setErrorMsg(parsed.summary);
+          setErrorDiagnostics(parsed.diagnostics);
         })
         .finally(() => {
           setValidatingInvite(false);
@@ -219,6 +265,7 @@ export const AuthGatePage: React.FC<AuthGatePageProps> = ({
   const switchPortal = (nextPortal: PortalMode) => {
     setPortal(nextPortal);
     setErrorMsg(null);
+    setErrorDiagnostics(null);
     setSuccessMsg(null);
     setMfaStep(false);
     if (typeof window !== 'undefined') {
@@ -236,6 +283,7 @@ export const AuthGatePage: React.FC<AuthGatePageProps> = ({
 
   const switchPublicView = (nextView: PublicAuthView) => {
     setErrorMsg(null);
+    setErrorDiagnostics(null);
     setSuccessMsg(null);
     setMfaStep(false);
     setView(nextView);
@@ -252,18 +300,14 @@ export const AuthGatePage: React.FC<AuthGatePageProps> = ({
     }
   };
 
-  const sanitizeProviderMessage = (msg: string) => {
-    return msg
-      .replace(/supabase\s*auth/gi, 'ARabella agency Security')
-      .replace(/supabase/gi, 'ARabella agency');
-  };
-
   const handleValidateInviteClick = async () => {
     if (!email.trim() || !inviteToken.trim()) {
       setErrorMsg('Please enter both your Email Address and Invitation Code to verify.');
+      setErrorDiagnostics(null);
       return;
     }
     setErrorMsg(null);
+    setErrorDiagnostics(null);
     setSuccessMsg(null);
     setValidatingInvite(true);
     try {
@@ -278,11 +322,9 @@ export const AuthGatePage: React.FC<AuthGatePageProps> = ({
       setSuccessMsg(res.message);
     } catch (err: any) {
       setVerifiedInviteInfo(null);
-      setErrorMsg(
-        sanitizeProviderMessage(
-          err?.message || 'Invitation token is invalid, expired, or already used.'
-        )
-      );
+      const parsed = extractDiagnosticsFromError(err, 'validateInvite()');
+      setErrorMsg(parsed.summary);
+      setErrorDiagnostics(parsed.diagnostics);
     } finally {
       setValidatingInvite(false);
     }
@@ -291,6 +333,7 @@ export const AuthGatePage: React.FC<AuthGatePageProps> = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
+    setErrorDiagnostics(null);
     setSuccessMsg(null);
     setLoading(true);
 
@@ -314,10 +357,8 @@ export const AuthGatePage: React.FC<AuthGatePageProps> = ({
       } else if (view === 'recover') {
         const res = await onRecoverPassword(email.trim(), portal);
         setSuccessMsg(
-          sanitizeProviderMessage(
-            res?.message ||
-              'If an account is registered with this email address, a secure password reset code has been dispatched.'
-          )
+          res?.message ||
+            'If an account is registered with this email address, a secure password reset code has been dispatched.'
         );
         if (res?.recoveryToken) {
           setInviteToken(res.recoveryToken);
@@ -347,10 +388,8 @@ export const AuthGatePage: React.FC<AuthGatePageProps> = ({
           setVerifiedInviteInfo(null);
           setView('login');
           setSuccessMsg(
-            sanitizeProviderMessage(
-              setupRes.message ||
-                'Account activated! Please sign in below with your new password to enter your dashboard.'
-            )
+            setupRes.message ||
+              'Account activated! Please sign in below with your new password to enter your dashboard.'
           );
           if (typeof window !== 'undefined') {
             window.history.replaceState(
@@ -362,11 +401,15 @@ export const AuthGatePage: React.FC<AuthGatePageProps> = ({
         }
       }
     } catch (err: any) {
-      setErrorMsg(
-        sanitizeProviderMessage(
-          err?.message || 'Authentication failed. Please verify your credentials and try again.'
-        )
-      );
+      const actionLabel =
+        view === 'login'
+          ? 'supabase.auth.signInWithPassword()'
+          : view === 'recover'
+          ? 'supabase.auth.resetPasswordForEmail()'
+          : 'supabase.auth.updateUser() / setupPassword()';
+      const parsed = extractDiagnosticsFromError(err, actionLabel);
+      setErrorMsg(parsed.summary);
+      setErrorDiagnostics(parsed.diagnostics);
     } finally {
       setLoading(false);
     }
@@ -530,18 +573,46 @@ export const AuthGatePage: React.FC<AuthGatePageProps> = ({
           {activeNotice && !errorMsg && !successMsg && (
             <div className="mb-3 px-3.5 py-2.5 rounded-xl bg-[#F4FCE3] border border-[#C6EC7A] text-[#285E12] text-[12px] font-semibold flex items-start gap-2">
               <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5 text-[#49961D]" />
-              <span>{sanitizeProviderMessage(activeNotice)}</span>
+              <span>{activeNotice}</span>
             </div>
           )}
 
-          {/* Error Banner */}
+          {/* Error Banner with Diagnostic Details */}
           {errorMsg && (
             <div
               role="alert"
-              className="mb-3 px-3.5 py-2.5 rounded-xl bg-[#FEE2E2] border border-[#FECACA] text-[#B91C1C] text-[12px] font-semibold flex items-start gap-2"
+              className="mb-3 px-3.5 py-2.5 rounded-xl bg-[#FEE2E2] border border-[#FECACA] text-[#B91C1C] text-[12px] space-y-1.5"
             >
-              <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-              <span>{errorMsg}</span>
+              <div className="font-semibold flex items-start gap-2">
+                <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                <span>{errorMsg}</span>
+              </div>
+              {errorDiagnostics && (
+                <div className="pl-5 pt-1 border-t border-[#FECACA]/80 text-[11px] text-[#7F1D1D] font-mono space-y-0.5 break-all">
+                  <div>
+                    <span className="font-bold">Request:</span> {errorDiagnostics.failedRequest}
+                  </div>
+                  <div>
+                    <span className="font-bold">Status Code:</span>{' '}
+                    {String(errorDiagnostics.statusCode)}
+                  </div>
+                  <div>
+                    <span className="font-bold">Endpoint:</span> {errorDiagnostics.endpoint}
+                  </div>
+                  <div>
+                    <span className="font-bold">Supabase Error:</span>{' '}
+                    {errorDiagnostics.supabaseError}
+                  </div>
+                  <div>
+                    <span className="font-bold">Category:</span> {errorDiagnostics.category}
+                  </div>
+                  {errorDiagnostics.hint && (
+                    <div className="font-sans text-[11px] text-[#991B1B] pt-0.5">
+                      <span className="font-bold">Diagnostic Hint:</span> {errorDiagnostics.hint}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
 

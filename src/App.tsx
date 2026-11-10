@@ -33,6 +33,7 @@ import {
   getStoredToken,
   setOnUnauthorized,
 } from './lib/apiClient';
+import { supabase, isSupabaseConfigured } from './lib/supabaseClient';
 import { realtimeSmsClient } from './lib/realtimeSms';
 import { AuthGatePage } from './components/AuthGatePage';
 import { LayoutShell } from './components/LayoutShell';
@@ -237,7 +238,7 @@ export default function App() {
 
   const refreshDatabaseState = useCallback(async (options?: { silent?: boolean }) => {
     const token = getStoredToken();
-    if (!token) {
+    if (!token && !(isSupabaseConfigured && supabase)) {
       setAuthChecking(false);
       setLoading(false);
       return;
@@ -340,15 +341,51 @@ export default function App() {
     }, 350);
   }, [refreshDatabaseState]);
 
-  // Verify stored session token on initial mount
+  // Verify stored session token or active Supabase Auth session on initial mount
   useEffect(() => {
-    if (getStoredToken()) {
-      refreshDatabaseState();
+    let authSub: { unsubscribe: () => void } | null = null;
+
+    if (isSupabaseConfigured && supabase) {
+      setAuthChecking(true);
+      supabase.auth
+        .getSession()
+        .then(({ data }) => {
+          if (data?.session || getStoredToken()) {
+            void refreshDatabaseState();
+          } else {
+            setAuthChecking(false);
+          }
+        })
+        .catch(() => {
+          if (getStoredToken()) {
+            void refreshDatabaseState();
+          } else {
+            setAuthChecking(false);
+          }
+        });
+
+      const { data: listener } = supabase.auth.onAuthStateChange((event, session) => {
+        if (event === 'SIGNED_OUT') {
+          clearAuthContext();
+          wipeProtectedState();
+          setAuthChecking(false);
+        } else if (
+          (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') &&
+          session?.access_token
+        ) {
+          scheduleBackgroundSync();
+        }
+      });
+      authSub = listener.subscription;
+    } else if (getStoredToken()) {
+      void refreshDatabaseState();
     } else {
       setAuthChecking(false);
     }
+
     return () => {
       if (bgSyncTimerRef.current) clearTimeout(bgSyncTimerRef.current);
+      if (authSub) authSub.unsubscribe();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
