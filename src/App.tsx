@@ -670,7 +670,7 @@ export default function App() {
               onConfirmPayment={async (id) => {
                 setPayments((prev) =>
                   prev.map((p) =>
-                    p.id === id || p.tenantRef.toUpperCase() === id.toUpperCase()
+                    p.id === id || (p.tenantRef && id && p.tenantRef.toUpperCase() === String(id).toUpperCase())
                       ? { ...p, status: 'Paid' as const }
                       : p
                   )
@@ -686,7 +686,7 @@ export default function App() {
                     });
                     setTenants((prev) =>
                       prev.map((t) =>
-                        t.tenantRef.toUpperCase() === confirmed.tenantRef.toUpperCase()
+                        t.tenantRef && confirmed.tenantRef && t.tenantRef.toUpperCase() === confirmed.tenantRef.toUpperCase()
                           ? {
                               ...t,
                               status: 'Paid',
@@ -803,7 +803,7 @@ export default function App() {
                     });
                     setTenants((prev) =>
                       prev.map((t) =>
-                        t.tenantRef.toUpperCase() === tenantRef.toUpperCase()
+                        t.tenantRef && tenantRef && t.tenantRef.toUpperCase() === String(tenantRef).toUpperCase()
                           ? { ...t, status: 'Paid', rentBalance: 0, totalPaid: t.totalPaid + Number(confirmed.amount || 0) }
                           : t
                       )

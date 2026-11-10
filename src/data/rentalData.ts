@@ -385,6 +385,8 @@ export interface SmsNotificationSettings {
   senderId: string;
   username: string;
   sozuriProject?: string;
+  channel?: string;
+  smsType?: 'promotional' | 'transactional';
   provider?: string;
   apiKey?: string;
   apiKeyConfigured: boolean;

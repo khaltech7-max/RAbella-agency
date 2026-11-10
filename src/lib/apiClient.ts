@@ -19,6 +19,8 @@ import {
   SmsLogRecord,
   SmsNotificationSettings,
   SmsTriggerType,
+  getRoleDisplayLabel,
+  getAllowedPagesForRole,
 } from '../data/rentalData';
 import { supabase } from './supabaseClient';
 
@@ -115,7 +117,13 @@ async function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T
         unauthorizedHandler();
       }
     }
-    throw new Error(payload.error || `Request failed (${response.status})`);
+    const fallbackError =
+      response.status === 404
+        ? 'Service endpoint not found (404). Please ensure backend serverless routes are deployed.'
+        : response.status === 401
+        ? 'Invalid email or password. Please verify your credentials.'
+        : `Request failed (${response.status})`;
+    throw new Error(payload.error || fallbackError);
   }
   return payload as T;
 }
@@ -146,7 +154,7 @@ export const rentalApi = {
   getSession: () =>
     apiRequest<{ authenticated: boolean; user: UserSession }>('/api/auth/session'),
 
-  login: (
+  login: async (
     email: string,
     password: string,
     role?: UserRole,
@@ -155,23 +163,95 @@ export const rentalApi = {
       rememberMe?: boolean;
       mfaCode?: string;
     }
-  ) =>
-    apiRequest<{
-      user?: UserSession;
-      mfaRequired?: boolean;
-      mfaChallengeCode?: string;
-      message?: string;
-    }>('/api/auth/login', {
-      method: 'POST',
-      body: JSON.stringify({
-        email,
-        password,
-        role,
-        portal: options?.portal,
-        rememberMe: options?.rememberMe,
-        mfaCode: options?.mfaCode,
-      }),
-    }),
+  ): Promise<{
+    user?: UserSession;
+    mfaRequired?: boolean;
+    mfaChallengeCode?: string;
+    message?: string;
+  }> => {
+    const cleanEmail = email.trim().toLowerCase();
+    try {
+      return await apiRequest<{
+        user?: UserSession;
+        mfaRequired?: boolean;
+        mfaChallengeCode?: string;
+        message?: string;
+      }>('/api/auth/login', {
+        method: 'POST',
+        body: JSON.stringify({
+          email: cleanEmail,
+          password,
+          role,
+          portal: options?.portal,
+          rememberMe: options?.rememberMe,
+          mfaCode: options?.mfaCode,
+        }),
+      });
+    } catch (err: any) {
+      const errMsg = String(err?.message || '');
+      const isEndpointMissing =
+        errMsg.includes('not found') ||
+        errMsg.includes('404') ||
+        errMsg.includes('Failed to fetch') ||
+        errMsg.includes('NetworkError');
+
+      // If backend gave a standard credential error or Supabase client isn't configured, propagate immediately
+      if (!isEndpointMissing || !supabase) {
+        throw err;
+      }
+
+      // Direct Client-Side Fallback via Supabase Auth
+      try {
+        const { data: authData, error: authErr } = await supabase.auth.signInWithPassword({
+          email: cleanEmail,
+          password,
+        });
+
+        if (authErr || !authData?.user) {
+          throw new Error(
+            authErr?.message || 'Invalid email or password. Please verify your credentials.'
+          );
+        }
+
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('*')
+          .ilike('email', cleanEmail)
+          .maybeSingle();
+
+        const { data: tenant } = await supabase
+          .from('tenants')
+          .select('*')
+          .ilike('email', cleanEmail)
+          .maybeSingle();
+
+        const meta = authData.user.user_metadata || {};
+        const resolvedRole: UserRole = (meta.staff_role || profile?.role || (tenant ? 'tenant' : 'owner')) as UserRole;
+        const resolvedName = profile?.full_name || meta.full_name || tenant?.full_name || cleanEmail.split('@')[0];
+        const nowIso = new Date().toISOString();
+
+        const fallbackUser: UserSession = {
+          id: profile?.id || authData.user.id,
+          email: cleanEmail,
+          fullName: resolvedName,
+          role: resolvedRole,
+          roleLabel: getRoleDisplayLabel(resolvedRole, tenant?.tenant_ref),
+          status: (profile?.account_status || meta.account_status || 'Active') as AccountStatus,
+          lastLoginAt: nowIso,
+          permissions: getAllowedPagesForRole(resolvedRole),
+          tenantRef: tenant?.tenant_ref || undefined,
+          token: authData.session?.access_token || authData.user.id,
+        };
+
+        setAuthContext(fallbackUser, options?.rememberMe);
+        return { user: fallbackUser };
+      } catch (fallbackErr: any) {
+        throw new Error(
+          fallbackErr?.message || 'Invalid email or password. Please verify your credentials.'
+        );
+      }
+    }
+  },
 
   logout: () =>
     apiRequest<{ success: boolean }>('/api/auth/logout', {
@@ -609,5 +689,37 @@ export const rentalApi = {
       message: string;
     }>('/api/sms/run-automated-checks', {
       method: 'POST',
+    }),
+
+  // Sozuri Official API Diagnostics & WhatsApp
+  getSozuriStatus: () =>
+    apiRequest<any>('/api/sozuri/status'),
+
+  testSozuriAuth: (project?: string) =>
+    apiRequest<{
+      authenticated: boolean;
+      statusCode: number;
+      project: string;
+      message: string;
+      raw: any;
+    }>(`/api/sozuri/authtest${project ? `?project=${encodeURIComponent(project)}` : ''}`),
+
+  getSozuriWhatsAppChannels: (project?: string) =>
+    apiRequest<any>(`/api/sozuri/whatsapp/channels${project ? `?project=${encodeURIComponent(project)}` : ''}`),
+
+  getSozuriWhatsAppTemplates: (project?: string) =>
+    apiRequest<any>(`/api/sozuri/whatsapp/templates${project ? `?project=${encodeURIComponent(project)}` : ''}`),
+
+  sendSozuriWhatsApp: (data: { to: string; text: string }) =>
+    apiRequest<{
+      success: boolean;
+      status: number;
+      channel?: string;
+      messageId?: string;
+      message: string;
+      data: any;
+    }>('/api/sozuri/whatsapp/send', {
+      method: 'POST',
+      body: JSON.stringify(data),
     }),
 };

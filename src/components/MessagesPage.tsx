@@ -44,6 +44,7 @@ import {
   TenantPaymentHistoryItem,
 } from '../data/rentalData';
 import { realtimeSmsClient } from '../lib/realtimeSms';
+import { rentalApi } from '../lib/apiClient';
 
 interface MessagesPageProps {
   threads: ChatThread[];
@@ -202,8 +203,11 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
   const [settingsDraft, setSettingsDraft] = useState<SmsNotificationSettings>({
     environment: smsSettings?.environment || 'sandbox',
-    senderId: smsSettings?.senderId || 'RENTIFY',
-    username: smsSettings?.username || 'sandbox',
+    senderId: smsSettings?.senderId || 'Sozuri',
+    username: smsSettings?.sozuriProject || smsSettings?.username || 'ARAbella agency',
+    sozuriProject: smsSettings?.sozuriProject || 'ARAbella agency',
+    channel: smsSettings?.channel || 'sms',
+    smsType: smsSettings?.smsType || 'promotional',
     apiKeyConfigured: smsSettings?.apiKeyConfigured ?? false,
     masterEnabled: smsSettings?.masterEnabled ?? true,
     autoTenantRegistered: smsSettings?.autoTenantRegistered ?? true,
@@ -217,6 +221,117 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
   });
   const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [isRealtimeActive, setIsRealtimeActive] = useState(realtimeSmsClient.getStatus());
+
+  useEffect(() => {
+    if (smsSettings) {
+      setSettingsDraft((prev) => ({
+        ...prev,
+        environment: smsSettings.environment || 'sandbox',
+        senderId: smsSettings.senderId || 'Sozuri',
+        username: smsSettings.sozuriProject || smsSettings.username || 'ARAbella agency',
+        sozuriProject: smsSettings.sozuriProject || 'ARAbella agency',
+        channel: smsSettings.channel || 'sms',
+        smsType: smsSettings.smsType || 'promotional',
+        apiKeyConfigured: smsSettings.apiKeyConfigured ?? false,
+        masterEnabled: smsSettings.masterEnabled ?? true,
+        autoTenantRegistered: smsSettings.autoTenantRegistered ?? true,
+        autoRentDueSoon: smsSettings.autoRentDueSoon ?? true,
+        autoRentOverdue: smsSettings.autoRentOverdue ?? true,
+        autoPaymentConfirmed: smsSettings.autoPaymentConfirmed ?? true,
+        autoAdminAnnouncement: smsSettings.autoAdminAnnouncement ?? true,
+        preventDuplicatesHours: smsSettings.preventDuplicatesHours ?? 24,
+        updatedBy: smsSettings.updatedBy || 'System Default',
+        updatedAt: smsSettings.updatedAt || new Date().toISOString(),
+      }));
+    }
+  }, [smsSettings]);
+
+  // Sozuri Official API Diagnostics States & Handlers
+  const [authTestState, setAuthTestState] = useState<{
+    loading: boolean;
+    result?: { authenticated: boolean; statusCode: number; message: string; project: string } | null;
+  }>({ loading: false, result: null });
+
+  const [platformHealthState, setPlatformHealthState] = useState<{
+    loading: boolean;
+    result?: any | null;
+  }>({ loading: false, result: null });
+
+  const [waChannelsState, setWaChannelsState] = useState<{
+    loading: boolean;
+    result?: any | null;
+  }>({ loading: false, result: null });
+
+  const handleTestAuth = async () => {
+    setAuthTestState({ loading: true, result: null });
+    try {
+      const res = await rentalApi.testSozuriAuth(settingsDraft.sozuriProject);
+      setAuthTestState({ loading: false, result: res });
+    } catch (err: any) {
+      setAuthTestState({
+        loading: false,
+        result: {
+          authenticated: false,
+          statusCode: 500,
+          project: settingsDraft.sozuriProject || 'ARAbella agency',
+          message: err?.message || 'Failed to execute authtest',
+        },
+      });
+    }
+  };
+
+  const handleTestPlatformHealth = async () => {
+    setPlatformHealthState({ loading: true, result: null });
+    try {
+      const res = await rentalApi.getSozuriStatus();
+      setPlatformHealthState({ loading: false, result: res });
+    } catch (err: any) {
+      setPlatformHealthState({
+        loading: false,
+        result: { status: 'error', message: err?.message },
+      });
+    }
+  };
+
+  const handleCheckWaChannels = async () => {
+    setWaChannelsState({ loading: true, result: null });
+    try {
+      const res = await rentalApi.getSozuriWhatsAppChannels(settingsDraft.sozuriProject);
+      setWaChannelsState({ loading: false, result: res });
+    } catch (err: any) {
+      setWaChannelsState({
+        loading: false,
+        result: { error: err?.message },
+      });
+    }
+  };
+
+  const [realtimePulse, setRealtimePulse] = useState(false);
+
+  useEffect(() => {
+    const unsubStatus = realtimeSmsClient.onStatusChange((connected) => {
+      setIsRealtimeActive(connected);
+    });
+    const unsubEvents = realtimeSmsClient.subscribe((eventType, payload) => {
+      if (eventType === 'sms:dispatched' && payload) {
+        setRealtimePulse(true);
+        setTimeout(() => setRealtimePulse(false), 2000);
+        const name = payload.tenantName || payload.tenantRef || 'Resident';
+        const status = payload.status || 'Delivered';
+        const net = payload.network ? ` (${payload.network})` : '';
+        setToastMessage(`⚡ Real-Time SMS ${status}: Sent to ${name}${net} via Sozuri Gateway`);
+        setTimeout(() => setToastMessage(null), 4500);
+      } else if (eventType === 'sms:bulk_dispatched' && payload) {
+        setToastMessage(`⚡ Real-Time Bulk SMS: Dispatched to ${payload.sentCount} recipients via Sozuri`);
+        setTimeout(() => setToastMessage(null), 4500);
+      }
+    });
+    return () => {
+      unsubStatus();
+      unsubEvents();
+    };
+  }, []);
 
   useEffect(() => {
     if (smsSettings) {
@@ -229,31 +344,38 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
     const map = new Map<string, any>();
 
     for (const t of tenants) {
-      const matchedThread = threads.find(
-        (th) => th.tenantRef.toUpperCase() === t.tenantRef.toUpperCase()
-      );
+      const tRef = String(t.tenantRef || (t as any).tenant_ref || '').trim();
+      const tRefUpper = tRef.toUpperCase();
+
+      const matchedThread = threads.find((th) => {
+        const thRef = String(th.tenantRef || (th as any).tenant_ref || '').trim();
+        return thRef && tRefUpper ? thRef.toUpperCase() === tRefUpper : false;
+      });
+
       // Find latest SMS log for this tenant
-      const latestSms = smsLogs.find(
-        (l) => l.tenantRef?.toUpperCase() === t.tenantRef?.toUpperCase()
-      );
+      const latestSms = smsLogs.find((l) => {
+        const lRef = String(l.tenantRef || (l as any).tenant_ref || '').trim();
+        return lRef && tRefUpper ? lRef.toUpperCase() === tRefUpper : false;
+      });
 
       // Extract numeric unit portion for sorting (e.g. from "A-002" -> 2)
-      const numMatch = t.tenantRef.match(/\d+/);
+      const numMatch = tRef.match(/\d+/);
       const unitNumOrder = numMatch ? parseInt(numMatch[0], 10) : 9999;
+      const key = tRefUpper || t.id;
 
-      map.set(t.tenantRef.toUpperCase(), {
+      map.set(key, {
         id: t.id,
         propertyId: t.propertyId,
-        tenantRef: t.tenantRef,
-        tenantName: t.name,
-        name: t.name,
-        unitNumber: t.unitNumber || t.tenantRef,
-        property: t.property,
+        tenantRef: tRef || t.id,
+        tenantName: t.name || (t as any).tenantName || 'Resident',
+        name: t.name || (t as any).tenantName || 'Resident',
+        unitNumber: t.unitNumber || tRef || 'Unit 101',
+        property: t.property || 'Main Property',
         phone: t.phone || '',
         email: t.email || '',
         avatarBg: t.avatarBg || '#D8F3E5',
         monthlyRent: Number(t.monthlyRent || 0),
-        rentBalance: Number(t.rentBalance !== undefined ? t.rentBalance : t.balanceDue || 0),
+        rentBalance: Number(t.rentBalance !== undefined ? t.rentBalance : (t as any).balanceDue || 0),
         totalPaid: Number(t.totalPaid || 0),
         status: t.status || 'Pending',
         dueDate: t.dueDate || '5th of this month',
@@ -265,20 +387,22 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
     }
 
     for (const th of threads) {
-      const key = th.tenantRef.toUpperCase();
+      const thRef = String(th.tenantRef || (th as any).tenant_ref || '').trim();
+      const key = thRef ? thRef.toUpperCase() : th.id;
       if (!map.has(key)) {
-        const numMatch = th.tenantRef.match(/\d+/);
+        const numMatch = thRef.match(/\d+/);
         const unitNumOrder = numMatch ? parseInt(numMatch[0], 10) : 9999;
-        const latestSms = smsLogs.find(
-          (l) => l.tenantRef?.toUpperCase() === th.tenantRef?.toUpperCase()
-        );
+        const latestSms = smsLogs.find((l) => {
+          const lRef = String(l.tenantRef || (l as any).tenant_ref || '').trim();
+          return lRef && thRef ? lRef.toUpperCase() === thRef.toUpperCase() : false;
+        });
 
         map.set(key, {
-          tenantRef: th.tenantRef,
-          tenantName: th.tenantName,
-          name: th.tenantName,
-          unitNumber: th.unitNumber || th.tenantRef,
-          property: th.property,
+          tenantRef: thRef || th.id,
+          tenantName: th.tenantName || 'Resident',
+          name: th.tenantName || 'Resident',
+          unitNumber: th.unitNumber || thRef || 'Unit 101',
+          property: th.property || 'Main Property',
           phone: th.phone || '',
           email: th.email || '',
           avatarBg: th.avatarBg || '#D8F3E5',
@@ -351,10 +475,12 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
     const propByName = new Map<string, PropertyRecord>();
 
     properties.forEach((p) => {
-      const pref = String(p.codePrefix || p.name[0] || 'A').trim().toUpperCase().slice(0, 1);
+      const pref = String(p.codePrefix || (p.name ? p.name[0] : '') || 'A').trim().toUpperCase().slice(0, 1) || 'A';
       propByPrefix.set(pref, p);
       propById.set(p.id, p);
-      propByName.set(p.name.trim().toLowerCase(), p);
+      if (p.name) {
+        propByName.set(p.name.trim().toLowerCase(), p);
+      }
     });
 
     // Populate groups
@@ -416,7 +542,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
 
     // Also include properties from portfolio that may not yet have tenants
     properties.forEach((p) => {
-      const pref = String(p.codePrefix || p.name[0] || 'A').trim().toUpperCase().slice(0, 1);
+      const pref = String(p.codePrefix || (p.name ? p.name[0] : '') || 'A').trim().toUpperCase().slice(0, 1) || 'A';
       if (!groupsMap.has(pref)) {
         const coverImg =
           p.coverImageUrl ||
@@ -501,7 +627,8 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
   const toggleSelectTenant = (tenantRef: string) => {
     setSelectedTenantRefs((prev) => {
       const next = new Set(prev);
-      const upper = tenantRef.toUpperCase();
+      const upper = String(tenantRef || '').trim().toUpperCase();
+      if (!upper) return next;
       if (next.has(upper)) next.delete(upper);
       else next.add(upper);
       return next;
@@ -509,7 +636,9 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
   };
 
   const toggleSelectPrefixGroup = (groupTenants: any[]) => {
-    const allRefs = groupTenants.map((t) => t.tenantRef.toUpperCase());
+    const allRefs = groupTenants
+      .map((t) => String(t.tenantRef || '').trim().toUpperCase())
+      .filter(Boolean);
     const isAllSelected = allRefs.length > 0 && allRefs.every((ref) => selectedTenantRefs.has(ref));
 
     setSelectedTenantRefs((prev) => {
@@ -529,7 +658,8 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
       grp.filteredTenants.forEach((t) => {
         // Only select tenants with outstanding balance > 0 and valid phone
         if (t.rentBalance > 0 || t.status !== 'Paid') {
-          set.add(t.tenantRef.toUpperCase());
+          const upper = String(t.tenantRef || '').trim().toUpperCase();
+          if (upper) set.add(upper);
         }
       });
     });
@@ -562,9 +692,10 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
 
   // Compute eligible tenants from current selection
   const selectedTenantsData = useMemo(() => {
-    const selected = combinedDirectory.filter((t) =>
-      selectedTenantRefs.has(t.tenantRef.toUpperCase())
-    );
+    const selected = combinedDirectory.filter((t) => {
+      const upper = String(t.tenantRef || '').trim().toUpperCase();
+      return upper ? selectedTenantRefs.has(upper) : false;
+    });
 
     const eligible = selected.filter(
       (t) => (t.rentBalance > 0 || t.status !== 'Paid') && t.phone && t.phone.trim().length >= 8
@@ -701,7 +832,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
 
     try {
       if (onSendSms) {
-        await onSendSms({
+        const res: any = await onSendSms({
           tenantId: singleReminderTenant.id,
           tenantRef: singleReminderTenant.tenantRef,
           tenantName: singleReminderTenant.tenantName,
@@ -712,6 +843,10 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
           messageBody: singleMessageText.trim(),
           forceSend: true,
         });
+
+        if (res && res.success === false) {
+          throw new Error(res.message || res.log?.errorMessage || 'SMS delivery failed');
+        }
       }
 
       setToastMessage(`Reminder sent to ${singleReminderTenant.tenantName} (${singleReminderTenant.phone})`);
@@ -970,6 +1105,27 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
             <SlidersHorizontal className="w-4 h-4" />
           </button>
 
+          {/* Real-Time Live Status Pill */}
+          <div
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-[11px] font-bold border transition-colors ${
+              isRealtimeActive
+                ? 'bg-[#EBF7F0] border-[#BCE8C7] text-[#145338]'
+                : 'bg-[#FFF7ED] border-[#FED7AA] text-[#C2410C]'
+            }`}
+            title={isRealtimeActive ? 'Real-Time WebSocket & Automation Connected' : 'Reconnecting to Real-Time service...'}
+          >
+            <span
+              className={`w-2 h-2 rounded-full ${
+                isRealtimeActive
+                  ? realtimePulse
+                    ? 'bg-[#15803D] animate-ping'
+                    : 'bg-[#15803D]'
+                  : 'bg-[#EA580C] animate-pulse'
+              }`}
+            />
+            <span className="hidden sm:inline">{isRealtimeActive ? 'Real-Time Live' : 'Connecting'}</span>
+          </div>
+
           {/* PROMINENT BULK SMS BUTTON */}
           <button
             onClick={() => setIsBulkModalOpen(true)}
@@ -1019,7 +1175,9 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
             {filteredPrefixGroups.map((group) => {
               const isCollapsed = Boolean(collapsedPrefixes[group.prefix]);
               const groupTenants = group.filteredTenants;
-              const allRefs = groupTenants.map((t) => t.tenantRef.toUpperCase());
+              const allRefs = groupTenants
+                .map((t) => String(t.tenantRef || '').trim().toUpperCase())
+                .filter(Boolean);
               const selectedInGroupCount = allRefs.filter((ref) => selectedTenantRefs.has(ref)).length;
               const isAllInGroupSelected = allRefs.length > 0 && selectedInGroupCount === allRefs.length;
               const isPartialInGroupSelected = selectedInGroupCount > 0 && selectedInGroupCount < allRefs.length;
@@ -1129,14 +1287,15 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
                         </thead>
                         <tbody className="divide-y divide-[#EAEFEA]">
                           {groupTenants.map((t) => {
-                            const isSelected = selectedTenantRefs.has(t.tenantRef.toUpperCase());
+                            const tRefUpper = String(t.tenantRef || '').trim().toUpperCase();
+                            const isSelected = Boolean(tRefUpper && selectedTenantRefs.has(tRefUpper));
                             const hasBalance = t.rentBalance > 0;
                             const isOverdue = t.status === 'Overdue' || (hasBalance && t.status !== 'Paid');
                             const isCleared = t.status === 'Paid' && !hasBalance;
 
                             return (
                               <tr
-                                key={t.tenantRef}
+                                key={t.tenantRef || t.id}
                                 className={`hover:bg-[#F9FBFA] transition-colors ${
                                   isSelected ? 'bg-[#F4F9F6]' : ''
                                 }`}
@@ -1144,7 +1303,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
                                 {/* Checkbox */}
                                 <td className="py-2.5 px-4 text-center">
                                   <button
-                                    onClick={() => toggleSelectTenant(t.tenantRef)}
+                                    onClick={() => toggleSelectTenant(t.tenantRef || '')}
                                     className="cursor-pointer text-[#145338]"
                                   >
                                     {isSelected ? (
@@ -1162,7 +1321,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
                                       className="w-7 h-7 rounded-full flex items-center justify-center font-bold text-[10.5px] text-[#17231E] shrink-0"
                                       style={{ backgroundColor: t.avatarBg || '#D8F3E5' }}
                                     >
-                                      {t.tenantName.slice(0, 2).toUpperCase()}
+                                      {String(t.tenantName || t.name || 'Resident').slice(0, 2).toUpperCase()}
                                     </div>
                                     <div>
                                       <div className="font-bold text-[#17231E] leading-tight">
@@ -1725,11 +1884,14 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
                 </label>
                 <input
                   type="text"
-                  placeholder="e.g. ARABELLA"
+                  placeholder="e.g. ARAbella agency"
                   value={settingsDraft.sozuriProject || ''}
                   onChange={(e) => setSettingsDraft((prev) => ({ ...prev, sozuriProject: e.target.value }))}
                   className="w-full px-3 py-2 bg-[#F8FAF9] border border-[#DFE5E1] rounded-xl text-[#17231E]"
                 />
+                <p className="text-[10px] text-[#697B71] mt-1">
+                  Must exactly match your project name in sozuri.net (case-sensitive, e.g. <span className="font-semibold text-[#145338]">ARAbella agency</span>).
+                </p>
               </div>
 
               <div>
@@ -1738,11 +1900,65 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
                 </label>
                 <input
                   type="text"
-                  placeholder="e.g. ARABELLA"
+                  placeholder="e.g. Sozuri or ARAbella agency"
                   value={settingsDraft.senderId}
                   onChange={(e) => setSettingsDraft((prev) => ({ ...prev, senderId: e.target.value }))}
                   className="w-full px-3 py-2 bg-[#F8FAF9] border border-[#DFE5E1] rounded-xl text-[#17231E]"
                 />
+                <p className="text-[10px] text-[#697B71] mt-1">
+                  In Kenya, custom alphanumeric Sender IDs must be registered on your Sozuri project and approved by Safaricom & Airtel before live SMS delivery. Use <span className="font-semibold text-[#145338]">Sandbox (Simulated)</span> mode for immediate real-time testing.
+                </p>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[11px] font-bold text-[#3B4D43] uppercase tracking-wider block mb-1">
+                    Channel
+                  </label>
+                  <input
+                    type="text"
+                    value={settingsDraft.channel || 'sms'}
+                    onChange={(e) => setSettingsDraft((prev) => ({ ...prev, channel: e.target.value }))}
+                    className="w-full px-3 py-2 bg-[#F8FAF9] border border-[#DFE5E1] rounded-xl text-[#17231E] text-xs font-mono"
+                    placeholder="sms"
+                  />
+                  <p className="text-[10px] text-[#697B71] mt-1">Sozuri channel (default: sms)</p>
+                </div>
+                <div>
+                  <label className="text-[11px] font-bold text-[#3B4D43] uppercase tracking-wider block mb-1">
+                    Message Type
+                  </label>
+                  <select
+                    value={settingsDraft.smsType || 'promotional'}
+                    onChange={(e) => setSettingsDraft((prev) => ({ ...prev, smsType: e.target.value as 'promotional' | 'transactional' }))}
+                    className="w-full px-3 py-2 bg-[#F8FAF9] border border-[#DFE5E1] rounded-xl text-[#17231E] text-xs cursor-pointer font-medium"
+                  >
+                    <option value="promotional">Promotional</option>
+                    <option value="transactional">Transactional</option>
+                  </select>
+                  <p className="text-[10px] text-[#697B71] mt-1">Sozuri routing type</p>
+                </div>
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-[11px] font-bold text-[#3B4D43] uppercase tracking-wider">
+                    Sozuri API Key (Bearer Token & Body)
+                  </label>
+                  <span className="text-[10px] text-[#697B71]">
+                    {settingsDraft.apiKeyConfigured ? '✓ Token Configured' : 'No Token Set'}
+                  </span>
+                </div>
+                <input
+                  type="password"
+                  placeholder={settingsDraft.apiKeyConfigured ? '••••••••••••••••••••••••••••••••' : 'Paste your sozuri.net API key'}
+                  value={settingsDraft.apiKey || ''}
+                  onChange={(e) => setSettingsDraft((prev) => ({ ...prev, apiKey: e.target.value }))}
+                  className="w-full px-3 py-2 bg-[#F8FAF9] border border-[#DFE5E1] rounded-xl text-[#17231E] font-mono text-xs"
+                />
+                <p className="text-[10.5px] text-[#697B71] mt-1">
+                  Passed securely to <a href="https://sozuri.net" target="_blank" rel="noopener noreferrer" className="underline text-[#145338] font-bold">sozuri.net/api/v1/messaging</a> via Authorization header and payload.
+                </p>
               </div>
 
               <div className="pt-2 border-t border-[#EAEFEA] space-y-2">
@@ -1779,6 +1995,118 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
                   />
                   <span>Automatically send receipt confirmation when payment is verified</span>
                 </label>
+              </div>
+
+              {/* Official Sozuri API Diagnostics & Live Test Panel */}
+              <div className="pt-3 border-t border-[#EAEFEA] space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-bold text-[#3B4D43] uppercase tracking-wider block">
+                    Sozuri Live API Diagnostics
+                  </span>
+                  <span className="text-[10px] text-[#55695C] font-mono">
+                    Postman API Spec v1
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-3 gap-2">
+                  <button
+                    type="button"
+                    onClick={handleTestAuth}
+                    disabled={authTestState.loading}
+                    className="p-2 text-xs font-semibold rounded-xl border border-[#DFE5E1] bg-white hover:bg-[#F2F6F4] text-[#145338] transition-colors cursor-pointer flex items-center justify-center gap-1.5"
+                  >
+                    <ShieldCheck className="w-3.5 h-3.5 text-[#145338]" />
+                    {authTestState.loading ? 'Checking...' : 'Test Auth'}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleTestPlatformHealth}
+                    disabled={platformHealthState.loading}
+                    className="p-2 text-xs font-semibold rounded-xl border border-[#DFE5E1] bg-white hover:bg-[#F2F6F4] text-[#145338] transition-colors cursor-pointer flex items-center justify-center gap-1.5"
+                  >
+                    <Zap className="w-3.5 h-3.5 text-[#145338]" />
+                    {platformHealthState.loading ? 'Checking...' : 'Platform Health'}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleCheckWaChannels}
+                    disabled={waChannelsState.loading}
+                    className="p-2 text-xs font-semibold rounded-xl border border-[#DFE5E1] bg-white hover:bg-[#F2F6F4] text-[#145338] transition-colors cursor-pointer flex items-center justify-center gap-1.5"
+                  >
+                    <Smartphone className="w-3.5 h-3.5 text-[#145338]" />
+                    {waChannelsState.loading ? 'Checking...' : 'WhatsApp'}
+                  </button>
+                </div>
+
+                {/* Authtest result */}
+                {authTestState.result && (
+                  <div
+                    className={`p-2.5 rounded-xl border text-xs ${
+                      authTestState.result.authenticated
+                        ? 'bg-[#EBF7F0] border-[#BCE8C7] text-[#145338]'
+                        : 'bg-[#FEF2F2] border-[#FECACA] text-[#991B1B]'
+                    }`}
+                  >
+                    <div className="font-bold flex items-center gap-1.5">
+                      {authTestState.result.authenticated ? (
+                        <>
+                          <Check className="w-3.5 h-3.5" />
+                          <span>Authentication Accepted (HTTP 200)</span>
+                        </>
+                      ) : (
+                        <>
+                          <AlertTriangle className="w-3.5 h-3.5" />
+                          <span>Auth Failed (HTTP {authTestState.result.statusCode})</span>
+                        </>
+                      )}
+                    </div>
+                    <div className="text-[11px] mt-0.5 opacity-90">
+                      {authTestState.result.message}
+                    </div>
+                  </div>
+                )}
+
+                {/* Platform Health result */}
+                {platformHealthState.result && (
+                  <div className="p-2.5 rounded-xl border border-[#DFE5E1] bg-[#F8FAF9] text-xs text-[#2A3B31]">
+                    <div className="font-bold flex items-center justify-between mb-1">
+                      <span>Sozuri Platform Health:</span>
+                      <span className="font-mono text-[#145338] uppercase text-[10.5px]">
+                        {platformHealthState.result.status || 'unknown'}
+                      </span>
+                    </div>
+                    {platformHealthState.result.carriers && (
+                      <div className="grid grid-cols-3 gap-1.5 text-[10.5px] mt-1 pt-1 border-t border-[#EAEFEA]">
+                        <div>Safaricom: <span className="font-semibold text-[#145338]">{platformHealthState.result.carriers.safaricom}</span></div>
+                        <div>Airtel: <span className="font-semibold text-[#145338]">{platformHealthState.result.carriers.airtel}</span></div>
+                        <div>Telkom: <span className="font-semibold text-[#145338]">{platformHealthState.result.carriers.telkom}</span></div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* WhatsApp channels result */}
+                {waChannelsState.result && (
+                  <div className="p-2.5 rounded-xl border border-[#DFE5E1] bg-[#F8FAF9] text-xs text-[#2A3B31]">
+                    <div className="font-bold mb-1">WhatsApp Channels Status:</div>
+                    <div className="text-[11px] text-[#55695C]">
+                      {Array.isArray(waChannelsState.result.channels) ? (
+                        waChannelsState.result.channels.map((c: any, i: number) => (
+                          <div key={i} className="flex justify-between py-0.5">
+                            <span className="capitalize">{c.channel} Channel:</span>
+                            <span className={c.available ? 'text-[#145338] font-bold' : 'text-[#991B1B] font-medium'}>
+                              {c.available ? 'Connected' : 'Not Connected'}
+                            </span>
+                          </div>
+                        ))
+                      ) : (
+                        <div>{JSON.stringify(waChannelsState.result)}</div>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
 

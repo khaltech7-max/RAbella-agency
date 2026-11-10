@@ -1,0 +1,2837 @@
+{
+    "info": {
+        "_postman_id": "6f3c2a1e-5b7d-4e9a-8c10-2d4f6a8b0c1e",
+        "name": "Sozuri API",
+        "description": "Every customer API of Sozuri: SMS, WhatsApp (QR code and official), voice, premium SMS, contacts, payments, airtime and workflows, plus requests that test your own webhook receiver.\n\n## Set up\n1. Open this collection's **Variables** tab.\n2. Set **`apiKey`** (Manage API → API Credentials) and **`project`** (your project's exact name). Every request sends both: the key as a Bearer token, the name as `project`.\n3. Fill in the variables for what you will try: `smsFrom` (a registered sender ID), the `…To` numbers, and so on. Each variable says what it is for.\n\n## What to expect\n- **SMS and premium SMS refuse with HTTP 200** and a message starting `Error.` (SMS) or `\"status\": \"error\"` (premium). Their test tabs check the body, not only the status.\n- WhatsApp, voice and contacts refuse with a 4xx status.\n- A wrong key or project name is `401 AUTHENTICATION_FAILED`; a missing or malformed field is `422 VALIDATION_FAILED` with `errors`.\n- Every request sends `Accept: application/json`.\n\nThe older `POST /api/v1/messaging/whatsapp` is not included: it is retired, and its replacement is **WhatsApp → Send a text** (`POST /api/v1/whatsapp/messages`).\n\nDocs: https://sozuri.net/docs",
+        "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+    },
+    "auth": {
+        "type": "bearer",
+        "bearer": [
+            {
+                "key": "token",
+                "value": "{{apiKey}}",
+                "type": "string"
+            }
+        ]
+    },
+    "item": [
+        {
+            "name": "Start here",
+            "description": "Two requests to run first. **Check your credentials** proves your `apiKey` and `project` variables are right without sending anything. **Platform status** needs no key.\n\nDocs: https://sozuri.net/docs/authentication",
+            "item": [
+                {
+                    "name": "Check your credentials",
+                    "request": {
+                        "method": "GET",
+                        "header": [
+                            {
+                                "key": "Accept",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{baseUrl}}/v1/messaging/authtest?project={{project}}",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "v1",
+                                "messaging",
+                                "authtest"
+                            ],
+                            "query": [
+                                {
+                                    "key": "project",
+                                    "value": "{{project}}",
+                                    "description": "Your project's name. The key and the name together are the credential."
+                                }
+                            ]
+                        },
+                        "description": "Checks your API key and project name. Sends nothing and costs nothing.\n\n- **200** `{\"messageData\":{\"message\":\"Success. Project found.\"}}`\n- **401** `AUTHENTICATION_FAILED`: the key or the project name is wrong (the name must match exactly).\n\nDocs: https://sozuri.net/docs/authentication#auth-check"
+                    },
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "type": "text/javascript",
+                                "exec": [
+                                    "pm.test('Credentials accepted', () => pm.response.to.have.status(200));"
+                                ]
+                            }
+                        }
+                    ],
+                    "response": [
+                        {
+                            "name": "Credentials accepted",
+                            "status": "OK",
+                            "code": 200,
+                            "_postman_previewlanguage": "json",
+                            "header": [
+                                {
+                                    "key": "Content-Type",
+                                    "value": "application/json"
+                                }
+                            ],
+                            "body": "{\n    \"messageData\": {\n        \"message\": \"Success. Project found.\"\n    }\n}"
+                        },
+                        {
+                            "name": "Wrong key or project name",
+                            "status": "Unauthorized",
+                            "code": 401,
+                            "_postman_previewlanguage": "json",
+                            "header": [
+                                {
+                                    "key": "Content-Type",
+                                    "value": "application/json"
+                                }
+                            ],
+                            "body": "{\n    \"error_code\": \"AUTHENTICATION_FAILED\",\n    \"message\": \"Authentication failed. Check your API key or bearer token.\",\n    \"retryable\": false\n}"
+                        }
+                    ]
+                },
+                {
+                    "name": "Platform status",
+                    "request": {
+                        "method": "GET",
+                        "header": [
+                            {
+                                "key": "Accept",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{baseUrl}}/v1/status",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "v1",
+                                "status"
+                            ]
+                        },
+                        "description": "Overall platform health, each network and each component. No API key needed.\n\n`status` is `operational`, `degraded` or `down`. HTTP 200 for operational or degraded, 503 when down.\n\nDocs: https://sozuri.net/docs/status",
+                        "auth": {
+                            "type": "noauth"
+                        }
+                    },
+                    "response": [
+                        {
+                            "name": "Operational",
+                            "status": "OK",
+                            "code": 200,
+                            "_postman_previewlanguage": "json",
+                            "header": [
+                                {
+                                    "key": "Content-Type",
+                                    "value": "application/json"
+                                }
+                            ],
+                            "body": "{\n    \"status\": \"operational\",\n    \"carriers\": {\n        \"safaricom\": \"operational\",\n        \"airtel\": \"operational\",\n        \"telkom\": \"operational\"\n    },\n    \"components\": {\n        \"database\": \"operational\",\n        \"cache\": \"operational\"\n    },\n    \"version\": \"1.0\",\n    \"timestamp\": \"2026-11-08T09:00:00+03:00\"\n}"
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "SMS",
+            "description": "Send SMS. `/v1/messaging` answers `sent` / `11` for an accepted recipient; `/v2/messaging` answers `accepted` / `11`, or `scheduled` / `14`. Both answer `unsupported_number` / `12` and `sender_not_registered` / `24`.\n\nDocs: https://sozuri.net/docs/text",
+            "item": [
+                {
+                    "name": "Send an SMS",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Accept",
+                                "value": "application/json"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{baseUrl}}/v1/messaging",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "v1",
+                                "messaging"
+                            ]
+                        },
+                        "description": "Send one message to one or more numbers.\n\n| Field | Required | Notes |\n|---|---|---|\n| `project` | yes | Your project's name. |\n| `from` | yes | A sender ID registered on your project, matched exactly (case included) per network and type. A recipient on a network where it is not registered comes back `sender_not_registered` / `24` and is not charged. |\n| `to` | yes | One or more numbers, comma-separated. Each becomes `254` + its last 9 digits; duplicates and opted-out numbers are removed. |\n| `message` | yes | Up to 160 characters a part. Characters outside letters, digits, spaces and `- / { } ^ | ( ) + < > [ ] $ \" ' : ; . = , & @ * # ! % ? _` are removed. |\n| `type` | yes | `transactional` or `promotional`, in lower case. |\n| `campaign` | no | Groups the messages in reports. Default `default`. |\n| `sendAt` | no | `YYYY-MM-DD HH:MM:SS`, East Africa Time. More than 2 minutes ahead schedules the send. |\n| `optout` | no | Any value appends ` STOP*456*9*5#`. |\n\n**Refusals are HTTP 200** with `{\"messageData\":{\"message\":\"Error. …\"}}`, and nothing is sent or charged. The test tab of this request checks for that.\n\nDocs: https://sozuri.net/docs/text",
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"project\": \"{{project}}\",\n    \"from\": \"{{smsFrom}}\",\n    \"to\": \"{{smsTo}}\",\n    \"message\": \"Your order A-1042 is ready for collection.\",\n    \"type\": \"transactional\"\n}",
+                            "options": {
+                                "raw": {
+                                    "language": "json"
+                                }
+                            }
+                        }
+                    },
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "type": "text/javascript",
+                                "exec": [
+                                    "const res = pm.response.json();",
+                                    "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                                    "pm.test('Accepted, not refused (a refusal is HTTP 200 with messageData.message starting \"Error.\")', () => {",
+                                    "    pm.expect(res.messageData && res.messageData.message, 'refused: ' + (res.messageData && res.messageData.message)).to.be.undefined;",
+                                    "    pm.expect(res.recipients).to.be.an('array').that.is.not.empty;",
+                                    "});"
+                                ]
+                            }
+                        }
+                    ],
+                    "response": [
+                        {
+                            "name": "Accepted",
+                            "status": "OK",
+                            "code": 200,
+                            "_postman_previewlanguage": "json",
+                            "header": [
+                                {
+                                    "key": "Content-Type",
+                                    "value": "application/json"
+                                }
+                            ],
+                            "body": "{\n    \"messageData\": {\n        \"messages\": 1\n    },\n    \"recipients\": [\n        {\n            \"messageId\": \"0123456789abcdef0123456789abcdef01234567\",\n            \"to\": \"254700000000\",\n            \"status\": \"sent\",\n            \"statusCode\": \"11\",\n            \"bulkId\": \"bulk6730a1b2c3d4e5.123456781762585200\",\n            \"messagePart\": 1,\n            \"type\": \"transactional\"\n        }\n    ]\n}"
+                        },
+                        {
+                            "name": "Refused: sender ID not registered (still HTTP 200)",
+                            "status": "OK",
+                            "code": 200,
+                            "_postman_previewlanguage": "json",
+                            "header": [
+                                {
+                                    "key": "Content-Type",
+                                    "value": "application/json"
+                                }
+                            ],
+                            "body": "{\n    \"messageData\": {\n        \"message\": \"Error. 'MySenderID' is not a registered transactional sender ID on this project. Sender IDs are matched exactly, case included, and per network: register 'MySenderID' as a transactional sender ID on each network you send to.\"\n    }\n}"
+                        },
+                        {
+                            "name": "Missing a required field",
+                            "status": "Unprocessable Entity",
+                            "code": 422,
+                            "_postman_previewlanguage": "json",
+                            "header": [
+                                {
+                                    "key": "Content-Type",
+                                    "value": "application/json"
+                                }
+                            ],
+                            "body": "{\n    \"error_code\": \"VALIDATION_FAILED\",\n    \"message\": \"The submitted data failed validation.\",\n    \"retryable\": false,\n    \"errors\": {\n        \"type\": [\n            \"The type field is required.\"\n        ]\n    }\n}"
+                        }
+                    ]
+                },
+                {
+                    "name": "Send to several numbers",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Accept",
+                                "value": "application/json"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{baseUrl}}/v1/messaging",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "v1",
+                                "messaging"
+                            ]
+                        },
+                        "description": "`to` takes a comma-separated list. Each number gets its own `messageId` in `recipients`.\n\nDocs: https://sozuri.net/docs/text",
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"project\": \"{{project}}\",\n    \"from\": \"{{smsFrom}}\",\n    \"to\": \"{{smsTo}},254700000001,254700000002\",\n    \"message\": \"The office is closed on Monday.\",\n    \"type\": \"promotional\",\n    \"campaign\": \"notices\"\n}",
+                            "options": {
+                                "raw": {
+                                    "language": "json"
+                                }
+                            }
+                        }
+                    },
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "type": "text/javascript",
+                                "exec": [
+                                    "const res = pm.response.json();",
+                                    "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                                    "pm.test('Accepted, not refused (a refusal is HTTP 200 with messageData.message starting \"Error.\")', () => {",
+                                    "    pm.expect(res.messageData && res.messageData.message, 'refused: ' + (res.messageData && res.messageData.message)).to.be.undefined;",
+                                    "    pm.expect(res.recipients).to.be.an('array').that.is.not.empty;",
+                                    "});"
+                                ]
+                            }
+                        }
+                    ],
+                    "response": []
+                },
+                {
+                    "name": "Schedule an SMS",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Accept",
+                                "value": "application/json"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{baseUrl}}/v1/messaging",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "v1",
+                                "messaging"
+                            ]
+                        },
+                        "description": "`sendAt` in East Africa Time, `YYYY-MM-DD HH:MM:SS`. The pre-request script sets `{{sendAt}}` to 10 minutes from now.\n\nDocs: https://sozuri.net/docs/text",
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"project\": \"{{project}}\",\n    \"from\": \"{{smsFrom}}\",\n    \"to\": \"{{smsTo}}\",\n    \"message\": \"Reminder: your appointment is at 3pm.\",\n    \"type\": \"transactional\",\n    \"sendAt\": \"{{sendAt}}\"\n}",
+                            "options": {
+                                "raw": {
+                                    "language": "json"
+                                }
+                            }
+                        }
+                    },
+                    "event": [
+                        {
+                            "listen": "prerequest",
+                            "script": {
+                                "type": "text/javascript",
+                                "exec": [
+                                    "// 10 minutes from now, as East Africa Time (UTC+3), in the format sendAt expects.",
+                                    "const eat = new Date(Date.now() + 10 * 60 * 1000 + 3 * 60 * 60 * 1000);",
+                                    "pm.variables.set('sendAt', eat.toISOString().slice(0, 19).replace('T', ' '));"
+                                ]
+                            }
+                        },
+                        {
+                            "listen": "test",
+                            "script": {
+                                "type": "text/javascript",
+                                "exec": [
+                                    "const res = pm.response.json();",
+                                    "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                                    "pm.test('Accepted, not refused (a refusal is HTTP 200 with messageData.message starting \"Error.\")', () => {",
+                                    "    pm.expect(res.messageData && res.messageData.message, 'refused: ' + (res.messageData && res.messageData.message)).to.be.undefined;",
+                                    "    pm.expect(res.recipients).to.be.an('array').that.is.not.empty;",
+                                    "});"
+                                ]
+                            }
+                        }
+                    ],
+                    "response": []
+                },
+                {
+                    "name": "Send an SMS (v2 status words)",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Accept",
+                                "value": "application/json"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{baseUrl}}/v2/messaging",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "v2",
+                                "messaging"
+                            ]
+                        },
+                        "description": "The same request as `/v1/messaging`. Only the status words differ: an accepted recipient is `accepted` / `11`, a scheduled one `scheduled` / `14`.\n\nDocs: https://sozuri.net/docs/text",
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"project\": \"{{project}}\",\n    \"from\": \"{{smsFrom}}\",\n    \"to\": \"{{smsTo}}\",\n    \"message\": \"Your verification code is 482193.\",\n    \"type\": \"transactional\"\n}",
+                            "options": {
+                                "raw": {
+                                    "language": "json"
+                                }
+                            }
+                        }
+                    },
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "type": "text/javascript",
+                                "exec": [
+                                    "const res = pm.response.json();",
+                                    "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                                    "pm.test('Accepted, not refused (a refusal is HTTP 200 with messageData.message starting \"Error.\")', () => {",
+                                    "    pm.expect(res.messageData && res.messageData.message, 'refused: ' + (res.messageData && res.messageData.message)).to.be.undefined;",
+                                    "    pm.expect(res.recipients).to.be.an('array').that.is.not.empty;",
+                                    "});"
+                                ]
+                            }
+                        }
+                    ],
+                    "response": [
+                        {
+                            "name": "Accepted",
+                            "status": "OK",
+                            "code": 200,
+                            "_postman_previewlanguage": "json",
+                            "header": [
+                                {
+                                    "key": "Content-Type",
+                                    "value": "application/json"
+                                }
+                            ],
+                            "body": "{\n    \"messageData\": {\n        \"messages\": 1\n    },\n    \"recipients\": [\n        {\n            \"messageId\": \"0123456789abcdef0123456789abcdef01234567\",\n            \"to\": \"254700000000\",\n            \"status\": \"accepted\",\n            \"statusCode\": \"11\",\n            \"bulkId\": \"bulk6730a1b2c3d4e5.123456781762585200\",\n            \"messagePart\": 1,\n            \"type\": \"transactional\"\n        }\n    ]\n}"
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "WhatsApp",
+            "description": "Send and look things up on both WhatsApp channels: a number linked by QR code, and official numbers connected through Meta. `POST /v1/whatsapp/messages` sends on either; the two channel-specific endpoints are in their own folders.\n\nWhich channel can do what: https://sozuri.net/docs/whatsapp-channels\n\nEach send saves the new message's id in `{{waMessageId}}`, ready for **Reply to a message** and **React to a message**.",
+            "item": [
+                {
+                    "name": "List your channels",
+                    "request": {
+                        "method": "GET",
+                        "header": [
+                            {
+                                "key": "Accept",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{baseUrl}}/v1/whatsapp/channels?project={{project}}&to={{waTo}}",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "v1",
+                                "whatsapp",
+                                "channels"
+                            ],
+                            "query": [
+                                {
+                                    "key": "project",
+                                    "value": "{{project}}"
+                                },
+                                {
+                                    "key": "to",
+                                    "value": "{{waTo}}",
+                                    "description": "Optional. Also says whether this customer's 24-hour window is open on each official number."
+                                }
+                            ]
+                        },
+                        "description": "Your WhatsApp channels, whether each is connected, and what each can send (`sends`, `freeForm`, `templates`).\n\nDocs: https://sozuri.net/docs/whatsapp-official#meta-channels"
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Send a text",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Accept",
+                                "value": "application/json"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{baseUrl}}/v1/whatsapp/messages",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "v1",
+                                "whatsapp",
+                                "messages"
+                            ]
+                        },
+                        "description": "A text message. The QR-code channel sends free-form text any time; the official channel only within 24 hours of the customer's last message.\n\nSozuri picks the channel (QR code or official) unless you pass `channel` (`qr` or `meta`) or `from` (one of your numbers). The response says which: `channel` and `routed`.\n\nDocs: https://sozuri.net/docs/whatsapp-official#meta-send",
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"project\": \"{{project}}\",\n    \"to\": \"{{waTo}}\",\n    \"text\": \"Your order A-1042 is on its way.\"\n}",
+                            "options": {
+                                "raw": {
+                                    "language": "json"
+                                }
+                            }
+                        }
+                    },
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "type": "text/javascript",
+                                "exec": [
+                                    "const res = pm.response.json();",
+                                    "pm.test('Accepted', () => pm.expect(res.status).to.eql('accepted'));",
+                                    "if (res.message && res.message.id) { pm.collectionVariables.set('waMessageId', res.message.id); }"
+                                ]
+                            }
+                        }
+                    ],
+                    "response": [
+                        {
+                            "name": "Accepted",
+                            "status": "OK",
+                            "code": 200,
+                            "_postman_previewlanguage": "json",
+                            "header": [
+                                {
+                                    "key": "Content-Type",
+                                    "value": "application/json"
+                                }
+                            ],
+                            "body": "{\n    \"status\": \"accepted\",\n    \"channel\": \"qr\",\n    \"routed\": \"only_channel\",\n    \"message\": {\n        \"id\": \"3EB0C1A2B3C4D5E6F7A8\",\n        \"to\": \"254700000000\",\n        \"type\": \"text\",\n        \"status\": \"sent\"\n    }\n}"
+                        },
+                        {
+                            "name": "Outside the 24-hour window (official channel)",
+                            "status": "Unprocessable Entity",
+                            "code": 422,
+                            "_postman_previewlanguage": "json",
+                            "header": [
+                                {
+                                    "key": "Content-Type",
+                                    "value": "application/json"
+                                }
+                            ],
+                            "body": "{\n    \"error\": {\n        \"code\": \"window_closed\",\n        \"message\": \"More than 24 hours have passed since this customer last wrote. Only an approved template can be sent until they write again.\",\n        \"status\": 422,\n        \"channel\": \"meta\",\n        \"window\": {\n            \"open\": false,\n            \"closed_at\": \"2026-11-07T10:15:00+03:00\",\n            \"last_inbound_at\": \"2026-11-06T10:15:00+03:00\"\n        }\n    }\n}"
+                        }
+                    ]
+                },
+                {
+                    "name": "Send an image",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Accept",
+                                "value": "application/json"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{baseUrl}}/v1/whatsapp/messages",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "v1",
+                                "whatsapp",
+                                "messages"
+                            ]
+                        },
+                        "description": "An image from a public HTTPS link, with an optional caption.\n\nSozuri picks the channel (QR code or official) unless you pass `channel` (`qr` or `meta`) or `from` (one of your numbers). The response says which: `channel` and `routed`.\n\nDocs: https://sozuri.net/docs/whatsapp-official#meta-send",
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"project\": \"{{project}}\",\n    \"to\": \"{{waTo}}\",\n    \"type\": \"image\",\n    \"image\": {\n        \"link\": \"https://example.com/receipt.jpg\",\n        \"caption\": \"Your receipt\"\n    }\n}",
+                            "options": {
+                                "raw": {
+                                    "language": "json"
+                                }
+                            }
+                        }
+                    },
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "type": "text/javascript",
+                                "exec": [
+                                    "const res = pm.response.json();",
+                                    "pm.test('Accepted', () => pm.expect(res.status).to.eql('accepted'));",
+                                    "if (res.message && res.message.id) { pm.collectionVariables.set('waMessageId', res.message.id); }"
+                                ]
+                            }
+                        }
+                    ],
+                    "response": []
+                },
+                {
+                    "name": "Send a document",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Accept",
+                                "value": "application/json"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{baseUrl}}/v1/whatsapp/messages",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "v1",
+                                "whatsapp",
+                                "messages"
+                            ]
+                        },
+                        "description": "A document from a public HTTPS link.\n\nSozuri picks the channel (QR code or official) unless you pass `channel` (`qr` or `meta`) or `from` (one of your numbers). The response says which: `channel` and `routed`.\n\nDocs: https://sozuri.net/docs/whatsapp-official#meta-send",
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"project\": \"{{project}}\",\n    \"to\": \"{{waTo}}\",\n    \"type\": \"document\",\n    \"document\": {\n        \"link\": \"https://example.com/invoice.pdf\",\n        \"filename\": \"invoice-4821.pdf\",\n        \"caption\": \"Invoice 4821\"\n    }\n}",
+                            "options": {
+                                "raw": {
+                                    "language": "json"
+                                }
+                            }
+                        }
+                    },
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "type": "text/javascript",
+                                "exec": [
+                                    "const res = pm.response.json();",
+                                    "pm.test('Accepted', () => pm.expect(res.status).to.eql('accepted'));",
+                                    "if (res.message && res.message.id) { pm.collectionVariables.set('waMessageId', res.message.id); }"
+                                ]
+                            }
+                        }
+                    ],
+                    "response": []
+                },
+                {
+                    "name": "Send a voice note",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Accept",
+                                "value": "application/json"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{baseUrl}}/v1/whatsapp/messages",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "v1",
+                                "whatsapp",
+                                "messages"
+                            ]
+                        },
+                        "description": "An OGG/OPUS file sent as a voice note (`voice: true`). Without `voice`, it is an audio file.\n\nSozuri picks the channel (QR code or official) unless you pass `channel` (`qr` or `meta`) or `from` (one of your numbers). The response says which: `channel` and `routed`.\n\nDocs: https://sozuri.net/docs/whatsapp-official#meta-send",
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"project\": \"{{project}}\",\n    \"to\": \"{{waTo}}\",\n    \"type\": \"audio\",\n    \"audio\": {\n        \"link\": \"https://example.com/note.ogg\",\n        \"voice\": true\n    }\n}",
+                            "options": {
+                                "raw": {
+                                    "language": "json"
+                                }
+                            }
+                        }
+                    },
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "type": "text/javascript",
+                                "exec": [
+                                    "const res = pm.response.json();",
+                                    "pm.test('Accepted', () => pm.expect(res.status).to.eql('accepted'));",
+                                    "if (res.message && res.message.id) { pm.collectionVariables.set('waMessageId', res.message.id); }"
+                                ]
+                            }
+                        }
+                    ],
+                    "response": []
+                },
+                {
+                    "name": "Send a location",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Accept",
+                                "value": "application/json"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{baseUrl}}/v1/whatsapp/messages",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "v1",
+                                "whatsapp",
+                                "messages"
+                            ]
+                        },
+                        "description": "A map pin. `latitude` and `longitude` must be JSON numbers, not strings.\n\nSozuri picks the channel (QR code or official) unless you pass `channel` (`qr` or `meta`) or `from` (one of your numbers). The response says which: `channel` and `routed`.\n\nDocs: https://sozuri.net/docs/whatsapp-official#meta-send",
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"project\": \"{{project}}\",\n    \"to\": \"{{waTo}}\",\n    \"type\": \"location\",\n    \"location\": {\n        \"latitude\": -1.2921,\n        \"longitude\": 36.8219,\n        \"name\": \"Head office\",\n        \"address\": \"Nairobi\"\n    }\n}",
+                            "options": {
+                                "raw": {
+                                    "language": "json"
+                                }
+                            }
+                        }
+                    },
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "type": "text/javascript",
+                                "exec": [
+                                    "const res = pm.response.json();",
+                                    "pm.test('Accepted', () => pm.expect(res.status).to.eql('accepted'));",
+                                    "if (res.message && res.message.id) { pm.collectionVariables.set('waMessageId', res.message.id); }"
+                                ]
+                            }
+                        }
+                    ],
+                    "response": []
+                },
+                {
+                    "name": "Send a contact card",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Accept",
+                                "value": "application/json"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{baseUrl}}/v1/whatsapp/messages",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "v1",
+                                "whatsapp",
+                                "messages"
+                            ]
+                        },
+                        "description": "A contact card, in the QR-code shape (`contact`: `fullName`, `phone`, `organization`), which works on both channels.\n\nSozuri picks the channel (QR code or official) unless you pass `channel` (`qr` or `meta`) or `from` (one of your numbers). The response says which: `channel` and `routed`.\n\nDocs: https://sozuri.net/docs/whatsapp-official#meta-send",
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"project\": \"{{project}}\",\n    \"to\": \"{{waTo}}\",\n    \"contact\": {\n        \"fullName\": \"Sozuri Support\",\n        \"phone\": \"254700000009\",\n        \"organization\": \"Sozuri\"\n    }\n}",
+                            "options": {
+                                "raw": {
+                                    "language": "json"
+                                }
+                            }
+                        }
+                    },
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "type": "text/javascript",
+                                "exec": [
+                                    "const res = pm.response.json();",
+                                    "pm.test('Accepted', () => pm.expect(res.status).to.eql('accepted'));",
+                                    "if (res.message && res.message.id) { pm.collectionVariables.set('waMessageId', res.message.id); }"
+                                ]
+                            }
+                        }
+                    ],
+                    "response": []
+                },
+                {
+                    "name": "Reply to a message",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Accept",
+                                "value": "application/json"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{baseUrl}}/v1/whatsapp/messages",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "v1",
+                                "whatsapp",
+                                "messages"
+                            ]
+                        },
+                        "description": "WhatsApp shows the message you are answering quoted above yours. `replyTo` is the id of a message in this chat; on the QR-code channel an id that is not in the chat is refused with `MESSAGE_NOT_FOUND`.\n\nSozuri picks the channel (QR code or official) unless you pass `channel` (`qr` or `meta`) or `from` (one of your numbers). The response says which: `channel` and `routed`.\n\nDocs: https://sozuri.net/docs/whatsapp-official#meta-send",
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"project\": \"{{project}}\",\n    \"to\": \"{{waTo}}\",\n    \"text\": \"Yes, we deliver on Saturdays.\",\n    \"replyTo\": \"{{waMessageId}}\"\n}",
+                            "options": {
+                                "raw": {
+                                    "language": "json"
+                                }
+                            }
+                        }
+                    },
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "type": "text/javascript",
+                                "exec": [
+                                    "const res = pm.response.json();",
+                                    "pm.test('Accepted', () => pm.expect(res.status).to.eql('accepted'));",
+                                    "if (res.message && res.message.id) { pm.collectionVariables.set('waMessageId', res.message.id); }"
+                                ]
+                            }
+                        }
+                    ],
+                    "response": []
+                },
+                {
+                    "name": "React to a message",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Accept",
+                                "value": "application/json"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{baseUrl}}/v1/whatsapp/messages",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "v1",
+                                "whatsapp",
+                                "messages"
+                            ]
+                        },
+                        "description": "An emoji reaction to a message in this chat. An empty `emoji` (`\"\"`) removes your reaction, so `emoji` must always be present.\n\nSozuri picks the channel (QR code or official) unless you pass `channel` (`qr` or `meta`) or `from` (one of your numbers). The response says which: `channel` and `routed`.\n\nDocs: https://sozuri.net/docs/whatsapp-official#meta-send",
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"project\": \"{{project}}\",\n    \"to\": \"{{waTo}}\",\n    \"type\": \"reaction\",\n    \"reaction\": {\n        \"message_id\": \"{{waMessageId}}\",\n        \"emoji\": \"👍\"\n    }\n}",
+                            "options": {
+                                "raw": {
+                                    "language": "json"
+                                }
+                            }
+                        }
+                    },
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "type": "text/javascript",
+                                "exec": [
+                                    "const res = pm.response.json();",
+                                    "pm.test('Accepted', () => pm.expect(res.status).to.eql('accepted'));",
+                                    "if (res.message && res.message.id) { pm.collectionVariables.set('waMessageId', res.message.id); }"
+                                ]
+                            }
+                        }
+                    ],
+                    "response": []
+                },
+                {
+                    "name": "Send a template (official)",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Accept",
+                                "value": "application/json"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{baseUrl}}/v1/whatsapp/messages",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "v1",
+                                "whatsapp",
+                                "messages"
+                            ]
+                        },
+                        "description": "A template Meta has approved: the only way to start a conversation on the official channel. `params.body` fills the template's variables in order. Official channel only.\n\nSozuri picks the channel (QR code or official) unless you pass `channel` (`qr` or `meta`) or `from` (one of your numbers). The response says which: `channel` and `routed`.\n\nDocs: https://sozuri.net/docs/whatsapp-official#meta-send",
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"project\": \"{{project}}\",\n    \"to\": \"{{waTo}}\",\n    \"type\": \"template\",\n    \"template\": {\n        \"name\": \"{{templateName}}\",\n        \"language\": \"{{templateLanguage}}\",\n        \"params\": {\n            \"body\": [\n                \"Amina\",\n                \"A-1042\"\n            ]\n        }\n    }\n}",
+                            "options": {
+                                "raw": {
+                                    "language": "json"
+                                }
+                            }
+                        }
+                    },
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "type": "text/javascript",
+                                "exec": [
+                                    "const res = pm.response.json();",
+                                    "pm.test('Accepted', () => pm.expect(res.status).to.eql('accepted'));",
+                                    "if (res.message && res.message.id) { pm.collectionVariables.set('waMessageId', res.message.id); }"
+                                ]
+                            }
+                        }
+                    ],
+                    "response": []
+                },
+                {
+                    "name": "Send reply buttons (official)",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Accept",
+                                "value": "application/json"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{baseUrl}}/v1/whatsapp/messages",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "v1",
+                                "whatsapp",
+                                "messages"
+                            ]
+                        },
+                        "description": "Up to 3 reply buttons (titles up to 20 characters). The tapped button's `id` arrives on your webhook. Inside the 24-hour window; official channel only.\n\nSozuri picks the channel (QR code or official) unless you pass `channel` (`qr` or `meta`) or `from` (one of your numbers). The response says which: `channel` and `routed`.\n\nDocs: https://sozuri.net/docs/whatsapp-official#meta-send",
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"project\": \"{{project}}\",\n    \"to\": \"{{waTo}}\",\n    \"type\": \"interactive\",\n    \"interactive\": {\n        \"type\": \"button\",\n        \"body\": {\n            \"text\": \"Invoice 4821 is KSh 2,400. Pay now?\"\n        },\n        \"action\": {\n            \"buttons\": [\n                {\n                    \"type\": \"reply\",\n                    \"reply\": {\n                        \"id\": \"PAY_4821\",\n                        \"title\": \"Pay now\"\n                    }\n                },\n                {\n                    \"type\": \"reply\",\n                    \"reply\": {\n                        \"id\": \"LATER_4821\",\n                        \"title\": \"Pay later\"\n                    }\n                }\n            ]\n        }\n    }\n}",
+                            "options": {
+                                "raw": {
+                                    "language": "json"
+                                }
+                            }
+                        }
+                    },
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "type": "text/javascript",
+                                "exec": [
+                                    "const res = pm.response.json();",
+                                    "pm.test('Accepted', () => pm.expect(res.status).to.eql('accepted'));",
+                                    "if (res.message && res.message.id) { pm.collectionVariables.set('waMessageId', res.message.id); }"
+                                ]
+                            }
+                        }
+                    ],
+                    "response": []
+                },
+                {
+                    "name": "Send a list (official)",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Accept",
+                                "value": "application/json"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{baseUrl}}/v1/whatsapp/messages",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "v1",
+                                "whatsapp",
+                                "messages"
+                            ]
+                        },
+                        "description": "A list menu: up to 10 sections; row titles up to 24 characters. Inside the 24-hour window; official channel only.\n\nSozuri picks the channel (QR code or official) unless you pass `channel` (`qr` or `meta`) or `from` (one of your numbers). The response says which: `channel` and `routed`.\n\nDocs: https://sozuri.net/docs/whatsapp-official#meta-send",
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"project\": \"{{project}}\",\n    \"to\": \"{{waTo}}\",\n    \"type\": \"interactive\",\n    \"interactive\": {\n        \"type\": \"list\",\n        \"body\": {\n            \"text\": \"Choose a delivery slot.\"\n        },\n        \"action\": {\n            \"button\": \"See slots\",\n            \"sections\": [\n                {\n                    \"title\": \"Tomorrow\",\n                    \"rows\": [\n                        {\n                            \"id\": \"SLOT_AM\",\n                            \"title\": \"Morning\",\n                            \"description\": \"8am to 12pm\"\n                        },\n                        {\n                            \"id\": \"SLOT_PM\",\n                            \"title\": \"Afternoon\",\n                            \"description\": \"2pm to 6pm\"\n                        }\n                    ]\n                }\n            ]\n        }\n    }\n}",
+                            "options": {
+                                "raw": {
+                                    "language": "json"
+                                }
+                            }
+                        }
+                    },
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "type": "text/javascript",
+                                "exec": [
+                                    "const res = pm.response.json();",
+                                    "pm.test('Accepted', () => pm.expect(res.status).to.eql('accepted'));",
+                                    "if (res.message && res.message.id) { pm.collectionVariables.set('waMessageId', res.message.id); }"
+                                ]
+                            }
+                        }
+                    ],
+                    "response": []
+                },
+                {
+                    "name": "Send a link button (official)",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Accept",
+                                "value": "application/json"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{baseUrl}}/v1/whatsapp/messages",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "v1",
+                                "whatsapp",
+                                "messages"
+                            ]
+                        },
+                        "description": "A button that opens a link. Inside the 24-hour window; official channel only.\n\nSozuri picks the channel (QR code or official) unless you pass `channel` (`qr` or `meta`) or `from` (one of your numbers). The response says which: `channel` and `routed`.\n\nDocs: https://sozuri.net/docs/whatsapp-official#meta-send",
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"project\": \"{{project}}\",\n    \"to\": \"{{waTo}}\",\n    \"type\": \"interactive\",\n    \"interactive\": {\n        \"type\": \"cta_url\",\n        \"body\": {\n            \"text\": \"Track your parcel.\"\n        },\n        \"action\": {\n            \"name\": \"cta_url\",\n            \"parameters\": {\n                \"display_text\": \"Track\",\n                \"url\": \"https://example.com/track/A-1042\"\n            }\n        }\n    }\n}",
+                            "options": {
+                                "raw": {
+                                    "language": "json"
+                                }
+                            }
+                        }
+                    },
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "type": "text/javascript",
+                                "exec": [
+                                    "const res = pm.response.json();",
+                                    "pm.test('Accepted', () => pm.expect(res.status).to.eql('accepted'));",
+                                    "if (res.message && res.message.id) { pm.collectionVariables.set('waMessageId', res.message.id); }"
+                                ]
+                            }
+                        }
+                    ],
+                    "response": []
+                },
+                {
+                    "name": "Ask for a location (official)",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Accept",
+                                "value": "application/json"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{baseUrl}}/v1/whatsapp/messages",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "v1",
+                                "whatsapp",
+                                "messages"
+                            ]
+                        },
+                        "description": "Shows a *Send location* button; the answer arrives on your webhook as a `location` message. Inside the 24-hour window; official channel only.\n\nSozuri picks the channel (QR code or official) unless you pass `channel` (`qr` or `meta`) or `from` (one of your numbers). The response says which: `channel` and `routed`.\n\nDocs: https://sozuri.net/docs/whatsapp-official#meta-send",
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"project\": \"{{project}}\",\n    \"to\": \"{{waTo}}\",\n    \"type\": \"interactive\",\n    \"interactive\": {\n        \"type\": \"location_request_message\",\n        \"body\": {\n            \"text\": \"Where should we deliver?\"\n        },\n        \"action\": {\n            \"name\": \"send_location\"\n        }\n    }\n}",
+                            "options": {
+                                "raw": {
+                                    "language": "json"
+                                }
+                            }
+                        }
+                    },
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "type": "text/javascript",
+                                "exec": [
+                                    "const res = pm.response.json();",
+                                    "pm.test('Accepted', () => pm.expect(res.status).to.eql('accepted'));",
+                                    "if (res.message && res.message.id) { pm.collectionVariables.set('waMessageId', res.message.id); }"
+                                ]
+                            }
+                        }
+                    ],
+                    "response": []
+                },
+                {
+                    "name": "Open a Flow (official)",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Accept",
+                                "value": "application/json"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{baseUrl}}/v1/whatsapp/messages",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "v1",
+                                "whatsapp",
+                                "messages"
+                            ]
+                        },
+                        "description": "Opens a Flow you built and published in WhatsApp Manager, by `flow_id` (or `flow_name`). With `flow_action: navigate`, name the first `screen`. Official channel only.\n\nSozuri picks the channel (QR code or official) unless you pass `channel` (`qr` or `meta`) or `from` (one of your numbers). The response says which: `channel` and `routed`.\n\nDocs: https://sozuri.net/docs/whatsapp-official#meta-send",
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"project\": \"{{project}}\",\n    \"to\": \"{{waTo}}\",\n    \"type\": \"interactive\",\n    \"interactive\": {\n        \"type\": \"flow\",\n        \"body\": {\n            \"text\": \"Book your appointment\"\n        },\n        \"action\": {\n            \"name\": \"flow\",\n            \"parameters\": {\n                \"flow_message_version\": \"3\",\n                \"flow_id\": \"{{flowId}}\",\n                \"flow_cta\": \"Book now\",\n                \"flow_action\": \"navigate\",\n                \"flow_action_payload\": {\n                    \"screen\": \"WELCOME\"\n                }\n            }\n        }\n    }\n}",
+                            "options": {
+                                "raw": {
+                                    "language": "json"
+                                }
+                            }
+                        }
+                    },
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "type": "text/javascript",
+                                "exec": [
+                                    "const res = pm.response.json();",
+                                    "pm.test('Accepted', () => pm.expect(res.status).to.eql('accepted'));",
+                                    "if (res.message && res.message.id) { pm.collectionVariables.set('waMessageId', res.message.id); }"
+                                ]
+                            }
+                        }
+                    ],
+                    "response": []
+                },
+                {
+                    "name": "QR-code channel",
+                    "description": "The QR-code channel's own send endpoint. Same fields as the QR shape of `/v1/whatsapp/messages`.\n\nDocs: https://sozuri.net/docs/whatsapp-api",
+                    "item": [
+                        {
+                            "name": "Send a text (QR code)",
+                            "request": {
+                                "method": "POST",
+                                "header": [
+                                    {
+                                        "key": "Accept",
+                                        "value": "application/json"
+                                    },
+                                    {
+                                        "key": "Content-Type",
+                                        "value": "application/json"
+                                    }
+                                ],
+                                "url": {
+                                    "raw": "{{baseUrl}}/v1/whatsapp/send",
+                                    "host": [
+                                        "{{baseUrl}}"
+                                    ],
+                                    "path": [
+                                        "v1",
+                                        "whatsapp",
+                                        "send"
+                                    ]
+                                },
+                                "description": "Sends from the number linked by QR code.\n\nFields: `to` (international format, a WhatsApp id, or a group id ending `@g.us`), then `text` and/or one of `imageUrl`, `videoUrl`, `audioUrl` (`voice: true` for a voice note), `documentUrl` (+`documentFilename`), `stickerUrl`, `location`, `contact`, `reaction`. Optional `replyTo`, and `mentions` in a group.\n\nAnswer: `{\"status\":\"sent\",\"messageId\":\"…\",\"to\":\"…\",\"timestamp\":\"…\"}`.\n\nDocs: https://sozuri.net/docs/whatsapp-api",
+                                "body": {
+                                    "mode": "raw",
+                                    "raw": "{\n    \"project\": \"{{project}}\",\n    \"to\": \"{{waTo}}\",\n    \"text\": \"Your code is 482193.\"\n}",
+                                    "options": {
+                                        "raw": {
+                                            "language": "json"
+                                        }
+                                    }
+                                }
+                            },
+                            "event": [
+                                {
+                                    "listen": "test",
+                                    "script": {
+                                        "type": "text/javascript",
+                                        "exec": [
+                                            "const res = pm.response.json();",
+                                            "pm.test('Sent', () => pm.response.to.have.status(200));",
+                                            "if (res.messageId) { pm.collectionVariables.set('waMessageId', res.messageId); }"
+                                        ]
+                                    }
+                                }
+                            ],
+                            "response": [
+                                {
+                                    "name": "Sent",
+                                    "status": "OK",
+                                    "code": 200,
+                                    "_postman_previewlanguage": "json",
+                                    "header": [
+                                        {
+                                            "key": "Content-Type",
+                                            "value": "application/json"
+                                        }
+                                    ],
+                                    "body": "{\n    \"status\": \"sent\",\n    \"messageId\": \"3EB0C1A2B3C4D5E6F7A8\",\n    \"to\": \"254700000000\",\n    \"timestamp\": \"2026-11-08T07:30:00.000Z\"\n}"
+                                },
+                                {
+                                    "name": "No QR-code number linked",
+                                    "status": "Conflict",
+                                    "code": 409,
+                                    "_postman_previewlanguage": "json",
+                                    "header": [
+                                        {
+                                            "key": "Content-Type",
+                                            "value": "application/json"
+                                        }
+                                    ],
+                                    "body": "{\n    \"error\": {\n        \"code\": \"CHANNEL_NOT_CONFIGURED\",\n        \"message\": \"WhatsApp is not connected for this project\",\n        \"status\": 409\n    }\n}"
+                                }
+                            ]
+                        },
+                        {
+                            "name": "Send an image (QR code)",
+                            "request": {
+                                "method": "POST",
+                                "header": [
+                                    {
+                                        "key": "Accept",
+                                        "value": "application/json"
+                                    },
+                                    {
+                                        "key": "Content-Type",
+                                        "value": "application/json"
+                                    }
+                                ],
+                                "url": {
+                                    "raw": "{{baseUrl}}/v1/whatsapp/send",
+                                    "host": [
+                                        "{{baseUrl}}"
+                                    ],
+                                    "path": [
+                                        "v1",
+                                        "whatsapp",
+                                        "send"
+                                    ]
+                                },
+                                "description": "An image from a public link, with `text` as its caption.\n\nDocs: https://sozuri.net/docs/whatsapp-api",
+                                "body": {
+                                    "mode": "raw",
+                                    "raw": "{\n    \"project\": \"{{project}}\",\n    \"to\": \"{{waTo}}\",\n    \"imageUrl\": \"https://example.com/receipt.jpg\",\n    \"text\": \"Your receipt\"\n}",
+                                    "options": {
+                                        "raw": {
+                                            "language": "json"
+                                        }
+                                    }
+                                }
+                            },
+                            "response": []
+                        }
+                    ]
+                },
+                {
+                    "name": "Official channel",
+                    "description": "The official channel's own send endpoint, in Meta's typed shape: `type` plus an object of the same name.\n\nDocs: https://sozuri.net/docs/whatsapp-official",
+                    "item": [
+                        {
+                            "name": "Send a text (official)",
+                            "request": {
+                                "method": "POST",
+                                "header": [
+                                    {
+                                        "key": "Accept",
+                                        "value": "application/json"
+                                    },
+                                    {
+                                        "key": "Content-Type",
+                                        "value": "application/json"
+                                    }
+                                ],
+                                "url": {
+                                    "raw": "{{baseUrl}}/v1/whatsapp/meta/send",
+                                    "host": [
+                                        "{{baseUrl}}"
+                                    ],
+                                    "path": [
+                                        "v1",
+                                        "whatsapp",
+                                        "meta",
+                                        "send"
+                                    ]
+                                },
+                                "description": "Sends from one of your official numbers (`from` picks one when you have several). Free-form text only inside the customer's 24-hour window; otherwise send a template.\n\nDocs: https://sozuri.net/docs/whatsapp-official",
+                                "body": {
+                                    "mode": "raw",
+                                    "raw": "{\n    \"project\": \"{{project}}\",\n    \"to\": \"{{waTo}}\",\n    \"type\": \"text\",\n    \"text\": {\n        \"body\": \"Your order A-1042 is on its way.\"\n    }\n}",
+                                    "options": {
+                                        "raw": {
+                                            "language": "json"
+                                        }
+                                    }
+                                }
+                            },
+                            "event": [
+                                {
+                                    "listen": "test",
+                                    "script": {
+                                        "type": "text/javascript",
+                                        "exec": [
+                                            "const res = pm.response.json();",
+                                            "pm.test('Accepted', () => pm.expect(res.status).to.eql('accepted'));",
+                                            "const id = res.message && (res.message.id || res.message.wamid);",
+                                            "if (id) { pm.collectionVariables.set('waMessageId', id); }"
+                                        ]
+                                    }
+                                }
+                            ],
+                            "response": []
+                        }
+                    ]
+                },
+                {
+                    "name": "Templates",
+                    "description": "Message templates exist on the official channel only. Only an `APPROVED` template can be sent.\n\nDocs: https://sozuri.net/docs/whatsapp-official#meta-templates",
+                    "item": [
+                        {
+                            "name": "List templates",
+                            "request": {
+                                "method": "GET",
+                                "header": [
+                                    {
+                                        "key": "Accept",
+                                        "value": "application/json"
+                                    }
+                                ],
+                                "url": {
+                                    "raw": "{{baseUrl}}/v1/whatsapp/templates?project={{project}}",
+                                    "host": [
+                                        "{{baseUrl}}"
+                                    ],
+                                    "path": [
+                                        "v1",
+                                        "whatsapp",
+                                        "templates"
+                                    ],
+                                    "query": [
+                                        {
+                                            "key": "project",
+                                            "value": "{{project}}"
+                                        },
+                                        {
+                                            "key": "status",
+                                            "value": "APPROVED",
+                                            "description": "Optional: APPROVED, PENDING, REJECTED, PAUSED or DISABLED.",
+                                            "disabled": true
+                                        }
+                                    ]
+                                },
+                                "description": "Your templates and their review status. Up to 500.\n\nDocs: https://sozuri.net/docs/whatsapp-official#meta-templates"
+                            },
+                            "response": []
+                        },
+                        {
+                            "name": "Submit a template",
+                            "request": {
+                                "method": "POST",
+                                "header": [
+                                    {
+                                        "key": "Accept",
+                                        "value": "application/json"
+                                    },
+                                    {
+                                        "key": "Content-Type",
+                                        "value": "application/json"
+                                    }
+                                ],
+                                "url": {
+                                    "raw": "{{baseUrl}}/v1/whatsapp/templates",
+                                    "host": [
+                                        "{{baseUrl}}"
+                                    ],
+                                    "path": [
+                                        "v1",
+                                        "whatsapp",
+                                        "templates"
+                                    ]
+                                },
+                                "description": "Submits a template for Meta's review.\n\n- `name`: lower case letters, digits and underscores.\n- `language`: e.g. `en`, `en_US`, `sw`.\n- `category`: `marketing`, `utility` or `authentication`.\n- `body.text` with numbered (`{{1}}`) or named variables, and `body.examples` for each.\n- Optional `header`, `footer`, `buttons`; `waba_id` when your project has more than one WhatsApp Business Account.\n\n**201** with the template, or **422** naming what to fix.\n\nDocs: https://sozuri.net/docs/whatsapp-official#meta-templates",
+                                "body": {
+                                    "mode": "raw",
+                                    "raw": "{\n    \"project\": \"{{project}}\",\n    \"name\": \"order_ready\",\n    \"language\": \"en\",\n    \"category\": \"utility\",\n    \"body\": {\n        \"text\": \"Hi {{1}}, your order {{2}} is ready for collection.\",\n        \"examples\": [\n            \"Amina\",\n            \"A-1042\"\n        ]\n    }\n}",
+                                    "options": {
+                                        "raw": {
+                                            "language": "json"
+                                        }
+                                    }
+                                }
+                            },
+                            "response": []
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "Voice",
+            "description": "Place calls from your Sozuri voice number, read a one-time code over the phone, and look up calls. Voice errors come back with a 4xx status and a `code`; `201` means at least one call was placed.\n\nYour project needs an active voice number (Project → Voice → Numbers).\n\nDocs: https://sozuri.net/docs/voice",
+            "item": [
+                {
+                    "name": "List your voice numbers",
+                    "request": {
+                        "method": "GET",
+                        "header": [
+                            {
+                                "key": "Accept",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{baseUrl}}/v1/voice/numbers?project={{project}}",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "v1",
+                                "voice",
+                                "numbers"
+                            ],
+                            "query": [
+                                {
+                                    "key": "project",
+                                    "value": "{{project}}"
+                                }
+                            ]
+                        },
+                        "description": "Your numbers that are active, suspended or still being requested, and what answers each (`handlerType`). Only an `active` number can be `from`.\n\nDocs: https://sozuri.net/docs/voice#voice-numbers"
+                    },
+                    "response": [
+                        {
+                            "name": "Numbers",
+                            "status": "OK",
+                            "code": 200,
+                            "_postman_previewlanguage": "json",
+                            "header": [
+                                {
+                                    "key": "Content-Type",
+                                    "value": "application/json"
+                                }
+                            ],
+                            "body": "{\n    \"status\": \"ok\",\n    \"numbers\": [\n        {\n            \"number\": \"+254711000000\",\n            \"type\": \"regular\",\n            \"label\": \"Main line\",\n            \"status\": \"active\",\n            \"handlerType\": \"flow\",\n            \"aiMode\": false\n        }\n    ]\n}"
+                        }
+                    ]
+                },
+                {
+                    "name": "Place a call",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Accept",
+                                "value": "application/json"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{baseUrl}}/v1/voice/calls",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "v1",
+                                "voice",
+                                "calls"
+                            ]
+                        },
+                        "description": "Calls each number in `to` (a string, comma-separated, or an array; at most 100). When answered, the call does what your number is set to do in the dashboard (a message, a call flow, the call centre, a forward).\n\n- `from`: optional, one of your active voice numbers.\n- `tag`: optional, up to 60 characters, to filter calls later.\n\nNumbers that could not be called come back in `rejected`. The test saves the first `callSid` in `{{callSid}}`.\n\nDocs: https://sozuri.net/docs/voice#voice-call",
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"project\": \"{{project}}\",\n    \"to\": \"{{voiceTo}}\",\n    \"tag\": \"reminder\"\n}",
+                            "options": {
+                                "raw": {
+                                    "language": "json"
+                                }
+                            }
+                        }
+                    },
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "type": "text/javascript",
+                                "exec": [
+                                    "const res = pm.response.json();",
+                                    "pm.test('Placed', () => pm.response.to.have.status(201));",
+                                    "if (res.calls && res.calls.length) { pm.collectionVariables.set('callSid', res.calls[0].callSid); }"
+                                ]
+                            }
+                        }
+                    ],
+                    "response": [
+                        {
+                            "name": "Placed",
+                            "status": "Created",
+                            "code": 201,
+                            "_postman_previewlanguage": "json",
+                            "header": [
+                                {
+                                    "key": "Content-Type",
+                                    "value": "application/json"
+                                }
+                            ],
+                            "body": "{\n    \"status\": \"ok\",\n    \"from\": \"+254711000000\",\n    \"testMode\": false,\n    \"calls\": [\n        {\n            \"callSid\": \"9b2f1c3e-0d4a-4e8b-9a51-6f0c2d7e8a10\",\n            \"to\": \"254700000000\",\n            \"status\": \"queued\",\n            \"tag\": \"reminder_3f9a0c1b2d4e_1\"\n        }\n    ]\n}"
+                        },
+                        {
+                            "name": "Balance too low",
+                            "status": "Payment Required",
+                            "code": 402,
+                            "_postman_previewlanguage": "json",
+                            "header": [
+                                {
+                                    "key": "Content-Type",
+                                    "value": "application/json"
+                                }
+                            ],
+                            "body": "{\n    \"status\": \"error\",\n    \"code\": \"insufficient_balance\",\n    \"message\": \"Insufficient balance for a voice call. Need at least 4.00, wallet has 0.00.\"\n}"
+                        },
+                        {
+                            "name": "No voice number",
+                            "status": "Unprocessable Entity",
+                            "code": 422,
+                            "_postman_previewlanguage": "json",
+                            "header": [
+                                {
+                                    "key": "Content-Type",
+                                    "value": "application/json"
+                                }
+                            ],
+                            "body": "{\n    \"status\": \"error\",\n    \"code\": \"no_voice_number\",\n    \"message\": \"This project has no active voice number. Request one in the dashboard.\"\n}"
+                        }
+                    ]
+                },
+                {
+                    "name": "Read a one-time code (voice OTP)",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Accept",
+                                "value": "application/json"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{baseUrl}}/v1/voice/otp",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "v1",
+                                "voice",
+                                "otp"
+                            ]
+                        },
+                        "description": "Calls one number and reads the code digit by digit, then repeats it. Never recorded; the code is not stored or returned.\n\n- `code`: up to 12 characters; only digits are read.\n- `brand`: optional name read before the code (default `Sozuri`).\n- `repeat`: optional, 1 to 3 (default 2).\n- `voice`: optional, e.g. `en-US-Standard-C` (default), `en-US-Standard-B`, `en-GB-Standard-A`, `en-GB-Standard-B`.\n- `from`: optional, one of your active voice numbers.\n\nDocs: https://sozuri.net/docs/voice#voice-otp",
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"project\": \"{{project}}\",\n    \"to\": \"{{voiceTo}}\",\n    \"code\": \"4821\",\n    \"brand\": \"Acme\"\n}",
+                            "options": {
+                                "raw": {
+                                    "language": "json"
+                                }
+                            }
+                        }
+                    },
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "type": "text/javascript",
+                                "exec": [
+                                    "const res = pm.response.json();",
+                                    "pm.test('Placed', () => pm.response.to.have.status(201));",
+                                    "if (res.callSid) { pm.collectionVariables.set('callSid', res.callSid); }"
+                                ]
+                            }
+                        }
+                    ],
+                    "response": [
+                        {
+                            "name": "Placed",
+                            "status": "Created",
+                            "code": 201,
+                            "_postman_previewlanguage": "json",
+                            "header": [
+                                {
+                                    "key": "Content-Type",
+                                    "value": "application/json"
+                                }
+                            ],
+                            "body": "{\n    \"status\": \"ok\",\n    \"callSid\": \"5d1e9f07-3a2b-4c6d-8e90-1f2a3b4c5d6e\",\n    \"to\": \"254700000000\",\n    \"from\": \"+254711000000\",\n    \"testMode\": false\n}"
+                        }
+                    ]
+                },
+                {
+                    "name": "Look up a call",
+                    "request": {
+                        "method": "GET",
+                        "header": [
+                            {
+                                "key": "Accept",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{baseUrl}}/v1/voice/calls/{{callSid}}?project={{project}}",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "v1",
+                                "voice",
+                                "calls",
+                                "{{callSid}}"
+                            ],
+                            "query": [
+                                {
+                                    "key": "project",
+                                    "value": "{{project}}"
+                                }
+                            ]
+                        },
+                        "description": "One call with its timeline (`events`). Duration, price and recording are set when the call ends. `404 not_found` for a call that is not your project's.\n\nDocs: https://sozuri.net/docs/voice#voice-get"
+                    },
+                    "response": []
+                },
+                {
+                    "name": "List recent calls",
+                    "request": {
+                        "method": "GET",
+                        "header": [
+                            {
+                                "key": "Accept",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{baseUrl}}/v1/voice/calls?project={{project}}&limit=20",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "v1",
+                                "voice",
+                                "calls"
+                            ],
+                            "query": [
+                                {
+                                    "key": "project",
+                                    "value": "{{project}}"
+                                },
+                                {
+                                    "key": "limit",
+                                    "value": "20",
+                                    "description": "1 to 200; default 50."
+                                },
+                                {
+                                    "key": "status",
+                                    "value": "completed",
+                                    "description": "Optional: queued, ringing, in_progress, on_hold, completed, no_answer or failed.",
+                                    "disabled": true
+                                },
+                                {
+                                    "key": "tag",
+                                    "value": "reminder",
+                                    "description": "Optional: calls whose tag starts with this.",
+                                    "disabled": true
+                                }
+                            ]
+                        },
+                        "description": "Your calls, newest first.\n\nDocs: https://sozuri.net/docs/voice#voice-list"
+                    },
+                    "response": []
+                }
+            ]
+        },
+        {
+            "name": "Premium SMS",
+            "description": "Reverse-billed messages on Safaricom: the subscriber pays. **Subscription** services send on a schedule to people who opted in; **on-demand** services answer a request the subscriber texted, quoting its `linkId`.\n\nThe service is chosen by `keyword` (its activation keyword), or `premium_id`, or `from` (its shortcode).\n\nRefusals are **HTTP 200** with `{\"status\":\"error\",\"description\":\"…\"}`.\n\nDocs: https://sozuri.net/docs/subscription and https://sozuri.net/docs/ondemand",
+            "item": [
+                {
+                    "name": "Subscribe a number",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Accept",
+                                "value": "application/json"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{baseUrl}}/v1/messaging/subscribe",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "v1",
+                                "messaging",
+                                "subscribe"
+                            ]
+                        },
+                        "description": "Asks the network to subscribe the number. The answer is `pending`: the subscriber confirms on their phone, and your service's callback receives `activation` (or `consent`) when they do.\n\nRefusals are **HTTP 200** with `{\"status\":\"error\",\"description\":\"…\"}`.\n\nDocs: https://sozuri.net/docs/subscription",
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"project\": \"{{project}}\",\n    \"number\": \"{{premiumNumber}}\",\n    \"keyword\": \"{{premiumKeyword}}\"\n}",
+                            "options": {
+                                "raw": {
+                                    "language": "json"
+                                }
+                            }
+                        }
+                    },
+                    "response": [
+                        {
+                            "name": "Requested",
+                            "status": "OK",
+                            "code": 200,
+                            "_postman_previewlanguage": "json",
+                            "header": [
+                                {
+                                    "key": "Content-Type",
+                                    "value": "application/json"
+                                }
+                            ],
+                            "body": "{\n    \"project\": \"Your_Project_Name\",\n    \"shortcode\": \"20000\",\n    \"keyword\": \"JOIN\",\n    \"number\": \"254700000001\",\n    \"network\": \"safaricom\",\n    \"type\": \"subscribe\",\n    \"status\": \"pending\",\n    \"statusCode\": \"112\",\n    \"description\": \"Subscription request accepted\"\n}"
+                        }
+                    ]
+                },
+                {
+                    "name": "Unsubscribe a number",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Accept",
+                                "value": "application/json"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{baseUrl}}/v1/messaging/unsubscribe",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "v1",
+                                "messaging",
+                                "unsubscribe"
+                            ]
+                        },
+                        "description": "Ends the number's subscription. On success the subscriber is inactive at once.\n\nRefusals are **HTTP 200** with `{\"status\":\"error\",\"description\":\"…\"}`.\n\nDocs: https://sozuri.net/docs/subscription",
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"project\": \"{{project}}\",\n    \"number\": \"{{premiumNumber}}\",\n    \"keyword\": \"{{premiumKeyword}}\"\n}",
+                            "options": {
+                                "raw": {
+                                    "language": "json"
+                                }
+                            }
+                        }
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Send to a subscriber",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Accept",
+                                "value": "application/json"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{baseUrl}}/v1/messaging/sendpremium",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "v1",
+                                "messaging",
+                                "sendpremium"
+                            ]
+                        },
+                        "description": "Sends a subscription message to one active subscriber. The subscriber is charged per 160-character part.\n\nRefusals are **HTTP 200** with `{\"status\":\"error\",\"description\":\"…\"}`.\n\nThe `messageId` returned is the one your delivery callback reports.\n\nDocs: https://sozuri.net/docs/subscription",
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"project\": \"{{project}}\",\n    \"number\": \"{{premiumNumber}}\",\n    \"keyword\": \"{{premiumKeyword}}\",\n    \"message\": \"Today's tip: plant maize after the first rains.\"\n}",
+                            "options": {
+                                "raw": {
+                                    "language": "json"
+                                }
+                            }
+                        }
+                    },
+                    "response": [
+                        {
+                            "name": "Accepted",
+                            "status": "OK",
+                            "code": 200,
+                            "_postman_previewlanguage": "json",
+                            "header": [
+                                {
+                                    "key": "Content-Type",
+                                    "value": "application/json"
+                                }
+                            ],
+                            "body": "{\n    \"messageData\": {\n        \"messages\": 1\n    },\n    \"recipients\": [\n        {\n            \"messageId\": \"SOZPREM0123456789ABC\",\n            \"to\": \"254700000001\",\n            \"status\": \"accepted\",\n            \"statusCode\": \"11\",\n            \"messagePart\": 1,\n            \"keyword\": \"JOIN\",\n            \"type\": \"subscription\",\n            \"linkId\": null\n        }\n    ]\n}"
+                        }
+                    ]
+                },
+                {
+                    "name": "Reply to an on-demand request",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Accept",
+                                "value": "application/json"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{baseUrl}}/v1/messaging/sendpremium",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "v1",
+                                "messaging",
+                                "sendpremium"
+                            ]
+                        },
+                        "description": "Answers a request a subscriber texted to your on-demand service. `linkId` comes from the `linkNotification` callback your service received; it is what authorises the charge.\n\nRefusals are **HTTP 200** with `{\"status\":\"error\",\"description\":\"…\"}`.\n\nDocs: https://sozuri.net/docs/ondemand",
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"project\": \"{{project}}\",\n    \"number\": \"{{premiumNumber}}\",\n    \"keyword\": \"{{ondemandKeyword}}\",\n    \"linkId\": \"{{linkId}}\",\n    \"message\": \"Answer: B. Cote d'Ivoire won.\"\n}",
+                            "options": {
+                                "raw": {
+                                    "language": "json"
+                                }
+                            }
+                        }
+                    },
+                    "response": []
+                }
+            ]
+        },
+        {
+            "name": "Contacts",
+            "description": "Your project's contacts. `mobile` is stored exactly as you send it.\n\nDocs: https://sozuri.net/docs/contacts",
+            "item": [
+                {
+                    "name": "List contacts",
+                    "request": {
+                        "method": "GET",
+                        "header": [
+                            {
+                                "key": "Accept",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{baseUrl}}/v1/contacts?project={{project}}&page=1",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "v1",
+                                "contacts"
+                            ],
+                            "query": [
+                                {
+                                    "key": "project",
+                                    "value": "{{project}}"
+                                },
+                                {
+                                    "key": "group",
+                                    "value": "{{contactGroup}}",
+                                    "description": "Optional: a group name. An unknown name returns every contact.",
+                                    "disabled": true
+                                },
+                                {
+                                    "key": "page",
+                                    "value": "1",
+                                    "description": "1,000 contacts a page."
+                                }
+                            ]
+                        },
+                        "description": "Your contacts, 1,000 a page. The test saves the first contact's id in `{{contactId}}`.\n\nDocs: https://sozuri.net/docs/contacts"
+                    },
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "type": "text/javascript",
+                                "exec": [
+                                    "const res = pm.response.json();",
+                                    "pm.test('Listed', () => pm.response.to.have.status(200));",
+                                    "if (res.contacts && res.contacts.data && res.contacts.data.length) { pm.collectionVariables.set('contactId', res.contacts.data[0].id); }"
+                                ]
+                            }
+                        }
+                    ],
+                    "response": []
+                },
+                {
+                    "name": "Get a contact",
+                    "request": {
+                        "method": "GET",
+                        "header": [
+                            {
+                                "key": "Accept",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{baseUrl}}/v1/contacts/{{contactId}}?project={{project}}",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "v1",
+                                "contacts",
+                                "{{contactId}}"
+                            ],
+                            "query": [
+                                {
+                                    "key": "project",
+                                    "value": "{{project}}"
+                                }
+                            ]
+                        },
+                        "description": "One contact, by id (or by the exact saved mobile). `404 {\"error\":\"Contact not found\"}` for one that is not your project's.\n\nDocs: https://sozuri.net/docs/contacts"
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Create contacts",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Accept",
+                                "value": "application/json"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{baseUrl}}/v1/contacts",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "v1",
+                                "contacts"
+                            ]
+                        },
+                        "description": "Up to 1,000 contacts per call. `fname` and `mobile` (a string) are required; `mname`, `lname`, `email`, `city`, `company`, `job` are optional. `group` puts them in a group, created if it does not exist.\n\n**201** `{\"message\":\"Contacts created successfully\"}`.\n\nDocs: https://sozuri.net/docs/contacts",
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"project\": \"{{project}}\",\n    \"group\": \"{{contactGroup}}\",\n    \"contacts\": [\n        {\n            \"fname\": \"Jane\",\n            \"lname\": \"Doe\",\n            \"mobile\": \"254700000001\",\n            \"email\": \"jane@example.com\",\n            \"city\": \"Nairobi\"\n        },\n        {\n            \"fname\": \"John\",\n            \"mobile\": \"254700000002\"\n        }\n    ]\n}",
+                            "options": {
+                                "raw": {
+                                    "language": "json"
+                                }
+                            }
+                        }
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Update a contact",
+                    "request": {
+                        "method": "PUT",
+                        "header": [
+                            {
+                                "key": "Accept",
+                                "value": "application/json"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{baseUrl}}/v1/contacts/{{contactId}}",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "v1",
+                                "contacts",
+                                "{{contactId}}"
+                            ]
+                        },
+                        "description": "Replaces the contact's fields: any field you leave out becomes empty. `fname` and `mobile` are required.\n\nDocs: https://sozuri.net/docs/contacts",
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"project\": \"{{project}}\",\n    \"contact\": {\n        \"fname\": \"Jane\",\n        \"lname\": \"Doe\",\n        \"mobile\": \"254700000001\",\n        \"email\": \"jane@example.com\",\n        \"city\": \"Mombasa\"\n    }\n}",
+                            "options": {
+                                "raw": {
+                                    "language": "json"
+                                }
+                            }
+                        }
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Delete a contact",
+                    "request": {
+                        "method": "DELETE",
+                        "header": [
+                            {
+                                "key": "Accept",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{baseUrl}}/v1/contacts/{{contactId}}?project={{project}}",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "v1",
+                                "contacts",
+                                "{{contactId}}"
+                            ],
+                            "query": [
+                                {
+                                    "key": "project",
+                                    "value": "{{project}}"
+                                }
+                            ]
+                        },
+                        "description": "Deletes the contact permanently.\n\nDocs: https://sozuri.net/docs/contacts"
+                    },
+                    "response": []
+                }
+            ]
+        },
+        {
+            "name": "Payments",
+            "description": "Ask a customer to pay by M-Pesa from their phone (STK push), into your own paybill or till configured in the dashboard (Project → Payments → Configure). Confirmed payments reach the webhook URL set there.\n\nDocs: https://sozuri.net/docs/payments",
+            "item": [
+                {
+                    "name": "Request an M-Pesa payment",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Accept",
+                                "value": "application/json"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{baseUrl}}/v1/zuka/push",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "v1",
+                                "zuka",
+                                "push"
+                            ]
+                        },
+                        "description": "Sends the M-Pesa prompt to `phone`.\n\n- `phone`: a string; its last 9 digits are prefixed with 254.\n- `amount`: whole KES, at least 1.\n- `account_reference`: optional, up to 12 characters; returned on the payment webhook as `BillRefNumber`.\n\nErrors: 422 with `{\"error\":\"…\"}` (e.g. no paybill with prompt credentials on your project).\n\nDocs: https://sozuri.net/docs/payments",
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"project\": \"{{project}}\",\n    \"phone\": \"{{mpesaPhone}}\",\n    \"amount\": 1,\n    \"account_reference\": \"INV-001\"\n}",
+                            "options": {
+                                "raw": {
+                                    "language": "json"
+                                }
+                            }
+                        }
+                    },
+                    "response": [
+                        {
+                            "name": "Prompt sent",
+                            "status": "OK",
+                            "code": 200,
+                            "_postman_previewlanguage": "json",
+                            "header": [
+                                {
+                                    "key": "Content-Type",
+                                    "value": "application/json"
+                                }
+                            ],
+                            "body": "{\n    \"message\": \"STK push sent. Prompt your customer to check their phone.\",\n    \"checkout_request_id\": \"ws_CO_08112026101530000000000000\",\n    \"merchant_request_id\": \"0000-0000000-1\"\n}"
+                        },
+                        {
+                            "name": "No paybill configured",
+                            "status": "Unprocessable Entity",
+                            "code": 422,
+                            "_postman_previewlanguage": "json",
+                            "header": [
+                                {
+                                    "key": "Content-Type",
+                                    "value": "application/json"
+                                }
+                            ],
+                            "body": "{\n    \"error\": \"No active paybill with STK credentials found for this project.\"\n}"
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "Airtime (unavailable)",
+            "description": "**Airtime sending is not available right now.** The endpoint answers `503` with `data.status: \"unavailable\"` and nothing is sent or charged. The request is kept here so your integration is ready when it returns.\n\nDocs: https://sozuri.net/docs/airtime",
+            "item": [
+                {
+                    "name": "Send airtime",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Accept",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{baseUrl}}/v1/airtime/topup",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "v1",
+                                "airtime",
+                                "topup"
+                            ]
+                        },
+                        "description": "Currently answers **503**.\n\n`recipients` is a **string** holding a JSON array of `{\"number\",\"amount\"}`; amounts are whole KES, `\"KES 10\"`.\n\nDocs: https://sozuri.net/docs/airtime",
+                        "body": {
+                            "mode": "urlencoded",
+                            "urlencoded": [
+                                {
+                                    "key": "project",
+                                    "value": "{{project}}",
+                                    "type": "text"
+                                },
+                                {
+                                    "key": "recipients",
+                                    "value": "[{\"number\":\"254700000001\",\"amount\":\"KES 10\"}]",
+                                    "type": "text"
+                                }
+                            ]
+                        }
+                    },
+                    "response": [
+                        {
+                            "name": "Unavailable",
+                            "status": "Service Unavailable",
+                            "code": 503,
+                            "_postman_previewlanguage": "json",
+                            "header": [
+                                {
+                                    "key": "Content-Type",
+                                    "value": "application/json"
+                                }
+                            ],
+                            "body": "{\n    \"data\": {\n        \"status\": \"unavailable\",\n        \"message\": \"Airtime topup is not currently available. The service is being migrated to a new provider.\"\n    }\n}"
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "Workflows",
+            "description": "Start a published workflow that begins with a **Webhook** trigger. The workflow builder shows the trigger's URL token and signing secret; set `workflowHookToken` and `workflowWebhookSecret`.",
+            "item": [
+                {
+                    "name": "Start a workflow",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Accept",
+                                "value": "application/json"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{baseUrl}}/v1/workflows/hooks/{{workflowHookToken}}",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "v1",
+                                "workflows",
+                                "hooks",
+                                "{{workflowHookToken}}"
+                            ]
+                        },
+                        "description": "No API key: the request is authenticated by `X-Sozuri-Signature` over the raw body, which the pre-request script computes from `{{workflowWebhookSecret}}`. A signature older than 5 minutes, or used twice, is refused.\n\nThe body lands in the workflow as `{{webhook.<field>}}`. Add `to` (and `channel`: `sms` or `whatsapp`) when a step should message somebody.\n\n- **200** `{\"accepted\":true,\"started\":1}`\n- **403** `{\"accepted\":false,\"code\":\"unauthorized\",…}` for a wrong token or signature (they are deliberately indistinguishable)\n- **409** `not_live` when the workflow is not published",
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"to\": \"{{smsTo}}\",\n    \"channel\": \"sms\",\n    \"order_id\": \"A-1042\",\n    \"amount\": 2400\n}",
+                            "options": {
+                                "raw": {
+                                    "language": "json"
+                                }
+                            }
+                        },
+                        "auth": {
+                            "type": "noauth"
+                        }
+                    },
+                    "event": [
+                        {
+                            "listen": "prerequest",
+                            "script": {
+                                "type": "text/javascript",
+                                "exec": [
+                                    "const raw = pm.variables.replaceIn(pm.request.body.raw);",
+                                    "pm.request.body.update(raw);",
+                                    "const t = Math.floor(Date.now() / 1000);",
+                                    "const v1 = CryptoJS.HmacSHA256(t + '.' + raw, pm.variables.get('workflowWebhookSecret') || '').toString(CryptoJS.enc.Hex);",
+                                    "pm.request.headers.upsert({ key: 'X-Sozuri-Signature', value: 't=' + t + ',v1=' + v1 });"
+                                ]
+                            }
+                        }
+                    ],
+                    "response": [
+                        {
+                            "name": "Started",
+                            "status": "OK",
+                            "code": 200,
+                            "_postman_previewlanguage": "json",
+                            "header": [
+                                {
+                                    "key": "Content-Type",
+                                    "value": "application/json"
+                                }
+                            ],
+                            "body": "{\n    \"accepted\": true,\n    \"started\": 1\n}"
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "Test your webhook receiver",
+            "description": "These requests do not call Sozuri. They POST the bodies Sozuri sends to **your** webhook URL, signed the same way, so you can build and test the receiving end before real traffic arrives.\n\nTo verify a real webhook: take the raw body, compute `HMAC-SHA256(signing secret, t + \".\" + raw body)` in lowercase hex, compare it with `v1` in `X-Sozuri-Signature` in constant time, and reject a `t` more than 5 minutes old. Answer 2xx within 8 seconds.\n\nDocs: https://sozuri.net/docs/webhooks",
+            "item": [
+                {
+                    "name": "SMS delivery report (Safaricom)",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Accept",
+                                "value": "application/json"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{yourWebhookUrl}}",
+                            "host": [
+                                "{{yourWebhookUrl}}"
+                            ]
+                        },
+                        "description": "A delivery report for a message sent to a Safaricom number. `status` is `success`, `network_failure`, `delivery_impossible`, `absent_subscriber` or `unknown_error`. `timestamp` is when Sozuri sent the webhook.\n\nPosts to **your** server (`{{yourWebhookUrl}}`), signed with `{{webhookSigningSecret}}` and carrying `{{webhookAuthKey}}` as the last field, exactly as Sozuri would. Copy both from Manage API → Callback URLs → Webhook security.",
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"project\": \"{{project}}\",\n    \"messageId\": \"0123456789abcdef0123456789abcdef01234567\",\n    \"channel\": \"sms\",\n    \"status\": \"success\",\n    \"network\": \"safaricom\",\n    \"type\": \"bulkDelivery\",\n    \"timestamp\": 0\n}",
+                            "options": {
+                                "raw": {
+                                    "language": "json"
+                                }
+                            }
+                        },
+                        "auth": {
+                            "type": "noauth"
+                        }
+                    },
+                    "event": [
+                        {
+                            "listen": "prerequest",
+                            "script": {
+                                "type": "text/javascript",
+                                "exec": [
+                                    "// Builds the body exactly as Sozuri sends it, then signs it, so you can test your receiver.",
+                                    "// X-Sozuri-Signature: t=<unix seconds>,v1=<hex HMAC-SHA256(signing secret, \"<t>.<raw body>\")>",
+                                    "const t = Math.floor(Date.now() / 1000);",
+                                    "const payload = JSON.parse(pm.variables.replaceIn(pm.request.body.raw));",
+                                    "if (Object.prototype.hasOwnProperty.call(payload, 'timestamp') && typeof payload.timestamp === 'number') { payload.timestamp = t; }",
+                                    "const authKey = pm.variables.get('webhookAuthKey');",
+                                    "if (authKey) { payload.authKey = authKey; }        // always the LAST key, as Sozuri sends it",
+                                    "const raw = JSON.stringify(payload);",
+                                    "pm.request.body.update(raw);",
+                                    "const secret = pm.variables.get('webhookSigningSecret');",
+                                    "if (secret) {",
+                                    "    const v1 = CryptoJS.HmacSHA256(t + '.' + raw, secret).toString(CryptoJS.enc.Hex);",
+                                    "    pm.request.headers.upsert({ key: 'X-Sozuri-Signature', value: 't=' + t + ',v1=' + v1 });",
+                                    "}"
+                                ]
+                            }
+                        }
+                    ],
+                    "response": []
+                },
+                {
+                    "name": "SMS delivery report (Airtel)",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Accept",
+                                "value": "application/json"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{yourWebhookUrl}}",
+                            "host": [
+                                "{{yourWebhookUrl}}"
+                            ]
+                        },
+                        "description": "A delivery report for a message sent to an Airtel number. `status` is `success` or `failed`. Telkom sends no delivery reports.\n\nPosts to **your** server (`{{yourWebhookUrl}}`), signed with `{{webhookSigningSecret}}` and carrying `{{webhookAuthKey}}` as the last field, exactly as Sozuri would. Copy both from Manage API → Callback URLs → Webhook security.",
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"project\": \"{{project}}\",\n    \"messageId\": \"0123456789abcdef0123456789abcdef01234567\",\n    \"channel\": \"sms\",\n    \"status\": \"failed\",\n    \"network\": \"airtel\",\n    \"type\": \"bulkDelivery\",\n    \"timestamp\": 0\n}",
+                            "options": {
+                                "raw": {
+                                    "language": "json"
+                                }
+                            }
+                        },
+                        "auth": {
+                            "type": "noauth"
+                        }
+                    },
+                    "event": [
+                        {
+                            "listen": "prerequest",
+                            "script": {
+                                "type": "text/javascript",
+                                "exec": [
+                                    "// Builds the body exactly as Sozuri sends it, then signs it, so you can test your receiver.",
+                                    "// X-Sozuri-Signature: t=<unix seconds>,v1=<hex HMAC-SHA256(signing secret, \"<t>.<raw body>\")>",
+                                    "const t = Math.floor(Date.now() / 1000);",
+                                    "const payload = JSON.parse(pm.variables.replaceIn(pm.request.body.raw));",
+                                    "if (Object.prototype.hasOwnProperty.call(payload, 'timestamp') && typeof payload.timestamp === 'number') { payload.timestamp = t; }",
+                                    "const authKey = pm.variables.get('webhookAuthKey');",
+                                    "if (authKey) { payload.authKey = authKey; }        // always the LAST key, as Sozuri sends it",
+                                    "const raw = JSON.stringify(payload);",
+                                    "pm.request.body.update(raw);",
+                                    "const secret = pm.variables.get('webhookSigningSecret');",
+                                    "if (secret) {",
+                                    "    const v1 = CryptoJS.HmacSHA256(t + '.' + raw, secret).toString(CryptoJS.enc.Hex);",
+                                    "    pm.request.headers.upsert({ key: 'X-Sozuri-Signature', value: 't=' + t + ',v1=' + v1 });",
+                                    "}"
+                                ]
+                            }
+                        }
+                    ],
+                    "response": []
+                },
+                {
+                    "name": "Incoming SMS (2-way)",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Accept",
+                                "value": "application/json"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{yourWebhookUrl}}",
+                            "host": [
+                                "{{yourWebhookUrl}}"
+                            ]
+                        },
+                        "description": "A message a customer sent to your shortcode.\n\nPosts to **your** server (`{{yourWebhookUrl}}`), signed with `{{webhookSigningSecret}}` and carrying `{{webhookAuthKey}}` as the last field, exactly as Sozuri would. Copy both from Manage API → Callback URLs → Webhook security.",
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"project\": \"{{project}}\",\n    \"number\": \"254700000001\",\n    \"shortcode\": \"20000\",\n    \"message\": \"BALANCE\",\n    \"messageId\": \"89abcdef0123456789abcdef0123456789abcdef\",\n    \"channel\": \"interactive\",\n    \"status\": \"success\",\n    \"network\": \"safaricom\",\n    \"type\": \"interactive\",\n    \"timestamp\": 0\n}",
+                            "options": {
+                                "raw": {
+                                    "language": "json"
+                                }
+                            }
+                        },
+                        "auth": {
+                            "type": "noauth"
+                        }
+                    },
+                    "event": [
+                        {
+                            "listen": "prerequest",
+                            "script": {
+                                "type": "text/javascript",
+                                "exec": [
+                                    "// Builds the body exactly as Sozuri sends it, then signs it, so you can test your receiver.",
+                                    "// X-Sozuri-Signature: t=<unix seconds>,v1=<hex HMAC-SHA256(signing secret, \"<t>.<raw body>\")>",
+                                    "const t = Math.floor(Date.now() / 1000);",
+                                    "const payload = JSON.parse(pm.variables.replaceIn(pm.request.body.raw));",
+                                    "if (Object.prototype.hasOwnProperty.call(payload, 'timestamp') && typeof payload.timestamp === 'number') { payload.timestamp = t; }",
+                                    "const authKey = pm.variables.get('webhookAuthKey');",
+                                    "if (authKey) { payload.authKey = authKey; }        // always the LAST key, as Sozuri sends it",
+                                    "const raw = JSON.stringify(payload);",
+                                    "pm.request.body.update(raw);",
+                                    "const secret = pm.variables.get('webhookSigningSecret');",
+                                    "if (secret) {",
+                                    "    const v1 = CryptoJS.HmacSHA256(t + '.' + raw, secret).toString(CryptoJS.enc.Hex);",
+                                    "    pm.request.headers.upsert({ key: 'X-Sozuri-Signature', value: 't=' + t + ',v1=' + v1 });",
+                                    "}"
+                                ]
+                            }
+                        }
+                    ],
+                    "response": []
+                },
+                {
+                    "name": "Incoming WhatsApp message",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Accept",
+                                "value": "application/json"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{yourWebhookUrl}}",
+                            "host": [
+                                "{{yourWebhookUrl}}"
+                            ]
+                        },
+                        "description": "A WhatsApp message to your number. The official channel sends the same keys with `channel: \"meta\"`.\n\nPosts to **your** server (`{{yourWebhookUrl}}`), signed with `{{webhookSigningSecret}}` and carrying `{{webhookAuthKey}}` as the last field, exactly as Sozuri would. Copy both from Manage API → Callback URLs → Webhook security.",
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"event\": \"message.received\",\n    \"channel\": \"qr\",\n    \"from\": \"254700000000\",\n    \"to\": \"254711000001\",\n    \"chatId\": \"254700000000@s.whatsapp.net\",\n    \"profileName\": \"Amina\",\n    \"message\": {\n        \"id\": \"3EB0C1A2B3C4D5E6F7A9\",\n        \"type\": \"text\",\n        \"text\": \"yes please\",\n        \"fromMe\": false\n    },\n    \"timestamp\": \"2026-11-08T07:30:00+00:00\"\n}",
+                            "options": {
+                                "raw": {
+                                    "language": "json"
+                                }
+                            }
+                        },
+                        "auth": {
+                            "type": "noauth"
+                        }
+                    },
+                    "event": [
+                        {
+                            "listen": "prerequest",
+                            "script": {
+                                "type": "text/javascript",
+                                "exec": [
+                                    "// Builds the body exactly as Sozuri sends it, then signs it, so you can test your receiver.",
+                                    "// X-Sozuri-Signature: t=<unix seconds>,v1=<hex HMAC-SHA256(signing secret, \"<t>.<raw body>\")>",
+                                    "const t = Math.floor(Date.now() / 1000);",
+                                    "const payload = JSON.parse(pm.variables.replaceIn(pm.request.body.raw));",
+                                    "if (Object.prototype.hasOwnProperty.call(payload, 'timestamp') && typeof payload.timestamp === 'number') { payload.timestamp = t; }",
+                                    "const authKey = pm.variables.get('webhookAuthKey');",
+                                    "if (authKey) { payload.authKey = authKey; }        // always the LAST key, as Sozuri sends it",
+                                    "const raw = JSON.stringify(payload);",
+                                    "pm.request.body.update(raw);",
+                                    "const secret = pm.variables.get('webhookSigningSecret');",
+                                    "if (secret) {",
+                                    "    const v1 = CryptoJS.HmacSHA256(t + '.' + raw, secret).toString(CryptoJS.enc.Hex);",
+                                    "    pm.request.headers.upsert({ key: 'X-Sozuri-Signature', value: 't=' + t + ',v1=' + v1 });",
+                                    "}"
+                                ]
+                            }
+                        }
+                    ],
+                    "response": []
+                },
+                {
+                    "name": "Premium on-demand request",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Accept",
+                                "value": "application/json"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{yourWebhookUrl}}",
+                            "host": [
+                                "{{yourWebhookUrl}}"
+                            ]
+                        },
+                        "description": "A subscriber texted your on-demand service. Reply with **Premium SMS → Reply to an on-demand request**, quoting `linkId`. Sent to the service's callback URL.\n\nPosts to **your** server (`{{yourWebhookUrl}}`), signed with `{{webhookSigningSecret}}` and carrying `{{webhookAuthKey}}` as the last field, exactly as Sozuri would. Copy both from Manage API → Callback URLs → Webhook security.",
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"project\": \"{{project}}\",\n    \"shortcode\": \"20000\",\n    \"keyword\": \"QUIZ\",\n    \"number\": \"254700000001\",\n    \"messageId\": \"00000000000000000000000001\",\n    \"network\": \"safaricom\",\n    \"type\": \"linkNotification\",\n    \"linkId\": \"00000000000000000000000001\",\n    \"message\": \"B\",\n    \"status\": \"B\",\n    \"timestamp\": 0\n}",
+                            "options": {
+                                "raw": {
+                                    "language": "json"
+                                }
+                            }
+                        },
+                        "auth": {
+                            "type": "noauth"
+                        }
+                    },
+                    "event": [
+                        {
+                            "listen": "prerequest",
+                            "script": {
+                                "type": "text/javascript",
+                                "exec": [
+                                    "// Builds the body exactly as Sozuri sends it, then signs it, so you can test your receiver.",
+                                    "// X-Sozuri-Signature: t=<unix seconds>,v1=<hex HMAC-SHA256(signing secret, \"<t>.<raw body>\")>",
+                                    "const t = Math.floor(Date.now() / 1000);",
+                                    "const payload = JSON.parse(pm.variables.replaceIn(pm.request.body.raw));",
+                                    "if (Object.prototype.hasOwnProperty.call(payload, 'timestamp') && typeof payload.timestamp === 'number') { payload.timestamp = t; }",
+                                    "const authKey = pm.variables.get('webhookAuthKey');",
+                                    "if (authKey) { payload.authKey = authKey; }        // always the LAST key, as Sozuri sends it",
+                                    "const raw = JSON.stringify(payload);",
+                                    "pm.request.body.update(raw);",
+                                    "const secret = pm.variables.get('webhookSigningSecret');",
+                                    "if (secret) {",
+                                    "    const v1 = CryptoJS.HmacSHA256(t + '.' + raw, secret).toString(CryptoJS.enc.Hex);",
+                                    "    pm.request.headers.upsert({ key: 'X-Sozuri-Signature', value: 't=' + t + ',v1=' + v1 });",
+                                    "}"
+                                ]
+                            }
+                        }
+                    ],
+                    "response": []
+                },
+                {
+                    "name": "Payment confirmed (unsigned)",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Accept",
+                                "value": "application/json"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{yourWebhookUrl}}",
+                            "host": [
+                                "{{yourWebhookUrl}}"
+                            ]
+                        },
+                        "description": "A confirmed M-Pesa payment, as posted to the webhook URL of your paybill configuration. **Payment webhooks are not signed and carry no authKey.** Match them on `BillRefNumber`.",
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"TransactionType\": \"Pay Bill\",\n    \"TransID\": \"TKA0000000\",\n    \"TransTime\": \"20261108101530\",\n    \"TransAmount\": \"500\",\n    \"BusinessShortCode\": \"123456\",\n    \"BillRefNumber\": \"INV-001\",\n    \"InvoiceNumber\": \"\",\n    \"OrgAccountBalance\": \"\",\n    \"ThirdPartyTransID\": \"\",\n    \"MSISDN\": \"254700000000\",\n    \"FirstName\": \"\",\n    \"MiddleName\": \"\",\n    \"LastName\": \"\"\n}",
+                            "options": {
+                                "raw": {
+                                    "language": "json"
+                                }
+                            }
+                        },
+                        "auth": {
+                            "type": "noauth"
+                        }
+                    },
+                    "response": []
+                }
+            ]
+        }
+    ],
+    "variable": [
+        {
+            "key": "baseUrl",
+            "value": "https://sozuri.net/api",
+            "type": "string",
+            "description": "The API base. Leave as is."
+        },
+        {
+            "key": "apiKey",
+            "value": "",
+            "type": "string",
+            "description": "REQUIRED. Your project's API key: Manage API → API Credentials. Sent as a Bearer token on every request."
+        },
+        {
+            "key": "project",
+            "value": "",
+            "type": "string",
+            "description": "REQUIRED. Your project's name, exactly as in the dashboard. The key and the name together are the credential."
+        },
+        {
+            "key": "smsFrom",
+            "value": "",
+            "type": "string",
+            "description": "SMS: a sender ID registered on your project (exact spelling and case)."
+        },
+        {
+            "key": "smsTo",
+            "value": "254700000000",
+            "type": "string",
+            "description": "SMS: who to send to, international format."
+        },
+        {
+            "key": "sendAt",
+            "value": "",
+            "type": "string",
+            "description": "Set by the pre-request script of \"Schedule an SMS\"."
+        },
+        {
+            "key": "waTo",
+            "value": "254700000000",
+            "type": "string",
+            "description": "WhatsApp: who to send to, international format."
+        },
+        {
+            "key": "waMessageId",
+            "value": "",
+            "type": "string",
+            "description": "WhatsApp: saved by each send, for \"Reply to a message\" and \"React to a message\"."
+        },
+        {
+            "key": "templateName",
+            "value": "order_ready",
+            "type": "string",
+            "description": "WhatsApp: an APPROVED template on your official number."
+        },
+        {
+            "key": "templateLanguage",
+            "value": "en",
+            "type": "string",
+            "description": "WhatsApp: the template's language code."
+        },
+        {
+            "key": "flowId",
+            "value": "",
+            "type": "string",
+            "description": "WhatsApp: the id of a Flow published in WhatsApp Manager."
+        },
+        {
+            "key": "voiceTo",
+            "value": "254700000000",
+            "type": "string",
+            "description": "Voice: who to call, international format."
+        },
+        {
+            "key": "callSid",
+            "value": "",
+            "type": "string",
+            "description": "Voice: saved by \"Place a call\" and \"Read a one-time code\"."
+        },
+        {
+            "key": "premiumNumber",
+            "value": "254700000001",
+            "type": "string",
+            "description": "Premium SMS: the subscriber's number."
+        },
+        {
+            "key": "premiumKeyword",
+            "value": "",
+            "type": "string",
+            "description": "Premium SMS: your subscription service's activation keyword."
+        },
+        {
+            "key": "ondemandKeyword",
+            "value": "",
+            "type": "string",
+            "description": "Premium SMS: your on-demand service's keyword."
+        },
+        {
+            "key": "linkId",
+            "value": "",
+            "type": "string",
+            "description": "Premium SMS: the linkId from the on-demand request you are answering."
+        },
+        {
+            "key": "contactId",
+            "value": "",
+            "type": "string",
+            "description": "Contacts: saved by \"List contacts\"."
+        },
+        {
+            "key": "contactGroup",
+            "value": "customers",
+            "type": "string",
+            "description": "Contacts: a group name."
+        },
+        {
+            "key": "mpesaPhone",
+            "value": "254700000000",
+            "type": "string",
+            "description": "Payments: the M-Pesa number to prompt."
+        },
+        {
+            "key": "workflowHookToken",
+            "value": "",
+            "type": "string",
+            "description": "Workflows: the token from your webhook trigger's URL."
+        },
+        {
+            "key": "workflowWebhookSecret",
+            "value": "",
+            "type": "string",
+            "description": "Workflows: the trigger's signing secret."
+        },
+        {
+            "key": "yourWebhookUrl",
+            "value": "",
+            "type": "string",
+            "description": "Webhook tests: YOUR server's URL that receives Sozuri webhooks."
+        },
+        {
+            "key": "webhookAuthKey",
+            "value": "",
+            "type": "string",
+            "description": "Webhook tests: Auth Key from Manage API → Callback URLs → Webhook security."
+        },
+        {
+            "key": "webhookSigningSecret",
+            "value": "",
+            "type": "string",
+            "description": "Webhook tests: Signing secret from the same panel."
+        }
+    ]
+}

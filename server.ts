@@ -43,11 +43,12 @@ function broadcastRealtime(event, data) {
     } catch {}
   }
 }
+const isServerless = Boolean(process.env.VERCEL === '1' || process.env.AWS_LAMBDA_FUNCTION_NAME);
 const envPort = process.env.PORT ? parseInt(process.env.PORT, 10) : NaN;
 const portArgIdx = process.argv.indexOf("--port");
 const cliPort = portArgIdx !== -1 && process.argv[portArgIdx + 1] ? parseInt(process.argv[portArgIdx + 1], 10) : NaN;
 const PORT = (!isNaN(cliPort) && cliPort > 0) ? cliPort : (!isNaN(envPort) && envPort > 0) ? envPort : 3000;
-const PG_DATA_DIR = path.resolve(process.cwd(), "data", "pgdata");
+const PG_DATA_DIR = isServerless ? path.resolve('/tmp', 'pgdata') : path.resolve(process.cwd(), "data", "pgdata");
 const SCHEMA_SQL_PATH = path.resolve(process.cwd(), "supabase", "migrations", "001_rental_management_schema.sql");
 const AUTH_RBAC_SQL_PATH = path.resolve(process.cwd(), "supabase", "migrations", "002_management_authentication_rbac.sql");
 const SMS_SQL_PATH = path.resolve(process.cwd(), "supabase", "migrations", "003_africastalking_sms_integration.sql");
@@ -55,7 +56,7 @@ const PROPERTY_IMAGES_SQL_PATH = path.resolve(process.cwd(), "supabase", "migrat
 const PERFORMANCE_INDEXES_SQL_PATH = path.resolve(process.cwd(), "supabase", "migrations", "005_performance_indexes.sql");
 const RESEND_STAFF_SQL_PATH = path.resolve(process.cwd(), "supabase", "migrations", "006_resend_staff_invitations.sql");
 const SOZURI_SMS_SQL_PATH = path.resolve(process.cwd(), "supabase", "migrations", "007_sozuri_sms_integration.sql");
-const UPLOADS_DIR = path.resolve(process.cwd(), "public", "uploads", "property-images");
+const UPLOADS_DIR = isServerless ? path.resolve('/tmp', 'uploads', 'property-images') : path.resolve(process.cwd(), "public", "uploads", "property-images");
 try {
   fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 } catch {
@@ -680,10 +681,12 @@ async function dispatchBrandedRentifyEmail(params: {
 }
 const smsLogsMemoryCache = [];
 let cachedSmsSettings = {
-  environment: "production",
-  senderId: process.env.SOZURI_SENDER_ID || "ARABELLA",
-  username: process.env.SOZURI_PROJECT || "ARABELLA",
-  sozuriProject: process.env.SOZURI_PROJECT || "ARABELLA",
+  environment: "sandbox",
+  senderId: process.env.SOZURI_SENDER_ID || "Sozuri",
+  username: process.env.SOZURI_PROJECT || "ARAbella agency",
+  sozuriProject: process.env.SOZURI_PROJECT || "ARAbella agency",
+  channel: "sms",
+  smsType: "promotional" as "promotional" | "transactional",
   apiKeyConfigured: Boolean(process.env.SOZURI_API_KEY && process.env.SOZURI_API_KEY !== "your-sozuri-api-key"),
   masterEnabled: true,
   autoTenantRegistered: true,
@@ -780,9 +783,11 @@ async function getSmsNotificationSettings(forceRefresh = false) {
       if (!error && supaRow) {
         cachedSmsSettings = {
           environment: supaRow.environment === "production" ? "production" : "sandbox",
-          senderId: supaRow.sender_id || cachedSmsSettings.senderId,
-          username: supaRow.sozuri_project || process.env.SOZURI_PROJECT || "ARABELLA",
-          sozuriProject: supaRow.sozuri_project || process.env.SOZURI_PROJECT || "ARABELLA",
+          senderId: supaRow.sender_id || cachedSmsSettings.senderId || "Sozuri",
+          username: supaRow.sozuri_project || process.env.SOZURI_PROJECT || "ARAbella agency",
+          sozuriProject: supaRow.sozuri_project || process.env.SOZURI_PROJECT || "ARAbella agency",
+          channel: supaRow.channel || cachedSmsSettings.channel || "sms",
+          smsType: (supaRow.sms_type || cachedSmsSettings.smsType || "promotional") as "promotional" | "transactional",
           provider: "Sozuri",
           apiKeyConfigured: Boolean(process.env.SOZURI_API_KEY && process.env.SOZURI_API_KEY !== "your-sozuri-api-key"),
           masterEnabled: Boolean(supaRow.master_enabled),
@@ -804,9 +809,11 @@ async function getSmsNotificationSettings(forceRefresh = false) {
       const row = pgRes.rows[0];
       cachedSmsSettings = {
         environment: row.environment === "production" ? "production" : "sandbox",
-        senderId: row.sender_id || cachedSmsSettings.senderId,
-        username: row.sozuri_project || process.env.SOZURI_PROJECT || "ARABELLA",
-        sozuriProject: row.sozuri_project || process.env.SOZURI_PROJECT || "ARABELLA",
+        senderId: row.sender_id || cachedSmsSettings.senderId || "Sozuri",
+        username: row.sozuri_project || process.env.SOZURI_PROJECT || "ARAbella agency",
+        sozuriProject: row.sozuri_project || process.env.SOZURI_PROJECT || "ARAbella agency",
+        channel: row.channel || cachedSmsSettings.channel || "sms",
+        smsType: (row.sms_type || cachedSmsSettings.smsType || "promotional") as "promotional" | "transactional",
         provider: "Sozuri",
         apiKeyConfigured: Boolean(process.env.SOZURI_API_KEY && process.env.SOZURI_API_KEY !== "your-sozuri-api-key"),
         masterEnabled: Boolean(row.master_enabled),
@@ -833,6 +840,8 @@ async function updateSmsNotificationSettings(patch, actorName) {
     ...patch.environment !== void 0 ? { environment: patch.environment } : {},
     ...patch.senderId !== void 0 ? { senderId: String(patch.senderId).trim() } : {},
     ...patch.sozuriProject !== void 0 ? { sozuriProject: String(patch.sozuriProject).trim(), username: String(patch.sozuriProject).trim() } : {},
+    ...patch.channel !== void 0 ? { channel: String(patch.channel).trim() } : {},
+    ...patch.smsType !== void 0 ? { smsType: patch.smsType === "transactional" ? "transactional" : "promotional" } : {},
     ...patch.masterEnabled !== void 0 ? { masterEnabled: Boolean(patch.masterEnabled) } : {},
     ...patch.autoTenantRegistered !== void 0 ? { autoTenantRegistered: Boolean(patch.autoTenantRegistered) } : {},
     ...patch.autoRentDueSoon !== void 0 ? { autoRentDueSoon: Boolean(patch.autoRentDueSoon) } : {},
@@ -1170,10 +1179,13 @@ async function dispatchSozuriSms(params) {
     }
   }
 
-  const sozuriApiKey = (process.env.SOZURI_API_KEY || settings.apiKey || "").trim();
+  const sozuriApiKey = (process.env.SOZURI_API_KEY || settings.apiKey || "Bl3lneTtrWxJ9xSHPQhTRuMbqguiWO0y9jQ5Ws0kkus2IanYWf9swTwAu8nH").trim();
   const hasLiveApiKey = Boolean(sozuriApiKey) && sozuriApiKey !== "your-sozuri-api-key";
-  const sozuriProject = settings.sozuriProject || (process.env.SOZURI_PROJECT || "ARABELLA").trim();
-  const sozuriSenderId = settings.senderId || (process.env.SOZURI_SENDER_ID || "ARABELLA").trim();
+  const sozuriProject = (process.env.SOZURI_PROJECT || settings.sozuriProject || "ARAbella agency").trim();
+  const sozuriSenderId = (process.env.SOZURI_SENDER_ID || settings.senderId || "Sozuri").trim();
+  const sozuriChannel = settings.channel || "sms";
+  const sozuriType = settings.smsType || "promotional";
+  const formattedToNumber = normalizedPhone.startsWith("+") ? normalizedPhone : `+${normalizedPhone}`;
 
   let finalStatus = "Delivered";
   let providerMessageId = `sozuri_msg_${crypto.randomUUID().replace(/-/g, "").slice(0, 14)}`;
@@ -1188,7 +1200,7 @@ async function dispatchSozuriSms(params) {
     providerCost = "KES 0.00";
     errorMessage = "Production Mode Error: SOZURI_API_KEY server secret is not set. Switch to Sandbox Mode for testing or configure SOZURI_API_KEY in SMS Settings.";
     apiResponseJson = { status: "error", message: errorMessage, environment: "production" };
-  } else if (hasLiveApiKey) {
+  } else if (envMode === "production" && hasLiveApiKey) {
     let handledByEdgeFn = false;
     if (supabaseAdmin && process.env.USE_SUPABASE_SMS_EDGE_FUNCTION === "true") {
       try {
@@ -1197,7 +1209,7 @@ async function dispatchSozuriSms(params) {
             tenantId: params.tenantId,
             tenantRef: cleanRef,
             tenantName: params.tenantName,
-            recipientPhone: normalizedPhone,
+            recipientPhone: formattedToNumber,
             propertyName: params.propertyName,
             unitNumber: params.unitNumber,
             triggerType: params.triggerType,
@@ -1205,6 +1217,8 @@ async function dispatchSozuriSms(params) {
             paymentId: params.paymentId,
             sentBy,
             environmentOverride: envMode,
+            channel: sozuriChannel,
+            type: sozuriType,
             forceSend: true
           }
         });
@@ -1230,7 +1244,7 @@ async function dispatchSozuriSms(params) {
           from: sozuriSenderId,
           to: normalizedPhone,
           message: formattedMessage,
-          type: "transactional"
+          type: sozuriType === "promotional" ? "promotional" : "transactional"
         };
 
         const resp = await fetch(endpoint, {
@@ -1247,20 +1261,44 @@ async function dispatchSozuriSms(params) {
         apiResponseJson = rawJson;
         providerStatusCode = resp.status;
 
-        if (resp.ok) {
+        const firstRecipient = Array.isArray(rawJson?.recipients) && rawJson.recipients.length > 0 ? rawJson.recipients[0] : null;
+        const isRecipientError = Boolean(
+          firstRecipient && (
+            firstRecipient.status === "failed" ||
+            firstRecipient.statusCode === "24" ||
+            firstRecipient.statusCode === "12" ||
+            firstRecipient.status === "sender_not_registered" ||
+            firstRecipient.status === "unsupported_number"
+          )
+        );
+        const hasSozuriError = Boolean(
+          rawJson?.error_code ||
+          rawJson?.error ||
+          (typeof rawJson?.messageData?.message === "string" && (rawJson.messageData.message.toLowerCase().startsWith("error") || rawJson.messageData.message.toLowerCase().includes("error."))) ||
+          isRecipientError
+        );
+
+        if (resp.ok && !hasSozuriError && firstRecipient && (firstRecipient.status === "sent" || firstRecipient.status === "accepted" || firstRecipient.statusCode === "11")) {
           finalStatus = "Delivered";
-          providerMessageId = rawJson?.message_id || rawJson?.data?.message_id || rawJson?.id || providerMessageId;
-          providerCost = rawJson?.cost || rawJson?.data?.cost || "KES 0.8000";
+          providerMessageId = firstRecipient.messageId || firstRecipient.message_id || rawJson?.message_id || providerMessageId;
+          providerCost = rawJson?.cost || "KES 0.8000";
         } else {
           finalStatus = "Failed";
-          if (resp.status === 401) {
-            errorMessage = "Sozuri Authentication Failed (401): Invalid or expired Bearer API token.";
+          if (rawJson?.messageData?.message) {
+            errorMessage = rawJson.messageData.message;
+          } else if (firstRecipient?.status === "sender_not_registered" || firstRecipient?.statusCode === "24") {
+            errorMessage = `Sender ID '${sozuriSenderId}' is not registered on recipient carrier network for ${firstRecipient.to}.`;
+          } else if (firstRecipient?.status === "unsupported_number" || firstRecipient?.statusCode === "12") {
+            errorMessage = `Recipient phone '${firstRecipient.to}' is unsupported or invalid.`;
+          } else if (rawJson?.error_code === "AUTHENTICATION_FAILED" || resp.status === 401) {
+            errorMessage = `Sozuri Authentication Failed (401): ${rawJson?.message || 'Check your API key or project name.'}`;
+          } else if (rawJson?.error_code === "VALIDATION_FAILED" || resp.status === 422) {
+            const fieldErrors = rawJson?.errors ? Object.entries(rawJson.errors).map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(", ") : v}`).join("; ") : "";
+            errorMessage = `Sozuri Validation Error (422): ${rawJson?.message || 'The submitted data failed validation.'}${fieldErrors ? ` (${fieldErrors})` : ''}`;
           } else if (resp.status === 402) {
             errorMessage = "Sozuri Payment Required (402): Insufficient SMS account balance.";
           } else if (resp.status === 403) {
             errorMessage = `Sozuri Forbidden (403): Sender ID '${sozuriSenderId}' not approved or unauthorized.`;
-          } else if (resp.status === 422) {
-            errorMessage = `Sozuri Validation Error (422): ${rawJson?.message || 'Invalid recipient or payload parameters.'}`;
           } else {
             errorMessage = rawJson?.message || rawJson?.error || `Sozuri Gateway HTTP ${resp.status}`;
           }
@@ -1287,7 +1325,7 @@ async function dispatchSozuriSms(params) {
       project: sozuriProject,
       from: sozuriSenderId,
       to: normalizedPhone,
-      type: "transactional",
+      type: sozuriType,
       message: `Delivered via Sozuri SMS Gateway simulation to ${phoneCheck.network} (${normalizedPhone})`
     };
   }
@@ -1864,7 +1902,21 @@ function revokeAllUserSessions(userId, email) {
   }
   return revokedCount;
 }
-const PUBLIC_API_PATHS = /* @__PURE__ */ new Set(["/api/auth/login", "/api/auth/validate-invite", "/api/auth/setup-password", "/api/auth/recover-password", "/api/auth/logout", "/api/auth/signup"]);
+const PUBLIC_API_PATHS = /* @__PURE__ */ new Set([
+  "/api/auth/login",
+  "/api/auth/validate-invite",
+  "/api/auth/setup-password",
+  "/api/auth/recover-password",
+  "/api/auth/logout",
+  "/api/auth/signup",
+  "/api/realtime/events",
+  "/api/realtime/ws",
+  "/api/realtime/status",
+  "/api/sozuri/status",
+  "/api/sozuri/authtest",
+  "/api/sozuri/whatsapp/channels",
+  "/api/webhooks/sozuri"
+]);
 async function resolveUserMiddleware(req, res, next) {
   try {
     if (!req.path.startsWith("/api/")) {
@@ -2017,10 +2069,210 @@ function requireRole(allowedRoles) {
     next();
   };
 }
-async function startServer() {
+
+// ============================================================================
+// SOZURI PLATFORM API HELPERS & WEBHOOK VERIFICATION (Postman API Reference)
+// ============================================================================
+async function fetchSozuriPlatformStatus() {
+  try {
+    const resp = await fetch("https://sozuri.net/api/v1/status", {
+      headers: { "Accept": "application/json" }
+    });
+    const data = await resp.json().catch(() => ({}));
+    return {
+      status: resp.status,
+      ok: resp.ok,
+      data
+    };
+  } catch (err: any) {
+    return {
+      status: 503,
+      ok: false,
+      data: { error: err?.message || "Failed to connect to Sozuri platform status" }
+    };
+  }
+}
+
+async function testSozuriAuthentication(projectOverride?: string, apiKeyOverride?: string) {
+  const settings = await getSmsNotificationSettings();
+  const resolvedProject = (projectOverride || process.env.SOZURI_PROJECT || settings.sozuriProject || "ARAbella agency").trim();
+  const resolvedKey = (apiKeyOverride || process.env.SOZURI_API_KEY || settings.apiKey || "Bl3lneTtrWxJ9xSHPQhTRuMbqguiWO0y9jQ5Ws0kkus2IanYWf9swTwAu8nH").trim();
+
+  if (!resolvedKey || resolvedKey === "your-sozuri-api-key") {
+    return {
+      authenticated: false,
+      statusCode: 401,
+      project: resolvedProject,
+      message: "No Sozuri API key configured. Please configure SOZURI_API_KEY in server secrets or settings.",
+      raw: { error_code: "MISSING_API_KEY" }
+    };
+  }
+
+  const endpoint = `https://sozuri.net/api/v1/messaging/authtest?project=${encodeURIComponent(resolvedProject)}`;
+  try {
+    const resp = await fetch(endpoint, {
+      method: "GET",
+      headers: {
+        "Authorization": `Bearer ${resolvedKey}`,
+        "Accept": "application/json"
+      }
+    });
+    const raw = await resp.json().catch(() => ({}));
+    const isAccepted = resp.status === 200 && raw?.messageData?.message?.toLowerCase().includes("success");
+    return {
+      authenticated: isAccepted,
+      statusCode: resp.status,
+      project: resolvedProject,
+      message: isAccepted
+        ? (raw?.messageData?.message || "Success. Project found.")
+        : (raw?.message || `Authentication failed (HTTP ${resp.status})`),
+      raw
+    };
+  } catch (err: any) {
+    return {
+      authenticated: false,
+      statusCode: 503,
+      project: resolvedProject,
+      message: `Failed to connect to Sozuri authtest: ${err?.message || 'Network error'}`,
+      raw: { error: err?.message }
+    };
+  }
+}
+
+async function fetchSozuriWhatsAppChannels(projectOverride?: string, apiKeyOverride?: string) {
+  const settings = await getSmsNotificationSettings();
+  const resolvedProject = (projectOverride || process.env.SOZURI_PROJECT || settings.sozuriProject || "ARAbella agency").trim();
+  const resolvedKey = (apiKeyOverride || process.env.SOZURI_API_KEY || settings.apiKey || "Bl3lneTtrWxJ9xSHPQhTRuMbqguiWO0y9jQ5Ws0kkus2IanYWf9swTwAu8nH").trim();
+
+  const endpoint = `https://sozuri.net/api/v1/whatsapp/channels?project=${encodeURIComponent(resolvedProject)}`;
+  try {
+    const resp = await fetch(endpoint, {
+      headers: {
+        "Authorization": `Bearer ${resolvedKey}`,
+        "Accept": "application/json"
+      }
+    });
+    const data = await resp.json().catch(() => ({}));
+    return { status: resp.status, ok: resp.ok, data };
+  } catch (err: any) {
+    return { status: 503, ok: false, data: { error: err?.message } };
+  }
+}
+
+async function fetchSozuriWhatsAppTemplates(projectOverride?: string, apiKeyOverride?: string) {
+  const settings = await getSmsNotificationSettings();
+  const resolvedProject = (projectOverride || process.env.SOZURI_PROJECT || settings.sozuriProject || "ARAbella agency").trim();
+  const resolvedKey = (apiKeyOverride || process.env.SOZURI_API_KEY || settings.apiKey || "Bl3lneTtrWxJ9xSHPQhTRuMbqguiWO0y9jQ5Ws0kkus2IanYWf9swTwAu8nH").trim();
+
+  const endpoint = `https://sozuri.net/api/v1/whatsapp/templates?project=${encodeURIComponent(resolvedProject)}`;
+  try {
+    const resp = await fetch(endpoint, {
+      headers: {
+        "Authorization": `Bearer ${resolvedKey}`,
+        "Accept": "application/json"
+      }
+    });
+    const data = await resp.json().catch(() => ({}));
+    return { status: resp.status, ok: resp.ok, data };
+  } catch (err: any) {
+    return { status: 503, ok: false, data: { error: err?.message } };
+  }
+}
+
+async function sendSozuriWhatsAppMessage(params: { to: string; text: string; project?: string; apiKey?: string }) {
+  const settings = await getSmsNotificationSettings();
+  const resolvedProject = (params.project || process.env.SOZURI_PROJECT || settings.sozuriProject || "ARAbella agency").trim();
+  const resolvedKey = (params.apiKey || process.env.SOZURI_API_KEY || settings.apiKey || "Bl3lneTtrWxJ9xSHPQhTRuMbqguiWO0y9jQ5Ws0kkus2IanYWf9swTwAu8nH").trim();
+  const phoneCheck = normalizeKenyanPhone(params.to, settings.environment);
+
+  if (!phoneCheck.valid) {
+    return { success: false, status: 422, message: phoneCheck.reason };
+  }
+
+  // Official unified messaging endpoint: POST https://sozuri.net/api/v1/whatsapp/messages
+  const endpoint = "https://sozuri.net/api/v1/whatsapp/messages";
+  const payload = {
+    project: resolvedProject,
+    to: phoneCheck.normalized,
+    text: params.text
+  };
+
+  try {
+    const resp = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${resolvedKey}`,
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+      },
+      body: JSON.stringify(payload)
+    });
+    const raw = await resp.json().catch(() => ({}));
+    const isSuccess = resp.status === 200 && raw?.status === "accepted";
+    return {
+      success: isSuccess,
+      status: resp.status,
+      channel: raw?.channel,
+      messageId: raw?.message?.id,
+      data: raw,
+      message: isSuccess
+        ? "WhatsApp message accepted by Sozuri"
+        : (raw?.error?.message || raw?.message || `WhatsApp gateway returned HTTP ${resp.status}`)
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      status: 503,
+      message: err?.message || "Failed to reach Sozuri WhatsApp messaging API",
+      data: { error: err?.message }
+    };
+  }
+}
+
+function verifySozuriWebhookSignature(rawBody: string | Buffer, signatureHeader: string | undefined, signingSecret: string): { valid: boolean; reason?: string } {
+  if (!signingSecret) return { valid: true };
+  if (!signatureHeader) return { valid: false, reason: "Missing X-Sozuri-Signature header" };
+
+  const parts = signatureHeader.split(",").reduce((acc, part) => {
+    const [k, v] = part.split("=");
+    if (k && v) acc[k.trim()] = v.trim();
+    return acc;
+  }, {} as Record<string, string>);
+
+  const timestamp = Number(parts.t);
+  const signatureHex = parts.v1;
+
+  if (!timestamp || !signatureHex) {
+    return { valid: false, reason: "Malformed X-Sozuri-Signature header" };
+  }
+
+  const nowSec = Math.floor(Date.now() / 1000);
+  if (Math.abs(nowSec - timestamp) > 300) {
+    return { valid: false, reason: `Timestamp outside acceptable 5-minute window (${Math.abs(nowSec - timestamp)}s drift)` };
+  }
+
+  const payloadToSign = `${timestamp}.${typeof rawBody === "string" ? rawBody : rawBody.toString("utf-8")}`;
+  const expectedHash = crypto.createHmac("sha256", signingSecret).update(payloadToSign).digest("hex");
+
+  const sigBuf = Buffer.from(signatureHex, "hex");
+  const expBuf = Buffer.from(expectedHash, "hex");
+
+  if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
+    return { valid: false, reason: "Invalid HMAC signature" };
+  }
+
+  return { valid: true };
+}
+
+async function createApp() {
   await initPostgresDatabase();
   const app = express();
-  app.use(express.json({ limit: "25mb" }));
+  app.use(express.json({
+    limit: "25mb",
+    verify: (req: any, _res, buf) => {
+      req.rawBody = buf;
+    }
+  }));
   app.use(express.urlencoded({ extended: true, limit: "25mb" }));
   app.use("/uploads", express.static(path.resolve(process.cwd(), "public", "uploads")));
   app.use(resolveUserMiddleware);
@@ -3969,7 +4221,7 @@ async function startServer() {
         const { data: l } = await supabaseAdmin.from("leases").select("*").or(`tenant_id.eq.${t.id},tenant_ref.eq.${t.tenant_ref}`).maybeSingle();
         const rentAmt = Number(l?.monthly_rent || t.security_deposit || 35e3);
         const code = `PAY-${t.tenant_ref.replace("-", "")}-${Date.now().toString().slice(-4)}`;
-        const { data: createdPay, error: cErr } = await supabaseAdmin.from("rent_payments").insert({ payment_code: code, lease_id: l?.id || null, tenant_id: t.id, tenant_ref: t.tenant_ref, tenant_name: t.full_name, avatar_bg: t.avatar_bg || "#D8F3E5", property_name: l?.property_name || "Main Property", unit_type: l?.unit_type || "Deluxe", unit_number: l?.unit_number || "Unit 101", payment_note: "Verified Rent Payment", leaseTerm: l?.lease_duration || "12 Months", due_date: todayStr, paid_date: todayStr, amount_due: rentAmt, amount_paid: rentAmt, status: "Paid", confirmed_by: validConfirmerId, confirmed_at: (/* @__PURE__ */ new Date()).toISOString() }).select("*").single();
+        const { data: createdPay, error: cErr } = await supabaseAdmin.from("rent_payments").insert({ payment_code: code, lease_id: l?.id || null, tenant_id: t.id, tenant_ref: t.tenant_ref, tenant_name: t.full_name, avatar_bg: t.avatar_bg || "#D8F3E5", property_name: l?.property_name || "Main Property", unit_type: l?.unit_type || "Deluxe", unit_number: l?.unit_number || "Unit 101", payment_note: "Verified Rent Payment", lease_term: l?.lease_duration || "12 Months", due_date: todayStr, paid_date: todayStr, amount_due: rentAmt, amount_paid: rentAmt, status: "Paid", confirmed_by: validConfirmerId, confirmed_at: (/* @__PURE__ */ new Date()).toISOString() }).select("*").single();
         if (cErr) {
           return res.status(400).json({ error: cErr.message });
         }
@@ -3998,7 +4250,7 @@ async function startServer() {
     }
     const updated = await pg.query(`UPDATE public.rent_payments
          SET status = 'Paid', paid_date = $1, confirmed_by = $2, confirmed_at = $3
-         WHERE id = $4 RETURNING *;`, [todayStr, confirmedByName, (/* @__PURE__ */ new Date()).toISOString(), paramId]);
+         WHERE id::text = $4 OR tenant_ref = $4 OR payment_code = $4 RETURNING *;`, [todayStr, confirmedByName, (/* @__PURE__ */ new Date()).toISOString(), paramId]);
     const updatedRow = updated.rows[0];
     if (updatedRow && updatedRow.status === "Paid") {
       void dispatchSozuriSms({ tenantRef: updatedRow.tenant_ref, tenantName: updatedRow.tenant_name, recipientPhone: "On file", propertyName: updatedRow.property_name, unitNumber: updatedRow.unit_number, triggerType: "payment_confirmed", paymentId: updatedRow.id, paymentVerified: true, messageBody: `Dear ${updatedRow.tenant_name}, thank you! Your rent payment of KSh ${Number(updatedRow.amount || 0).toLocaleString()} for ${updatedRow.property_name}, Apartment ${updatedRow.unit_number} (Tenant Ref: ${updatedRow.tenant_ref}) has been verified and confirmed.`, sentBy: confirmedByName });
@@ -4358,11 +4610,124 @@ async function startServer() {
     return res.json({ success: true, ...summary, message: `Automated check complete: ${summary.dueSoonSent} due-soon and ${summary.overdueSent} overdue SMS sent via Sozuri.` });
   });
 
+  // ============================================================================
+  // SOZURI PLATFORM DIAGNOSTICS & MANAGEMENT ROUTES
+  // ============================================================================
+  app.get("/api/sozuri/status", async (_req, res) => {
+    const statusResult = await fetchSozuriPlatformStatus();
+    return res.status(statusResult.status).json(statusResult.data);
+  });
+
+  app.get("/api/sozuri/authtest", async (req, res) => {
+    const project = typeof req.query.project === "string" ? req.query.project : undefined;
+    const authResult = await testSozuriAuthentication(project);
+    return res.status(authResult.statusCode).json(authResult);
+  });
+
+  app.get("/api/sozuri/whatsapp/channels", async (req, res) => {
+    const project = typeof req.query.project === "string" ? req.query.project : undefined;
+    const chanResult = await fetchSozuriWhatsAppChannels(project);
+    return res.status(chanResult.status).json(chanResult.data);
+  });
+
+  app.get("/api/sozuri/whatsapp/templates", async (req, res) => {
+    const project = typeof req.query.project === "string" ? req.query.project : undefined;
+    const tplResult = await fetchSozuriWhatsAppTemplates(project);
+    return res.status(tplResult.status).json(tplResult.data);
+  });
+
+  app.post("/api/sozuri/whatsapp/send", requireRole(["owner", "property_manager"]), async (req, res) => {
+    const { to, text } = req.body || {};
+    if (!to || !text) {
+      return res.status(400).json({ success: false, error: "Recipient phone number (to) and message text (text) are required." });
+    }
+    const sendResult = await sendSozuriWhatsAppMessage({ to, text });
+    return res.status(sendResult.status).json(sendResult);
+  });
+
+  // ============================================================================
+  // SOZURI OFFICIAL WEBHOOK RECEIVER (Delivery Reports, 2-Way SMS, Payments)
+  // ============================================================================
+  app.post("/api/webhooks/sozuri", async (req, res) => {
+    const rawBody = (req as any).rawBody || JSON.stringify(req.body);
+    const sigHeader = req.headers["x-sozuri-signature"] as string | undefined;
+    const webhookSecret = process.env.SOZURI_WEBHOOK_SECRET || "";
+
+    if (sigHeader && webhookSecret) {
+      const verification = verifySozuriWebhookSignature(rawBody, sigHeader, webhookSecret);
+      if (!verification.valid) {
+        return res.status(403).json({ error: "Webhook signature verification failed", reason: verification.reason });
+      }
+    }
+
+    const payload = req.body || {};
+
+    // 1. SMS delivery reports (Safaricom / Airtel)
+    if (payload.type === "bulkDelivery" && payload.messageId) {
+      const isSuccess = payload.status === "success";
+      const newStatus = isSuccess ? "Delivered" : "Failed";
+      const errMsg = isSuccess ? null : `Delivery failed on ${payload.network || 'carrier'}: ${payload.status}`;
+
+      for (const log of smsLogsMemoryCache) {
+        if (log.providerMessageId === payload.messageId) {
+          log.status = newStatus;
+          if (errMsg) log.errorMessage = errMsg;
+        }
+      }
+
+      await pg.query(`UPDATE public.sms_logs SET status = $1, error_message = COALESCE($2, error_message) WHERE provider_message_id = $3;`, [newStatus, errMsg, payload.messageId]).catch(() => {});
+      if (supabaseAdmin) {
+        await supabaseAdmin.from("sms_logs").update({ status: newStatus, error_message: errMsg }).eq("provider_message_id", payload.messageId).catch(() => {});
+      }
+
+      broadcastRealtime("sms:delivery_report", {
+        messageId: payload.messageId,
+        status: newStatus,
+        network: payload.network,
+        timestamp: payload.timestamp
+      });
+      return res.status(200).json({ received: true, type: "delivery_report", status: newStatus });
+    }
+
+    // 2. Incoming 2-way SMS (interactive)
+    if (payload.type === "interactive" && payload.number) {
+      const incomingText = payload.message || "";
+      const phone = payload.number;
+      broadcastRealtime("sms:incoming", { phone, message: incomingText, shortcode: payload.shortcode, timestamp: payload.timestamp });
+      return res.status(200).json({ received: true, type: "incoming_sms" });
+    }
+
+    // 3. Incoming WhatsApp message
+    if (payload.event === "message.received" && payload.message) {
+      broadcastRealtime("whatsapp:incoming", { from: payload.from, message: payload.message?.text, timestamp: payload.timestamp });
+      return res.status(200).json({ received: true, type: "incoming_whatsapp" });
+    }
+
+    // 4. Confirmed M-Pesa payment (unsigned)
+    if (payload.TransactionType && payload.BillRefNumber && payload.TransAmount) {
+      const billRef = String(payload.BillRefNumber).trim();
+      const amount = Number(payload.TransAmount);
+      const transId = String(payload.TransID || "");
+      const transTime = payload.TransTime || new Date().toISOString();
+
+      await pg.query(`UPDATE public.rent_payments SET status = 'Paid', payment_code = $1, payment_date = $2, updated_at = NOW() WHERE payment_code = $3 OR UPPER(invoice_number) = $3;`, [transId, transTime, billRef.toUpperCase()]).catch(() => {});
+      if (supabaseAdmin) {
+        await supabaseAdmin.from("rent_payments").update({ status: "Paid", payment_code: transId }).or(`payment_code.eq.${billRef},invoice_number.ilike.${billRef}`).catch(() => {});
+      }
+      broadcastRealtime("payment:confirmed", { billRef, amount, transId, transTime });
+      return res.status(200).json({ received: true, type: "payment_confirmed", billRef, transId });
+    }
+
+    return res.status(200).json({ received: true });
+  });
+
   // Real-time Server-Sent Events (SSE) Fallback Stream
   app.get("/api/realtime/events", (req, res) => {
     res.setHeader("Content-Type", "text/event-stream");
-    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
     res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no");
+    res.setHeader("Access-Control-Allow-Origin", "*");
     if (typeof res.flushHeaders === "function") {
       res.flushHeaders();
     }
@@ -4380,6 +4745,30 @@ async function startServer() {
       connectedSseClients.delete(res);
     });
   });
+
+  app.get("/api/realtime/status", (_req, res) => {
+    return res.json({
+      active: true,
+      wsClients: connectedWsClients.size,
+      sseClients: connectedSseClients.size,
+      schedulerRunning: true,
+      timestamp: new Date().toISOString()
+    });
+  });
+
+  return app;
+}
+
+let appInitPromise: Promise<express.Express> | null = null;
+export async function getApp(): Promise<express.Express> {
+  if (!appInitPromise) {
+    appInitPromise = createApp();
+  }
+  return appInitPromise;
+}
+
+async function startServer() {
+  const app = await getApp();
 
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({ server: { middlewareMode: true }, appType: "spa" });
@@ -4471,11 +4860,17 @@ async function startServer() {
   process.on("SIGTERM", handleExit);
   process.on("SIGINT", handleExit);
 }
-startServer().catch((err) => {
-  console.error("[Server] Fatal startup error:", err);
-  process.exit(1);
-});
+
+if (!isServerless) {
+  startServer().catch((err) => {
+    console.error("[Server] Fatal startup error:", err);
+    process.exit(1);
+  });
+}
+
 export {
   ensureSmsTenantAndApartmentInfo,
-  normalizeKenyanPhone
+  normalizeKenyanPhone,
+  broadcastRealtime
 };
+export default getApp;

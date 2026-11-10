@@ -293,21 +293,44 @@ Deno.serve(async (req: Request) => {
       rawJson = await sozuriRes.json().catch(() => ({}));
       statusCode = sozuriRes.status;
 
-      if (sozuriRes.ok) {
+      const firstRecipient = Array.isArray(rawJson?.recipients) && rawJson.recipients.length > 0 ? rawJson.recipients[0] : null;
+      const isRecipientRefusal = Boolean(
+        firstRecipient && (firstRecipient.status === 'failed' || firstRecipient.statusCode === '24' || firstRecipient.statusCode === '12' || firstRecipient.status === 'sender_not_registered' || firstRecipient.status === 'unsupported_number')
+      );
+      const hasSozuriRefusal = Boolean(
+        rawJson?.error_code ||
+        rawJson?.error ||
+        (typeof rawJson?.messageData?.message === 'string' && (rawJson.messageData.message.toLowerCase().startsWith('error') || rawJson.messageData.message.toLowerCase().includes('error.'))) ||
+        isRecipientRefusal
+      );
+
+      if (sozuriRes.ok && !hasSozuriRefusal && firstRecipient && (firstRecipient.status === 'sent' || firstRecipient.status === 'accepted' || firstRecipient.statusCode === '11')) {
         isSuccess = true;
         logStatus = 'Delivered';
         providerMessageId =
+          firstRecipient.messageId ||
+          firstRecipient.message_id ||
           rawJson.message_id ||
-          rawJson.data?.message_id ||
-          rawJson.id ||
           providerMessageId;
       } else {
         isSuccess = false;
         logStatus = 'Failed';
-        errorMessage =
-          rawJson.message ||
-          rawJson.error ||
-          `Sozuri API error (HTTP ${sozuriRes.status})`;
+        if (rawJson?.messageData?.message) {
+          errorMessage = rawJson.messageData.message;
+        } else if (firstRecipient?.status === 'sender_not_registered' || firstRecipient?.statusCode === '24') {
+          errorMessage = `Sender ID '${sozuriSenderId}' is not registered on recipient carrier for ${firstRecipient.to}.`;
+        } else if (firstRecipient?.status === 'unsupported_number' || firstRecipient?.statusCode === '12') {
+          errorMessage = `Recipient phone '${firstRecipient.to}' is unsupported.`;
+        } else if (rawJson?.error_code === 'AUTHENTICATION_FAILED' || sozuriRes.status === 401) {
+          errorMessage = 'Sozuri Authentication Failed (401): Check your API key or project name.';
+        } else if (rawJson?.error_code === 'VALIDATION_FAILED' || sozuriRes.status === 422) {
+          errorMessage = `Sozuri Validation Error (422): ${rawJson?.message || 'Invalid parameters'}`;
+        } else {
+          errorMessage =
+            rawJson.message ||
+            rawJson.error ||
+            `Sozuri API error (HTTP ${sozuriRes.status})`;
+        }
       }
     } else {
       // Sandbox / Simulated delivery for testing

@@ -142,11 +142,14 @@ export const RentPaymentsPage: React.FC<RentPaymentsPageProps> = ({
           ? propertyMetaMap.byName.get(t.property.trim().toLowerCase())
           : undefined);
 
-      map.set(t.tenantRef.toUpperCase(), {
-        tenant: t,
-        property: propMeta?.property,
-        prefix: propMeta?.prefix || 'A',
-      });
+      const refUpper = String(t.tenantRef || '').trim().toUpperCase();
+      if (refUpper) {
+        map.set(refUpper, {
+          tenant: t,
+          property: propMeta?.property,
+          prefix: propMeta?.prefix || 'A',
+        });
+      }
     });
 
     return map;
@@ -179,14 +182,15 @@ export const RentPaymentsPage: React.FC<RentPaymentsPageProps> = ({
       });
 
       const propTenantRefs = new Set(
-        propTenants.map((t) => t.tenantRef.toUpperCase())
+        propTenants.map((t) => String(t.tenantRef || '').trim().toUpperCase()).filter(Boolean)
       );
 
       // Payments strictly belonging to this property (by property name or tenantRef relationship)
       const propPayments = payments.filter((pay) => {
         const matchesName =
           pay.property && pay.property.trim().toLowerCase() === propNameLower;
-        const matchesTenant = propTenantRefs.has(pay.tenantRef.toUpperCase());
+        const payRefUpper = String(pay.tenantRef || '').trim().toUpperCase();
+        const matchesTenant = Boolean(payRefUpper && propTenantRefs.has(payRefUpper));
         return matchesName || matchesTenant;
       });
 
@@ -226,14 +230,15 @@ export const RentPaymentsPage: React.FC<RentPaymentsPageProps> = ({
       });
 
       const propTenantRefs = new Set(
-        scopedTenants.map((t) => t.tenantRef.toUpperCase())
+        scopedTenants.map((t) => String(t.tenantRef || '').trim().toUpperCase()).filter(Boolean)
       );
 
       // Strict payments for this property (by relationship or property name)
       scopedPayments = payments.filter((pay) => {
         const matchesName =
           pay.property && pay.property.trim().toLowerCase() === propNameLower;
-        const matchesTenant = propTenantRefs.has(pay.tenantRef.toUpperCase());
+        const payRefUpper = String(pay.tenantRef || '').trim().toUpperCase();
+        const matchesTenant = Boolean(payRefUpper && propTenantRefs.has(payRefUpper));
         return matchesName || matchesTenant;
       });
     }
@@ -501,7 +506,8 @@ export const RentPaymentsPage: React.FC<RentPaymentsPageProps> = ({
 
   // Download official receipt statement
   const handleDownloadReceipt = (pay: RentPaymentRecord) => {
-    const meta = tenantMetaMap.get(pay.tenantRef.toUpperCase());
+    const payRefUpper = String(pay.tenantRef || '').trim().toUpperCase();
+    const meta = payRefUpper ? tenantMetaMap.get(payRefUpper) : undefined;
     const prefix = meta?.prefix || 'A';
     const dateStr = pay.paidDate || new Date().toISOString().slice(0, 10);
     const receiptNum = `RCP-${pay.tenantRef}-${dateStr.replace(/-/g, '')}`;
@@ -922,7 +928,8 @@ Confirmed Date     : ${pay.confirmedAt || pay.paidDate || 'Verified'}
               <tbody className="divide-y divide-[#E7ECE9] text-xs">
                 {paginatedPayments.map((row) => {
                   // Resolve tenant's assigned property & prefix
-                  const tenantMeta = tenantMetaMap.get(row.tenantRef.toUpperCase());
+                  const rowRefUpper = String(row.tenantRef || '').trim().toUpperCase();
+                  const tenantMeta = rowRefUpper ? tenantMetaMap.get(rowRefUpper) : undefined;
                   const resolvedPrefix = tenantMeta?.prefix || 'A';
                   const resolvedPropName =
                     tenantMeta?.property?.name || row.property || 'Main Property';
