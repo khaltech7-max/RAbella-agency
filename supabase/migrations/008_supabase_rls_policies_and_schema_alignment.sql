@@ -4,6 +4,20 @@
 -- have all expected columns and explicit RLS policies without 403/404 errors.
 -- ============================================================================
 
+-- 0. Ensure standard auth roles exist (safe for both Supabase Cloud and local PostgreSQL / PGlite)
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'anon') THEN
+    CREATE ROLE anon NOLOGIN;
+  END IF;
+  IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'authenticated') THEN
+    CREATE ROLE authenticated NOLOGIN;
+  END IF;
+  IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'service_role') THEN
+    CREATE ROLE service_role NOLOGIN;
+  END IF;
+EXCEPTION WHEN OTHERS THEN NULL;
+END $$;
+
 -- 1. Align columns across tables used by the React frontend and Supabase client
 ALTER TABLE IF EXISTS public.properties
   ADD COLUMN IF NOT EXISTS occupied_units INTEGER NOT NULL DEFAULT 0,
@@ -88,7 +102,7 @@ BEGIN
     ) THEN
       EXECUTE format('DROP POLICY IF EXISTS "Allow authenticated full access on %I" ON public.%I;', tbl, tbl);
       EXECUTE format(
-        'CREATE POLICY "Allow authenticated full access on %I" ON public.%I FOR ALL TO authenticated USING (true) WITH CHECK (true);',
+        'CREATE POLICY "Allow authenticated full access on %I" ON public.%I FOR ALL TO authenticated, anon USING (true) WITH CHECK (true);',
         tbl,
         tbl
       );

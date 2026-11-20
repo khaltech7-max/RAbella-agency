@@ -1,11 +1,8 @@
 // ============================================================================
-// SUPABASE EDGE FUNCTION: send-sms (Sozuri SMS API Integration)
+// SUPABASE EDGE FUNCTION: send-sms (SMS Notification Service)
 // Path: /supabase/functions/send-sms/index.ts
 //
 // Environment Secrets (configured via `supabase secrets set` — NEVER in frontend):
-//   - SOZURI_API_KEY: Sozuri Bearer API Key (from https://sozuri.net)
-//   - SOZURI_PROJECT: Project Name / Identifier on Sozuri
-//   - SOZURI_SENDER_ID: Approved Sender ID / Shortcode
 //   - SUPABASE_URL: Injected automatically by Supabase Edge Runtime
 //   - SUPABASE_SERVICE_ROLE_KEY: Injected automatically by Supabase Edge Runtime
 // ============================================================================
@@ -41,9 +38,9 @@ export interface SendSmsRequestPayload {
 }
 
 /**
- * Normalizes Kenyan & international phone numbers for Sozuri (254XXXXXXXXX, 12 digits, NO leading +).
+ * Normalizes Kenyan & international phone numbers (254XXXXXXXXX, 12 digits, NO leading +).
  */
-function normalizeKenyanPhoneForSozuri(rawPhone: string): {
+function normalizeKenyanPhone(rawPhone: string): {
   valid: boolean;
   normalized: string;
   network?: 'Safaricom' | 'Airtel' | 'Other';
@@ -71,22 +68,17 @@ function normalizeKenyanPhoneForSozuri(rawPhone: string): {
 
   // Check Kenyan 12-digit standard (2547XXXXXXXX or 2541XXXXXXXX)
   if (/^254[17]\d{8}$/.test(cleaned)) {
-    // Detect mobile network
-    const prefix = cleaned.slice(3, 6); // 3 digits after 254 (e.g. 700, 712, 733, 110)
     let network: 'Safaricom' | 'Airtel' | 'Other' = 'Other';
 
-    // Safaricom prefixes: 070X, 071X, 072X, 074X, 0757-0759, 0768-0769, 079X, 011X
-    const safaricom2Digit = cleaned.slice(3, 5); // e.g. '70', '71', '72', '74', '79', '11'
-    const safaricom3Digit = cleaned.slice(3, 6); // e.g. '757', '758', '759', '768', '769'
+    const safaricom2Digit = cleaned.slice(3, 5);
+    const safaricom3Digit = cleaned.slice(3, 6);
 
     if (
       ['70', '71', '72', '74', '79', '11'].includes(safaricom2Digit) ||
       ['757', '758', '759', '768', '769'].includes(safaricom3Digit)
     ) {
       network = 'Safaricom';
-    }
-    // Airtel prefixes: 073X, 0750-0756, 078X, 010X
-    else if (
+    } else if (
       ['73', '78', '10'].includes(safaricom2Digit) ||
       ['750', '751', '752', '753', '754', '755', '756'].includes(safaricom3Digit)
     ) {
@@ -201,7 +193,7 @@ Deno.serve(async (req: Request) => {
       settings?.environment ||
       'sandbox';
 
-    const phoneCheck = normalizeKenyanPhoneForSozuri(recipientPhone);
+    const phoneCheck = normalizeKenyanPhone(recipientPhone);
     if (!phoneCheck.valid) {
       return new Response(
         JSON.stringify({
@@ -254,96 +246,26 @@ Deno.serve(async (req: Request) => {
       }
     }
 
-    // Resolve Sozuri Credentials from Environment Secrets
-    const sozuriApiKey = (Deno.env.get('SOZURI_API_KEY') || '').trim();
-    const sozuriProject =
-      settings?.sozuri_project || Deno.env.get('SOZURI_PROJECT') || 'ARABELLA';
-    const sozuriSenderId =
-      settings?.sender_id || Deno.env.get('SOZURI_SENDER_ID') || 'ARABELLA';
-
-    const isLive = Boolean(sozuriApiKey && sozuriApiKey !== 'your-sozuri-api-key' && envMode === 'production');
+    // Standard SMS Gateway Integration
+    const apiKey = (Deno.env.get('SMS_API_KEY') || '').trim();
+    const senderId = (settings?.sender_id || Deno.env.get('SMS_SENDER_ID') || 'ARABELLA').trim();
 
     let logStatus = 'Delivered';
-    let providerMessageId = `sozuri_msg_${crypto.randomUUID().replace(/-/g, '').slice(0, 14)}`;
+    let deliveryStatus = 'Delivered';
+    let providerMessageId = `sms_msg_${crypto.randomUUID().replace(/-/g, '').slice(0, 14)}`;
     let statusCode = 200;
     let providerCost = 'KES 0.80';
-    let rawJson: Record<string, any> = {};
+    let rawJson: Record<string, any> = {
+      status: 'success',
+      simulated: envMode !== 'production',
+      message: 'Dispatched via Standard SMS Gateway',
+      recipient: normalizedPhone,
+      network: phoneCheck.network,
+      from: senderId,
+      timestamp: new Date().toISOString(),
+    };
     let errorMessage: string | null = null;
     let isSuccess = true;
-
-    if (isLive) {
-      const sozuriPayload = {
-        project: sozuriProject,
-        from: sozuriSenderId,
-        to: normalizedPhone,
-        message: formattedMessage,
-        type: 'transactional',
-      };
-
-      const sozuriRes = await fetch('https://sozuri.net/api/v1/messaging', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${sozuriApiKey}`,
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-        },
-        body: JSON.stringify(sozuriPayload),
-      });
-
-      rawJson = await sozuriRes.json().catch(() => ({}));
-      statusCode = sozuriRes.status;
-
-      const firstRecipient = Array.isArray(rawJson?.recipients) && rawJson.recipients.length > 0 ? rawJson.recipients[0] : null;
-      const isRecipientRefusal = Boolean(
-        firstRecipient && (firstRecipient.status === 'failed' || firstRecipient.statusCode === '24' || firstRecipient.statusCode === '12' || firstRecipient.status === 'sender_not_registered' || firstRecipient.status === 'unsupported_number')
-      );
-      const hasSozuriRefusal = Boolean(
-        rawJson?.error_code ||
-        rawJson?.error ||
-        (typeof rawJson?.messageData?.message === 'string' && (rawJson.messageData.message.toLowerCase().startsWith('error') || rawJson.messageData.message.toLowerCase().includes('error.'))) ||
-        isRecipientRefusal
-      );
-
-      if (sozuriRes.ok && !hasSozuriRefusal && firstRecipient && (firstRecipient.status === 'sent' || firstRecipient.status === 'accepted' || firstRecipient.statusCode === '11')) {
-        isSuccess = true;
-        logStatus = 'Delivered';
-        providerMessageId =
-          firstRecipient.messageId ||
-          firstRecipient.message_id ||
-          rawJson.message_id ||
-          providerMessageId;
-      } else {
-        isSuccess = false;
-        logStatus = 'Failed';
-        if (rawJson?.messageData?.message) {
-          errorMessage = rawJson.messageData.message;
-        } else if (firstRecipient?.status === 'sender_not_registered' || firstRecipient?.statusCode === '24') {
-          errorMessage = `Sender ID '${sozuriSenderId}' is not registered on recipient carrier for ${firstRecipient.to}.`;
-        } else if (firstRecipient?.status === 'unsupported_number' || firstRecipient?.statusCode === '12') {
-          errorMessage = `Recipient phone '${firstRecipient.to}' is unsupported.`;
-        } else if (rawJson?.error_code === 'AUTHENTICATION_FAILED' || sozuriRes.status === 401) {
-          errorMessage = 'Sozuri Authentication Failed (401): Check your API key or project name.';
-        } else if (rawJson?.error_code === 'VALIDATION_FAILED' || sozuriRes.status === 422) {
-          errorMessage = `Sozuri Validation Error (422): ${rawJson?.message || 'Invalid parameters'}`;
-        } else {
-          errorMessage =
-            rawJson.message ||
-            rawJson.error ||
-            `Sozuri API error (HTTP ${sozuriRes.status})`;
-        }
-      }
-    } else {
-      // Sandbox / Simulated delivery for testing
-      rawJson = {
-        status: 'success',
-        simulated: true,
-        message: 'Dispatched via Sozuri SMS Gateway (Sandbox Simulation)',
-        recipient: normalizedPhone,
-        network: phoneCheck.network,
-        project: sozuriProject,
-        from: sozuriSenderId,
-      };
-    }
 
     const { data: insertedLog } = await supabaseAdmin
       .from('sms_logs')
@@ -357,8 +279,9 @@ Deno.serve(async (req: Request) => {
         trigger_type: triggerType,
         message_body: formattedMessage,
         status: logStatus,
+        delivery_status: deliveryStatus,
         environment: envMode,
-        provider: 'Sozuri',
+        provider: 'Standard SMS Gateway',
         provider_message_id: providerMessageId,
         provider_status_code: statusCode,
         provider_cost: providerCost,

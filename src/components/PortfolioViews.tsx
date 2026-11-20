@@ -1,4 +1,6 @@
 import React, { useState } from 'react';
+import { useReducedMotion } from 'motion/react';
+import { AnimatedCounter } from './AnimatedMetrics';
 import {
   MapPin,
   Download,
@@ -128,7 +130,7 @@ export const PropertiesPage: React.FC<PropertiesViewProps> = ({
     <div className="space-y-4">
       {/* Top Mint & White Stat Strip */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="rounded-2xl bg-[#D8F3E5] p-4">
+        <div className="rms-card-hover rounded-2xl bg-[#D8F3E5] p-4">
           <div className="flex items-center justify-between">
             <p className="text-[11.5px] font-medium text-[#4A6358]">
               Managed Communities
@@ -141,40 +143,40 @@ export const PropertiesPage: React.FC<PropertiesViewProps> = ({
             </button>
           </div>
           <p className="text-[24px] font-extrabold text-[#17231E] mt-1 tabular-nums">
-            {properties.length}
+            <AnimatedCounter value={properties.length} />
           </p>
           <span className="inline-block mt-3 px-2 py-0.5 rounded-md bg-white text-[#145338] text-[10.5px] font-bold">
             Active Database Portfolio
           </span>
         </div>
-        <div className="rounded-2xl bg-white p-4">
+        <div className="rms-card-hover rounded-2xl bg-white p-4">
           <p className="text-[11.5px] font-medium text-[#76827D]">
             Total Portfolio Units
           </p>
           <p className="text-[24px] font-extrabold text-[#17231E] mt-1 tabular-nums">
-            {totalDoors.toLocaleString()}
+            <AnimatedCounter value={totalDoors} />
           </p>
           <span className="inline-block mt-3 px-2 py-0.5 rounded-md bg-[#D8F3E5] text-[#145338] text-[10.5px] font-bold tabular-nums">
-            {overallOccPct}% Occupancy Rate
+            <AnimatedCounter value={Number(overallOccPct)} decimals={1} suffix="% Occupancy Rate" />
           </span>
         </div>
-        <div className="rounded-2xl bg-white p-4">
+        <div className="rms-card-hover rounded-2xl bg-white p-4">
           <p className="text-[11.5px] font-medium text-[#76827D]">
             Occupied Units
           </p>
           <p className="text-[24px] font-extrabold text-[#17231E] mt-1 tabular-nums">
-            {totalOccupied.toLocaleString()}
+            <AnimatedCounter value={totalOccupied} />
           </p>
           <span className="inline-block mt-3 px-2 py-0.5 rounded-md bg-[#D5F267] text-[#17231E] text-[10.5px] font-bold font-mono-num">
             Auto Ref A-001 Trigger
           </span>
         </div>
-        <div className="rounded-2xl bg-white p-4">
+        <div className="rms-card-hover rounded-2xl bg-white p-4">
           <p className="text-[11.5px] font-medium text-[#76827D]">
             Gross Monthly Rent Roll
           </p>
           <p className="text-[22px] font-extrabold text-[#17231E] mt-1 tabular-nums">
-            KSh {totalRentRoll.toLocaleString()}
+            <AnimatedCounter value={totalRentRoll} prefix="KSh " />
           </p>
           <span className="inline-block mt-3 px-2 py-0.5 rounded-md bg-[#D8F3E5] text-[#145338] text-[10.5px] font-bold">
             Calculated from DB
@@ -587,6 +589,7 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
   maintenance,
   tenants,
 }) => {
+  const prefersReducedMotion = useReducedMotion();
   const occupancyByProperty = properties.map((p) => {
     const occ = Math.round((p.occupiedUnits / Math.max(1, p.totalUnits)) * 100);
     return {
@@ -619,14 +622,14 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-        <div className="lg:col-span-7 bg-white rounded-2xl p-5">
+        <div className="rms-card-hover lg:col-span-7 bg-white rounded-2xl p-5">
           <div className="flex items-center justify-between mb-4">
             <div>
               <h2 className="text-[16px] font-bold text-[#17231E]">
                 Portfolio Occupancy & Retention Report
               </h2>
               <p className="text-[11.5px] text-[#7A8681]">
-                Live Occupancy % across {properties.length} database properties
+                Live Occupancy % across <AnimatedCounter value={properties.length} /> database properties
               </p>
             </div>
             <span className="px-3 py-1 rounded-xl bg-[#D5F267] text-[#17231E] text-[11.5px] font-bold">
@@ -659,13 +662,21 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
                     tick={{ fill: '#88948F', fontSize: 11 }}
                     tickFormatter={(v) => `${v}%`}
                   />
-                  <Tooltip />
+                  <Tooltip
+                    isAnimationActive={!prefersReducedMotion}
+                    animationDuration={180}
+                    animationEasing="ease-out"
+                  />
                   <Bar
                     dataKey="occupied"
                     name="Occupied %"
                     stackId="a"
                     fill="#BCEAD2"
                     radius={[0, 0, 6, 6]}
+                    isAnimationActive={!prefersReducedMotion}
+                    animationBegin={60}
+                    animationDuration={820}
+                    animationEasing="ease-out"
                   />
                   <Bar
                     dataKey="vacant"
@@ -673,6 +684,10 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
                     stackId="a"
                     fill="#D5F267"
                     radius={[6, 6, 0, 0]}
+                    isAnimationActive={!prefersReducedMotion}
+                    animationBegin={180}
+                    animationDuration={860}
+                    animationEasing="ease-out"
                   />
                 </BarChart>
               </ResponsiveContainer>
@@ -680,7 +695,7 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
           )}
         </div>
 
-        <div className="lg:col-span-5 bg-white rounded-2xl p-5 flex flex-col justify-between">
+        <div className="rms-card-hover lg:col-span-5 bg-white rounded-2xl p-5 flex flex-col justify-between">
           <div>
             <h2 className="text-[16px] font-bold text-[#17231E] mb-3">
               Executive Summary Exports
@@ -691,8 +706,9 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
                   <p className="text-[12px] font-bold text-[#17231E]">
                     Monthly Rent Roll & Arrears Ledger
                   </p>
-                  <p className="text-[10.5px] text-[#7A8681]">
-                    {payments.length} database records • KSh {paidTotal.toLocaleString()} collected
+                  <p className="text-[10.5px] text-[#7A8681] tabular-nums">
+                    <AnimatedCounter value={payments.length} /> database records •{' '}
+                    <AnimatedCounter value={paidTotal} prefix="KSh " /> collected
                   </p>
                 </div>
                 <button
@@ -710,7 +726,7 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
                       ]),
                     ])
                   }
-                  className="px-3 py-1.5 rounded-lg bg-[#D5F267] hover:bg-[#c8e755] text-[#17231E] text-[11px] font-bold shrink-0 cursor-pointer"
+                  className="rms-interactive-btn px-3 py-1.5 rounded-lg bg-[#D5F267] hover:bg-[#c8e755] text-[#17231E] text-[11px] font-bold shrink-0 cursor-pointer"
                 >
                   Export CSV
                 </button>
@@ -721,8 +737,9 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
                   <p className="text-[12px] font-bold text-[#17231E]">
                     Owner Net Operating Income (NOI) Ledger
                   </p>
-                  <p className="text-[10.5px] text-[#7A8681]">
-                    Income KSh {paidTotal.toLocaleString()} vs Expenses KSh {expTotal.toLocaleString()}
+                  <p className="text-[10.5px] text-[#7A8681] tabular-nums">
+                    Income <AnimatedCounter value={paidTotal} prefix="KSh " /> vs Expenses{' '}
+                    <AnimatedCounter value={expTotal} prefix="KSh " />
                   </p>
                 </div>
                 <button
@@ -740,7 +757,7 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
                       ]),
                     ])
                   }
-                  className="px-3 py-1.5 rounded-lg bg-[#D5F267] hover:bg-[#c8e755] text-[#17231E] text-[11px] font-bold shrink-0 cursor-pointer"
+                  className="rms-interactive-btn px-3 py-1.5 rounded-lg bg-[#D5F267] hover:bg-[#c8e755] text-[#17231E] text-[11px] font-bold shrink-0 cursor-pointer"
                 >
                   Export CSV
                 </button>
@@ -751,8 +768,9 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
                   <p className="text-[12px] font-bold text-[#17231E]">
                     Maintenance SLA & Work Orders Report
                   </p>
-                  <p className="text-[10.5px] text-[#7A8681]">
-                    {resolvedCount} of {maintenance.length} tickets resolved in database
+                  <p className="text-[10.5px] text-[#7A8681] tabular-nums">
+                    <AnimatedCounter value={resolvedCount} /> of{' '}
+                    <AnimatedCounter value={maintenance.length} /> tickets resolved in database
                   </p>
                 </div>
                 <button
@@ -770,7 +788,7 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
                       ]),
                     ])
                   }
-                  className="px-3 py-1.5 rounded-lg bg-[#D5F267] hover:bg-[#c8e755] text-[#17231E] text-[11px] font-bold shrink-0 cursor-pointer"
+                  className="rms-interactive-btn px-3 py-1.5 rounded-lg bg-[#D5F267] hover:bg-[#c8e755] text-[#17231E] text-[11px] font-bold shrink-0 cursor-pointer"
                 >
                   Export CSV
                 </button>
@@ -781,8 +799,9 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
                   <p className="text-[12px] font-bold text-[#17231E]">
                     Security Deposit Escrow Reconciliation
                   </p>
-                  <p className="text-[10.5px] text-[#7A8681]">
-                    {tenants.length} active tenants • KSh {depositTotal.toLocaleString()} held in escrow
+                  <p className="text-[10.5px] text-[#7A8681] tabular-nums">
+                    <AnimatedCounter value={tenants.length} /> active tenants •{' '}
+                    <AnimatedCounter value={depositTotal} prefix="KSh " /> held in escrow
                   </p>
                 </div>
                 <button

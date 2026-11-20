@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
+import { AnimatedCounter, AnimatedProgressBar } from './AnimatedMetrics';
 import {
   Building2,
   MapPin,
@@ -513,7 +514,7 @@ export const PropertiesPage: React.FC<PropertiesPageProps> = ({
     <div className="space-y-6 max-w-7xl mx-auto pb-12">
       {/* 1. TOP STATS STRIP */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
-        <div className="rounded-2xl bg-[#D8F3E5] p-4.5 border border-[#BCE9D3] flex flex-col justify-between shadow-xs">
+        <div className="rms-card-hover rounded-2xl bg-[#D8F3E5] p-4.5 border border-[#BCE9D3] flex flex-col justify-between shadow-xs">
           <div className="flex items-center justify-between">
             <span className="text-[12px] font-semibold text-[#1B4D3E] uppercase tracking-wider">
               Properties
@@ -523,16 +524,17 @@ export const PropertiesPage: React.FC<PropertiesPageProps> = ({
             </div>
           </div>
           <div className="mt-2">
-            <div className="text-2xl font-black text-[#17231E]">
-              {properties.length} <span className="text-xs font-medium text-[#2F5E4E]">Active Estates</span>
+            <div className="text-2xl font-black text-[#17231E] tabular-nums">
+              <AnimatedCounter value={properties.length} />{' '}
+              <span className="text-xs font-medium text-[#2F5E4E]">Active Estates</span>
             </div>
-            <div className="text-[11px] text-[#4A6D5E] mt-0.5">
-              Across {availablePrefixes.length} alphabetical prefix groups
+            <div className="text-[11px] text-[#4A6D5E] mt-0.5 tabular-nums">
+              Across <AnimatedCounter value={availablePrefixes.length} /> alphabetical prefix groups
             </div>
           </div>
         </div>
 
-        <div className="rounded-2xl bg-white p-4.5 border border-[#E5EAE7] flex flex-col justify-between shadow-xs">
+        <div className="rms-card-hover rounded-2xl bg-white p-4.5 border border-[#E5EAE7] flex flex-col justify-between shadow-xs">
           <div className="flex items-center justify-between">
             <span className="text-[12px] font-semibold text-[#66766E] uppercase tracking-wider">
               Total Units
@@ -542,38 +544,45 @@ export const PropertiesPage: React.FC<PropertiesPageProps> = ({
             </div>
           </div>
           <div className="mt-2">
-            <div className="text-2xl font-black text-[#17231E]">
-              {totalDoors} <span className="text-xs font-medium text-[#7C8B83]">Units</span>
+            <div className="text-2xl font-black text-[#17231E] tabular-nums">
+              <AnimatedCounter value={totalDoors} />{' '}
+              <span className="text-xs font-medium text-[#7C8B83]">Units</span>
             </div>
-            <div className="text-[11px] text-[#7C8B83] mt-0.5">
-              {totalOccupied} Occupied &bull; {Math.max(0, totalDoors - totalOccupied)} Vacant
+            <div className="text-[11px] text-[#7C8B83] mt-0.5 tabular-nums">
+              <AnimatedCounter value={totalOccupied} /> Occupied &bull;{' '}
+              <AnimatedCounter value={Math.max(0, totalDoors - totalOccupied)} /> Vacant
             </div>
           </div>
         </div>
 
-        <div className="rounded-2xl bg-white p-4.5 border border-[#E5EAE7] flex flex-col justify-between shadow-xs">
+        <div className="rms-card-hover rounded-2xl bg-white p-4.5 border border-[#E5EAE7] flex flex-col justify-between shadow-xs">
           <div className="flex items-center justify-between">
             <span className="text-[12px] font-semibold text-[#66766E] uppercase tracking-wider">
               Portfolio Occupancy
             </span>
-            <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-[#EAF8E6] text-[#24693D]">
-              {overallOccupancyPct}%
+            <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-[#EAF8E6] text-[#24693D] tabular-nums">
+              <AnimatedCounter
+                value={Number(overallOccupancyPct)}
+                decimals={1}
+                suffix="%"
+              />
             </span>
           </div>
           <div className="mt-2">
             <div className="w-full bg-[#E5EAE7] rounded-full h-2 overflow-hidden mb-1.5">
-              <div
-                className="bg-[#24693D] h-full rounded-full transition-all duration-500"
-                style={{ width: `${Math.min(100, Math.max(0, Number(overallOccupancyPct)))}%` }}
+              <AnimatedProgressBar
+                percent={Math.min(100, Math.max(0, Number(overallOccupancyPct)))}
+                className="bg-[#24693D] h-full rounded-full"
               />
             </div>
-            <div className="text-[11px] text-[#7C8B83]">
-              {totalOccupied} of {totalDoors} units generating active rent
+            <div className="text-[11px] text-[#7C8B83] tabular-nums">
+              <AnimatedCounter value={totalOccupied} /> of{' '}
+              <AnimatedCounter value={totalDoors} /> units generating active rent
             </div>
           </div>
         </div>
 
-        <div className="rounded-2xl bg-[#17231E] p-4.5 text-white flex flex-col justify-between shadow-xs">
+        <div className="rms-card-hover rounded-2xl bg-[#17231E] p-4.5 text-white flex flex-col justify-between shadow-xs">
           <div className="flex items-center justify-between">
             <span className="text-[12px] font-semibold text-[#D5F267] uppercase tracking-wider">
               Monthly Rent Roll
@@ -583,8 +592,8 @@ export const PropertiesPage: React.FC<PropertiesPageProps> = ({
             </span>
           </div>
           <div className="mt-2">
-            <div className="text-2xl font-black text-white">
-              KES {totalRentRoll.toLocaleString()}
+            <div className="text-2xl font-black text-white tabular-nums">
+              <AnimatedCounter value={totalRentRoll} prefix="KES " />
             </div>
             <div className="text-[11px] text-[#9FB5A7] mt-0.5">
               Expected gross portfolio yield / month

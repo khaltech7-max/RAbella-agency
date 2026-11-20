@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { AnimatedCounter } from './AnimatedMetrics';
 import {
   Bell,
   Send,
@@ -32,6 +33,7 @@ import {
   UserCheck,
   Mail,
   Zap,
+  Eye,
 } from 'lucide-react';
 import {
   ChatThread,
@@ -42,9 +44,12 @@ import {
   SmsNotificationSettings,
   SmsTriggerType,
   TenantPaymentHistoryItem,
+  BrandedEmailRecord,
+  EmailNotificationSettings,
+  EmailReminderTriggerType,
 } from '../data/rentalData';
 import { realtimeSmsClient } from '../lib/realtimeSms';
-import { rentalApi } from '../lib/apiClient';
+import { smsApi, emailApi } from '../lib/apiClient';
 
 interface MessagesPageProps {
   threads: ChatThread[];
@@ -53,6 +58,8 @@ interface MessagesPageProps {
   currentUser: UserSession;
   smsLogs?: SmsLogRecord[];
   smsSettings?: SmsNotificationSettings | null;
+  brandedEmails?: BrandedEmailRecord[];
+  onBrandedEmailsChange?: React.Dispatch<React.SetStateAction<BrandedEmailRecord[]>>;
   onSendMessage: (
     threadId: string,
     text: string,
@@ -160,6 +167,8 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
   currentUser,
   smsLogs = [],
   smsSettings,
+  brandedEmails = [],
+  onBrandedEmailsChange,
   onSendMessage,
   onCreateThread,
   onDeleteThread,
@@ -196,16 +205,43 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
   // 4. Single Tenant Reminder Modal state
   const [singleReminderTenant, setSingleReminderTenant] = useState<any | null>(null);
   const [singleMessageText, setSingleMessageText] = useState('');
+  const [singleReminderChannel, setSingleReminderChannel] = useState<'sms' | 'email' | 'both'>('both');
+  const [singleEmailTriggerType, setSingleEmailTriggerType] = useState<EmailReminderTriggerType>('rent_upcoming_3d');
   const [isSendingSingle, setIsSendingSingle] = useState(false);
 
-  // 5. Secondary Utility Modals (History & Gateway Settings)
+  // 5. Secondary Utility Modals (History & Notification Settings)
   const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
+
+  // 6. Resend Email Notification Management State
+  const [emailList, setEmailList] = useState<BrandedEmailRecord[]>(brandedEmails);
+  const [emailStatusFilter, setEmailStatusFilter] = useState<'all' | 'sent' | 'failed'>('all');
+  const [isEmailSettingsModalOpen, setIsEmailSettingsModalOpen] = useState(false);
+  const [previewEmailRecord, setPreviewEmailRecord] = useState<BrandedEmailRecord | null>(null);
+  const [retryingEmailId, setRetryingEmailId] = useState<string | null>(null);
+  const [isRunningAutoEmail, setIsRunningAutoEmail] = useState(false);
+  const [isSavingEmailSettings, setIsSavingEmailSettings] = useState(false);
+  const [testEmailRecipient, setTestEmailRecipient] = useState(currentUser?.email || 'ochiengpeterson507@gmail.com');
+  const [isSendingTestEmail, setIsSendingTestEmail] = useState(false);
+  const [emailSettingsDraft, setEmailSettingsDraft] = useState<EmailNotificationSettings>({
+    masterEnabled: true,
+    autoRentUpcoming3d: true,
+    autoRentDueToday: true,
+    autoRentOverdue: true,
+    autoPaymentConfirmed: true,
+    autoLeaseExpiry30d: true,
+    autoLeaseExpiry7d: true,
+    senderName: 'ARabella agency',
+    fromEmail: 'ARabella agency <onboarding@resend.dev>',
+    paymentInstructions:
+      'Remit payment via M-Pesa Paybill or Bank Transfer quoting your Tenant Account Reference (e.g., A-001) as the account number.',
+    preventDuplicatesHours: 24,
+    apiKeyConfigured: true,
+  });
   const [settingsDraft, setSettingsDraft] = useState<SmsNotificationSettings>({
     environment: smsSettings?.environment || 'sandbox',
-    senderId: smsSettings?.senderId || 'Sozuri',
-    username: smsSettings?.sozuriProject || smsSettings?.username || 'ARAbella agency',
-    sozuriProject: smsSettings?.sozuriProject || 'ARAbella agency',
+    senderId: smsSettings?.senderId || 'ARABELLA',
+    username: smsSettings?.username || 'ARAbella agency',
     channel: smsSettings?.channel || 'sms',
     smsType: smsSettings?.smsType || 'promotional',
     apiKeyConfigured: smsSettings?.apiKeyConfigured ?? false,
@@ -216,6 +252,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
     autoPaymentConfirmed: smsSettings?.autoPaymentConfirmed ?? true,
     autoAdminAnnouncement: smsSettings?.autoAdminAnnouncement ?? true,
     preventDuplicatesHours: smsSettings?.preventDuplicatesHours ?? 24,
+    provider: smsSettings?.provider || 'Sozuri',
     updatedBy: smsSettings?.updatedBy || 'System Default',
     updatedAt: smsSettings?.updatedAt || new Date().toISOString(),
   });
@@ -223,14 +260,22 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [isRealtimeActive, setIsRealtimeActive] = useState(realtimeSmsClient.getStatus());
 
+  // SMS Live Test & Delivery Status state
+  const [testMobile, setTestMobile] = useState('');
+  const [testMessage, setTestMessage] = useState('Test notification from ARabella Management via Sozuri SMS.');
+  const [isSendingTest, setIsSendingTest] = useState(false);
+  const [testResult, setTestResult] = useState<{ success: boolean; message: string; messageId?: string } | null>(null);
+  const [isCheckingBalance, setIsCheckingBalance] = useState(false);
+  const [balanceInfo, setBalanceInfo] = useState<string | null>(null);
+  const [queryingDlrId, setQueryingDlrId] = useState<string | null>(null);
+
   useEffect(() => {
     if (smsSettings) {
       setSettingsDraft((prev) => ({
         ...prev,
         environment: smsSettings.environment || 'sandbox',
-        senderId: smsSettings.senderId || 'Sozuri',
-        username: smsSettings.sozuriProject || smsSettings.username || 'ARAbella agency',
-        sozuriProject: smsSettings.sozuriProject || 'ARAbella agency',
+        senderId: smsSettings.senderId || 'ARABELLA',
+        username: smsSettings.username || 'ARAbella agency',
         channel: smsSettings.channel || 'sms',
         smsType: smsSettings.smsType || 'promotional',
         apiKeyConfigured: smsSettings.apiKeyConfigured ?? false,
@@ -247,66 +292,6 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
     }
   }, [smsSettings]);
 
-  // Sozuri Official API Diagnostics States & Handlers
-  const [authTestState, setAuthTestState] = useState<{
-    loading: boolean;
-    result?: { authenticated: boolean; statusCode: number; message: string; project: string } | null;
-  }>({ loading: false, result: null });
-
-  const [platformHealthState, setPlatformHealthState] = useState<{
-    loading: boolean;
-    result?: any | null;
-  }>({ loading: false, result: null });
-
-  const [waChannelsState, setWaChannelsState] = useState<{
-    loading: boolean;
-    result?: any | null;
-  }>({ loading: false, result: null });
-
-  const handleTestAuth = async () => {
-    setAuthTestState({ loading: true, result: null });
-    try {
-      const res = await rentalApi.testSozuriAuth(settingsDraft.sozuriProject);
-      setAuthTestState({ loading: false, result: res });
-    } catch (err: any) {
-      setAuthTestState({
-        loading: false,
-        result: {
-          authenticated: false,
-          statusCode: 500,
-          project: settingsDraft.sozuriProject || 'ARAbella agency',
-          message: err?.message || 'Failed to execute authtest',
-        },
-      });
-    }
-  };
-
-  const handleTestPlatformHealth = async () => {
-    setPlatformHealthState({ loading: true, result: null });
-    try {
-      const res = await rentalApi.getSozuriStatus();
-      setPlatformHealthState({ loading: false, result: res });
-    } catch (err: any) {
-      setPlatformHealthState({
-        loading: false,
-        result: { status: 'error', message: err?.message },
-      });
-    }
-  };
-
-  const handleCheckWaChannels = async () => {
-    setWaChannelsState({ loading: true, result: null });
-    try {
-      const res = await rentalApi.getSozuriWhatsAppChannels(settingsDraft.sozuriProject);
-      setWaChannelsState({ loading: false, result: res });
-    } catch (err: any) {
-      setWaChannelsState({
-        loading: false,
-        result: { error: err?.message },
-      });
-    }
-  };
-
   const [realtimePulse, setRealtimePulse] = useState(false);
 
   useEffect(() => {
@@ -320,18 +305,64 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
         const name = payload.tenantName || payload.tenantRef || 'Resident';
         const status = payload.status || 'Delivered';
         const net = payload.network ? ` (${payload.network})` : '';
-        setToastMessage(`⚡ Real-Time SMS ${status}: Sent to ${name}${net} via Sozuri Gateway`);
+        setToastMessage(`⚡ Real-Time SMS ${status}: Sent to ${name}${net}`);
         setTimeout(() => setToastMessage(null), 4500);
       } else if (eventType === 'sms:bulk_dispatched' && payload) {
-        setToastMessage(`⚡ Real-Time Bulk SMS: Dispatched to ${payload.sentCount} recipients via Sozuri`);
+        setToastMessage(`⚡ Real-Time Bulk SMS: Dispatched to ${payload.sentCount} recipients`);
         setTimeout(() => setToastMessage(null), 4500);
+      } else if ((eventType === 'email:dispatched' || eventType === 'email:retried') && payload?.email) {
+        setRealtimePulse(true);
+        setTimeout(() => setRealtimePulse(false), 2000);
+        setEmailList((prev) => [
+          payload.email,
+          ...prev.filter((item) => item.id !== payload.email.id),
+        ]);
+        if (onBrandedEmailsChange) {
+          onBrandedEmailsChange((prev) => [
+            payload.email,
+            ...prev.filter((item) => item.id !== payload.email.id),
+          ]);
+        }
       }
     });
     return () => {
       unsubStatus();
       unsubEvents();
     };
-  }, []);
+  }, [onBrandedEmailsChange]);
+
+  useEffect(() => {
+    if (brandedEmails && brandedEmails.length > 0) {
+      setEmailList((prev) => {
+        const byId = new Map<string, BrandedEmailRecord>();
+        for (const item of brandedEmails) byId.set(item.id, item);
+        for (const item of prev) {
+          if (!byId.has(item.id)) byId.set(item.id, item);
+        }
+        return Array.from(byId.values());
+      });
+    }
+  }, [brandedEmails]);
+
+  useEffect(() => {
+    let active = true;
+    emailApi
+      .getEmailHistory()
+      .then((res) => {
+        if (!active) return;
+        if (Array.isArray(res.emails)) {
+          setEmailList(res.emails);
+          if (onBrandedEmailsChange) onBrandedEmailsChange(res.emails);
+        }
+        if (res.settings) {
+          setEmailSettingsDraft(res.settings);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [onBrandedEmailsChange]);
 
   useEffect(() => {
     if (smsSettings) {
@@ -697,11 +728,18 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
       return upper ? selectedTenantRefs.has(upper) : false;
     });
 
+    const isAnnouncement = bulkTemplateType === 'announcement';
+
     const eligible = selected.filter(
-      (t) => (t.rentBalance > 0 || t.status !== 'Paid') && t.phone && t.phone.trim().length >= 8
+      (t) =>
+        (isAnnouncement || t.rentBalance > 0 || t.status !== 'Paid') &&
+        t.phone &&
+        t.phone.trim().length >= 8
     );
 
-    const excludedPaid = selected.filter((t) => t.rentBalance <= 0 && t.status === 'Paid');
+    const excludedPaid = isAnnouncement
+      ? []
+      : selected.filter((t) => t.rentBalance <= 0 && t.status === 'Paid');
     const excludedNoPhone = selected.filter(
       (t) => !t.phone || t.phone.trim().length < 8
     );
@@ -722,7 +760,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
       excludedNoPhone,
       prefixes,
     };
-  }, [combinedDirectory, selectedTenantRefs]);
+  }, [combinedDirectory, selectedTenantRefs, bulkTemplateType]);
 
   // Bulk template options
   const handleSelectBulkTemplate = (type: 'rent_due' | 'overdue' | 'announcement') => {
@@ -772,7 +810,8 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
   // Execute Bulk SMS Dispatch
   const handleExecuteBulkSend = async () => {
     if (selectedTenantsData.eligible.length === 0) {
-      alert('No eligible tenants are selected. Tenants with zero balance or missing phone numbers are excluded.');
+      setToastMessage('No eligible tenants are selected. Tenants with zero balance (for rent reminders) or missing phone numbers are excluded.');
+      setTimeout(() => setToastMessage(null), 5000);
       return;
     }
 
@@ -784,27 +823,41 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
       const res = onSendBulkSms
         ? await onSendBulkSms({
             tenantRefs: eligibleRefs,
-            triggerType: bulkTemplateType === 'overdue' ? 'rent_overdue' : 'rent_due_soon',
+            triggerType:
+              bulkTemplateType === 'overdue'
+                ? 'rent_overdue'
+                : bulkTemplateType === 'announcement'
+                ? 'admin_announcement'
+                : 'rent_due_soon',
             messageTemplate: bulkMessageText,
             forceSend: !preventDuplicates24h,
           })
         : undefined;
 
-      const sent = res?.sentCount ?? eligibleRefs.length;
+      const sent = res?.sentCount ?? 0;
       const skipped = res?.skippedDuplicatesCount ?? 0;
       const failed = res?.failedCount ?? 0;
+      const firstError = res?.logs?.find((l: any) => l?.errorMessage)?.errorMessage;
 
       setBulkDispatchResult({
         sentCount: sent,
         skippedDuplicatesCount: skipped,
         failedCount: failed,
-        message: `Successfully dispatched ${sent} SMS via Sozuri SMS Gateway (${skipped} duplicates skipped).`,
+        message:
+          failed > 0 && sent === 0 && firstError
+            ? `Bulk SMS Failed (${failed} failed): ${firstError}`
+            : `Dispatched ${sent} SMS notifications (${skipped} duplicates skipped, ${failed} failed).`,
       });
 
-      setToastMessage(`Bulk SMS Complete: Dispatched ${sent} messages (${skipped} duplicate reminders prevented).`);
-      setTimeout(() => setToastMessage(null), 5000);
+      setToastMessage(
+        failed > 0 && sent === 0 && firstError
+          ? `Sozuri SMS Error: ${firstError}`
+          : `Bulk SMS Complete: Dispatched ${sent} messages (${skipped} duplicate reminders prevented, ${failed} failed).`
+      );
+      setTimeout(() => setToastMessage(null), 6000);
     } catch (err: any) {
-      alert(`Bulk SMS failed: ${err?.message || 'Network error'}`);
+      setToastMessage(`Bulk SMS failed: ${err?.message || 'Network error'}`);
+      setTimeout(() => setToastMessage(null), 5000);
     } finally {
       setIsSendingBulk(false);
     }
@@ -813,6 +866,8 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
   // Open single tenant reminder modal
   const openSingleReminderModal = (tenant: any) => {
     setSingleReminderTenant(tenant);
+    setSingleReminderChannel('both');
+    setSingleEmailTriggerType(tenant.status === 'Overdue' ? 'rent_overdue' : 'rent_upcoming_3d');
     const amt =
       tenant.rentBalance > 0
         ? `KSh ${tenant.rentBalance.toLocaleString()}`
@@ -831,7 +886,10 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
     setIsSendingSingle(true);
 
     try {
-      if (onSendSms) {
+      const sendSmsNow = singleReminderChannel === 'sms' || singleReminderChannel === 'both';
+      const sendEmailNow = singleReminderChannel === 'email' || singleReminderChannel === 'both';
+
+      if (sendSmsNow && onSendSms) {
         const res: any = await onSendSms({
           tenantId: singleReminderTenant.id,
           tenantRef: singleReminderTenant.tenantRef,
@@ -844,18 +902,259 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
           forceSend: true,
         });
 
-        if (res && res.success === false) {
+        if (res && res.success === false && !sendEmailNow) {
           throw new Error(res.message || res.log?.errorMessage || 'SMS delivery failed');
         }
       }
 
-      setToastMessage(`Reminder sent to ${singleReminderTenant.tenantName} (${singleReminderTenant.phone})`);
-      setTimeout(() => setToastMessage(null), 4000);
+      if (sendEmailNow) {
+        const emailRes = await emailApi.sendEmailReminder({
+          tenantId: singleReminderTenant.id,
+          tenantRef: singleReminderTenant.tenantRef,
+          tenantName: singleReminderTenant.tenantName,
+          recipientEmail: singleReminderTenant.email,
+          propertyName: singleReminderTenant.property,
+          unitNumber: singleReminderTenant.unitNumber,
+          triggerType: singleEmailTriggerType,
+          amountDue:
+            singleReminderTenant.rentBalance > 0
+              ? singleReminderTenant.rentBalance
+              : singleReminderTenant.monthlyRent,
+          dueDate: singleReminderTenant.dueDate || '5th of this month',
+          customBody: singleMessageText.trim(),
+          forceSend: true,
+        });
+        if (emailRes?.log) {
+          setEmailList((prev) => [emailRes.log!, ...prev.filter((e) => e.id !== emailRes.log!.id)]);
+          if (onBrandedEmailsChange) {
+            onBrandedEmailsChange((prev) => [emailRes.log!, ...prev.filter((e) => e.id !== emailRes.log!.id)]);
+          }
+        }
+        if (!emailRes.success && !sendSmsNow) {
+          throw new Error(emailRes.message || 'Email delivery failed');
+        }
+      }
+
+      setToastMessage(
+        singleReminderChannel === 'both'
+          ? `SMS & Resend Email reminder dispatched to ${singleReminderTenant.tenantName}`
+          : singleReminderChannel === 'email'
+          ? `Resend Email reminder dispatched to ${singleReminderTenant.tenantName} (${singleReminderTenant.email})`
+          : `SMS reminder sent to ${singleReminderTenant.tenantName} (${singleReminderTenant.phone})`
+      );
+      setTimeout(() => setToastMessage(null), 4500);
       setSingleReminderTenant(null);
     } catch (err: any) {
-      alert(`Failed to send SMS: ${err?.message || 'Error occurred'}`);
+      setToastMessage(`Failed to send reminder: ${err?.message || 'Error occurred'}`);
+      setTimeout(() => setToastMessage(null), 5000);
     } finally {
       setIsSendingSingle(false);
+    }
+  };
+
+  // Resend Email Notification Management Handlers
+  const handleRetryEmail = async (emailId: string) => {
+    setRetryingEmailId(emailId);
+    try {
+      const res = await emailApi.retryEmailNotification(emailId);
+      if (res.email) {
+        setEmailList((prev) => prev.map((e) => (e.id === emailId ? res.email! : e)));
+        if (onBrandedEmailsChange) {
+          onBrandedEmailsChange((prev) => prev.map((e) => (e.id === emailId ? res.email! : e)));
+        }
+      }
+      setToastMessage(res.message || 'Email retry completed.');
+      setTimeout(() => setToastMessage(null), 4500);
+    } catch (err: any) {
+      setToastMessage(`Retry failed: ${err?.message || 'Network error'}`);
+      setTimeout(() => setToastMessage(null), 4500);
+    } finally {
+      setRetryingEmailId(null);
+    }
+  };
+
+  const handleRunAutomatedEmailChecks = async () => {
+    setIsRunningAutoEmail(true);
+    try {
+      const res = await emailApi.triggerAutomatedEmailChecks();
+      if (Array.isArray(res.emails) && res.emails.length > 0) {
+        setEmailList((prev) => {
+          const newIds = new Set(res.emails.map((e) => e.id));
+          return [...res.emails, ...prev.filter((e) => !newIds.has(e.id))];
+        });
+      }
+      const fresh = await emailApi.getEmailHistory().catch(() => null);
+      if (fresh?.emails) {
+        setEmailList(fresh.emails);
+        if (onBrandedEmailsChange) onBrandedEmailsChange(fresh.emails);
+      }
+      setToastMessage(res.message || 'Automated email reminder check completed.');
+      setTimeout(() => setToastMessage(null), 5500);
+    } catch (err: any) {
+      setToastMessage(`Automated email check failed: ${err?.message || 'Error occurred'}`);
+      setTimeout(() => setToastMessage(null), 4500);
+    } finally {
+      setIsRunningAutoEmail(false);
+    }
+  };
+
+  const handleSendTestEmail = async () => {
+    if (!testEmailRecipient.trim()) {
+      setToastMessage('Please enter a valid recipient email address.');
+      return;
+    }
+    setIsSendingTestEmail(true);
+    try {
+      const res = await emailApi.testEmail({ recipientEmail: testEmailRecipient.trim() });
+      if (res.log) {
+        setEmailList((prev) => [res.log!, ...prev.filter((e) => e.id !== res.log!.id)]);
+        if (onBrandedEmailsChange) {
+          onBrandedEmailsChange((prev) => [res.log!, ...prev.filter((e) => e.id !== res.log!.id)]);
+        }
+      }
+      setToastMessage(res.message || `Test email sent to ${testEmailRecipient.trim()} via Resend.`);
+      setTimeout(() => setToastMessage(null), 5000);
+    } catch (err: any) {
+      setToastMessage(`Test email failed: ${err?.message || 'Error occurred'}`);
+      setTimeout(() => setToastMessage(null), 5000);
+    } finally {
+      setIsSendingTestEmail(false);
+    }
+  };
+
+  const handleSaveEmailSettings = async () => {
+    setIsSavingEmailSettings(true);
+    try {
+      const res = await emailApi.updateEmailSettings(emailSettingsDraft);
+      if (res.settings) {
+        setEmailSettingsDraft(res.settings);
+      }
+      setToastMessage(res.message || 'Email notification settings saved.');
+      setTimeout(() => setToastMessage(null), 4000);
+      setIsEmailSettingsModalOpen(false);
+    } catch (err: any) {
+      setToastMessage(`Failed to save email settings: ${err?.message || 'Error occurred'}`);
+      setTimeout(() => setToastMessage(null), 4500);
+    } finally {
+      setIsSavingEmailSettings(false);
+    }
+  };
+
+  const filteredEmailLogs = useMemo(() => {
+    return emailList.filter((em) => {
+      const st = String(em.status || em.deliveryStatus || '').toLowerCase();
+      const isFailed = st.includes('fail');
+      if (emailStatusFilter === 'failed' && !isFailed) return false;
+      if (emailStatusFilter === 'sent' && isFailed) return false;
+      if (searchQuery.trim()) {
+        const q = searchQuery.toLowerCase();
+        const match =
+          (em.recipientName || '').toLowerCase().includes(q) ||
+          (em.recipientEmail || '').toLowerCase().includes(q) ||
+          (em.tenantRef || '').toLowerCase().includes(q) ||
+          (em.propertyName || '').toLowerCase().includes(q) ||
+          (em.subject || '').toLowerCase().includes(q) ||
+          (em.templateType || '').toLowerCase().includes(q);
+        if (!match) return false;
+      }
+      return true;
+    });
+  }, [emailList, emailStatusFilter, searchQuery]);
+
+  const emailMetrics = useMemo(() => {
+    const total = emailList.length;
+    const failed = emailList.filter((e) =>
+      String(e.status || e.deliveryStatus || '').toLowerCase().includes('fail')
+    ).length;
+    const sent = total - failed;
+    return { total, sent, failed };
+  }, [emailList]);
+
+  const formatReminderTypeBadge = (type?: string) => {
+    const t = String(type || '').toLowerCase();
+    if (t === 'rent_upcoming_3d') {
+      return { label: 'Upcoming (3 Days)', cls: 'bg-[#E8F5E9] text-[#145338] border-[#BCE8C7]' };
+    }
+    if (t === 'rent_due_today') {
+      return { label: 'Rent Due Today', cls: 'bg-amber-100 text-amber-800 border-amber-200' };
+    }
+    if (t === 'rent_overdue') {
+      return { label: 'Overdue Rent', cls: 'bg-red-100 text-red-800 border-red-200' };
+    }
+    if (t === 'payment_confirmed') {
+      return { label: 'Payment Confirmed', cls: 'bg-[#D8F3E5] text-[#145338] border-[#B6E6CE]' };
+    }
+    if (t === 'lease_expiry_30d') {
+      return { label: 'Lease Expiry (30D)', cls: 'bg-blue-100 text-blue-800 border-blue-200' };
+    }
+    if (t === 'lease_expiry_7d') {
+      return { label: 'Lease Expiry (7D)', cls: 'bg-purple-100 text-purple-800 border-purple-200' };
+    }
+    if (t === 'test_email') {
+      return { label: 'Resend Test Email', cls: 'bg-[#F2FCE2] text-[#15803D] border-[#D5F267]' };
+    }
+    return {
+      label: t.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()) || 'Notification',
+      cls: 'bg-[#F0F4F2] text-[#3B4D43] border-[#DFE5E1]',
+    };
+  };
+
+  // SMS Live Tools Handlers
+  const handleCheckBalance = async () => {
+    setIsCheckingBalance(true);
+    try {
+      const res = await smsApi.getSmsBalance();
+      setBalanceInfo(res.description || `Balance: KES ${res.balanceCredits?.toFixed(2)}`);
+      setToastMessage(res.description || 'SMS balance retrieved.');
+    } catch (err: any) {
+      setToastMessage(`Balance check failed: ${err.message}`);
+    } finally {
+      setIsCheckingBalance(false);
+    }
+  };
+
+  const handleSendTestSms = async () => {
+    if (!testMobile.trim()) {
+      setToastMessage('Please enter a recipient phone number (e.g. 254712345678 or 0712345678).');
+      return;
+    }
+    setIsSendingTest(true);
+    setTestResult(null);
+    try {
+      const res = await smsApi.testSms({
+        mobile: testMobile.trim(),
+        message: testMessage.trim(),
+        senderId: settingsDraft.senderId || 'ARABELLA',
+        environment: settingsDraft.environment,
+        smsType: settingsDraft.smsType,
+      });
+      setTestResult({
+        success: res.success,
+        message: res.message || res.log?.errorMessage || (res.success ? 'Dispatched' : 'Submission failed'),
+        messageId: res.messageId || res.log?.providerMessageId,
+      });
+      setToastMessage(res.message || res.log?.errorMessage || 'Test SMS processed.');
+    } catch (err: any) {
+      setTestResult({
+        success: false,
+        message: err.message || 'Failed to dispatch test SMS.',
+      });
+      setToastMessage(`Test failed: ${err.message}`);
+    } finally {
+      setIsSendingTest(false);
+    }
+  };
+
+  const handleQueryDlr = async (msgId: string) => {
+    if (!msgId) return;
+    setQueryingDlrId(msgId);
+    try {
+      const res = await smsApi.querySmsDlr(msgId);
+      setToastMessage(`Status for ${msgId}: ${res.deliveryStatus} (${res.reason || 'Up to date'})`);
+    } catch (err: any) {
+      setToastMessage(`Status check failed: ${err.message}`);
+    } finally {
+      setQueryingDlrId(null);
     }
   };
 
@@ -865,11 +1164,12 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
     setIsSavingSettings(true);
     try {
       await onUpdateSmsSettings(settingsDraft);
-      setToastMessage(`Sozuri SMS gateway settings saved successfully (${settingsDraft.environment.toUpperCase()} mode).`);
+      setToastMessage(`SMS notification settings saved successfully (${settingsDraft.environment.toUpperCase()} mode).`);
       setTimeout(() => setToastMessage(null), 4000);
       setIsSettingsModalOpen(false);
     } catch (err: any) {
-      alert(`Failed to save settings: ${err?.message || 'Error occurred'}`);
+      setToastMessage(`Failed to save settings: ${err?.message || 'Error occurred'}`);
+      setTimeout(() => setToastMessage(null), 5000);
     } finally {
       setIsSavingSettings(false);
     }
@@ -912,7 +1212,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
           </div>
           <div className="mt-3">
             <div className="text-3xl font-black text-[#17231E]">
-              {summaryMetrics.totalRemindersCount}
+              <AnimatedCounter value={summaryMetrics.totalRemindersCount} />
             </div>
             <p className="text-[11.5px] text-[#55695E] mt-0.5">
               All-time reminders tracked in Supabase
@@ -942,7 +1242,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
           </div>
           <div className="mt-3">
             <div className="text-3xl font-black text-[#17231E]">
-              {summaryMetrics.upcomingRemindersCount}
+              <AnimatedCounter value={summaryMetrics.upcomingRemindersCount} />
             </div>
             <p className="text-[11.5px] text-[#55695E] mt-0.5">
               Approaching due date in billing cycle
@@ -972,10 +1272,10 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
           </div>
           <div className="mt-3">
             <div className="text-3xl font-black text-[#17231E]">
-              {summaryMetrics.successfullySentCount}
+              <AnimatedCounter value={summaryMetrics.successfullySentCount} />
             </div>
             <p className="text-[11.5px] text-[#55695E] mt-0.5">
-              Confirmed delivered via Sozuri SMS Gateway
+              Confirmed delivered SMS notifications
             </p>
           </div>
           {activeSummaryFilter === 'sent' && (
@@ -1002,7 +1302,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
           </div>
           <div className="mt-3">
             <div className="text-3xl font-black text-[#17231E]">
-              {summaryMetrics.overdueRemindersCount}
+              <AnimatedCounter value={summaryMetrics.overdueRemindersCount} />
             </div>
             <p className="text-[11.5px] text-[#55695E] mt-0.5">
               Active arrears requiring follow-up
@@ -1091,7 +1391,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
           {/* Secondary Utilities: History & Gateway */}
           <button
             onClick={() => setIsHistoryModalOpen(true)}
-            title="View Sozuri SMS Delivery History"
+            title="View SMS Delivery History"
             className="p-2 rounded-xl bg-white border border-[#DFE5E1] text-[#4A5D52] hover:text-[#145338] hover:bg-[#F2F6F4] transition-colors cursor-pointer"
           >
             <History className="w-4 h-4" />
@@ -1436,6 +1736,276 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
       </div>
 
       {/* =========================================================================
+          SECTION 4: EMAIL NOTIFICATION MANAGEMENT (RESEND INTEGRATION)
+         ========================================================================= */}
+      <div className="bg-white rounded-3xl border border-[#E2E8E4] shadow-xs overflow-hidden">
+        <div className="p-5 sm:p-6 bg-[#FAFBFB] border-b border-[#EAEFEA] flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-2.5">
+              <div className="w-9 h-9 rounded-2xl bg-[#17231E] text-[#D5F267] flex items-center justify-center shrink-0">
+                <Mail className="w-4.5 h-4.5" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h3 className="text-[15.5px] font-black text-[#17231E]">
+                    Automatic Email Reminders & Delivery Log (Resend)
+                  </h3>
+                  <span
+                    className={`px-2.5 py-0.5 rounded-full text-[10.5px] font-bold border ${
+                      emailSettingsDraft.masterEnabled
+                        ? 'bg-[#EBF7F0] text-[#145338] border-[#BCE8C7]'
+                        : 'bg-amber-50 text-amber-800 border-amber-200'
+                    }`}
+                  >
+                    {emailSettingsDraft.masterEnabled ? 'Auto-Scheduler Active (Africa/Nairobi EAT)' : 'Auto-Reminders Paused'}
+                  </span>
+                </div>
+                <p className="text-[12px] text-[#55695E] mt-0.5">
+                  Automated 3-day upcoming rent, due-today, overdue arrears, payment confirmation receipts, and 30-day / 7-day lease expiry emails via Resend.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Filter pills */}
+            <div className="inline-flex rounded-xl bg-[#F0F4F2] p-1 border border-[#DFE5E1]">
+              <button
+                type="button"
+                onClick={() => setEmailStatusFilter('all')}
+                className={`px-3 py-1.5 rounded-lg text-[11.5px] font-bold transition-colors cursor-pointer ${
+                  emailStatusFilter === 'all'
+                    ? 'bg-[#17231E] text-[#D5F267]'
+                    : 'text-[#4A5D52] hover:text-[#17231E]'
+                }`}
+              >
+                All ({emailMetrics.total})
+              </button>
+              <button
+                type="button"
+                onClick={() => setEmailStatusFilter('sent')}
+                className={`px-3 py-1.5 rounded-lg text-[11.5px] font-bold transition-colors cursor-pointer ${
+                  emailStatusFilter === 'sent'
+                    ? 'bg-[#15803D] text-white'
+                    : 'text-[#4A5D52] hover:text-[#17231E]'
+                }`}
+              >
+                Sent ({emailMetrics.sent})
+              </button>
+              <button
+                type="button"
+                onClick={() => setEmailStatusFilter('failed')}
+                className={`px-3 py-1.5 rounded-lg text-[11.5px] font-bold transition-colors cursor-pointer ${
+                  emailStatusFilter === 'failed'
+                    ? 'bg-[#DC2626] text-white'
+                    : 'text-[#4A5D52] hover:text-[#17231E]'
+                }`}
+              >
+                Failed ({emailMetrics.failed})
+              </button>
+            </div>
+
+            <button
+              type="button"
+              onClick={handleRunAutomatedEmailChecks}
+              disabled={isRunningAutoEmail}
+              className="px-3.5 py-2 rounded-xl bg-[#F0F4F2] hover:bg-[#E2EBE5] text-[#145338] text-[12px] font-bold flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
+              title="Evaluate all tenant payment & lease dates in Africa/Nairobi timezone and dispatch due reminders"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isRunningAutoEmail ? 'animate-spin' : ''}`} />
+              <span>{isRunningAutoEmail ? 'Checking...' : 'Run Auto Check Now'}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setIsEmailSettingsModalOpen(true)}
+              className="px-3.5 py-2 rounded-xl bg-[#17231E] hover:bg-[#24352E] text-[#D5F267] text-[12px] font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
+            >
+              <SlidersHorizontal className="w-3.5 h-3.5" />
+              <span>Email Reminder Settings & Test</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Active Reminder Types Status Bar */}
+        <div className="px-5 py-3 bg-[#F6F9F7] border-b border-[#EAEFEA] flex flex-wrap items-center gap-2 text-[11px]">
+          <span className="font-bold text-[#4A5D52] uppercase tracking-wider mr-1">Active Triggers:</span>
+          {[
+            { key: 'autoRentUpcoming3d', label: 'Upcoming Rent (3D Before)' },
+            { key: 'autoRentDueToday', label: 'Rent Due Today' },
+            { key: 'autoRentOverdue', label: 'Overdue Rent' },
+            { key: 'autoPaymentConfirmed', label: 'Payment Confirmation' },
+            { key: 'autoLeaseExpiry30d', label: 'Lease Expiry (30D)' },
+            { key: 'autoLeaseExpiry7d', label: 'Lease Expiry (7D)' },
+          ].map((item) => {
+            const active =
+              emailSettingsDraft.masterEnabled &&
+              Boolean((emailSettingsDraft as any)[item.key]);
+            return (
+              <button
+                key={item.key}
+                type="button"
+                onClick={async () => {
+                  const nextVal = !Boolean((emailSettingsDraft as any)[item.key]);
+                  const nextDraft = { ...emailSettingsDraft, [item.key]: nextVal };
+                  setEmailSettingsDraft(nextDraft);
+                  try {
+                    await emailApi.updateEmailSettings({ [item.key]: nextVal });
+                    setToastMessage(`${item.label} ${nextVal ? 'enabled' : 'disabled'}.`);
+                    setTimeout(() => setToastMessage(null), 3500);
+                  } catch {}
+                }}
+                className={`px-2.5 py-1 rounded-lg font-bold border flex items-center gap-1.5 transition-all cursor-pointer ${
+                  active
+                    ? 'bg-white text-[#145338] border-[#BCE8C7] shadow-2xs'
+                    : 'bg-[#EEF2F0] text-[#7B8983] border-[#DFE5E1] line-through'
+                }`}
+                title="Click to toggle this automatic email reminder type"
+              >
+                <span className={`w-1.5 h-1.5 rounded-full ${active ? 'bg-[#15803D]' : 'bg-[#94A39B]'}`} />
+                <span>{item.label}</span>
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Email Logs Table */}
+        <div className="overflow-x-auto">
+          <table className="w-full text-left border-collapse">
+            <thead>
+              <tr className="border-b border-[#EAEFEA] bg-[#FAFBFB] text-[10.5px] font-bold text-[#6E7F75] uppercase tracking-wider">
+                <th className="py-3 px-4">Date & Time (EAT)</th>
+                <th className="py-3 px-3">Tenant & Unit</th>
+                <th className="py-3 px-3">Reminder Type</th>
+                <th className="py-3 px-3">Subject & Amount</th>
+                <th className="py-3 px-3 text-center">Delivery Status</th>
+                <th className="py-3 px-4 text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[#EFF3F1] text-[12.5px]">
+              {filteredEmailLogs.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="py-10 text-center text-[#6E7F75]">
+                    <Mail className="w-7 h-7 text-[#8C9C93] mx-auto mb-2" />
+                    <p className="font-bold text-[#17231E]">No email notifications match the current view</p>
+                    <p className="text-xs mt-1">
+                      Automatic reminders and payment confirmation receipts sent via Resend appear here in real-time.
+                    </p>
+                  </td>
+                </tr>
+              ) : (
+                filteredEmailLogs.slice(0, 50).map((em) => {
+                  const badge = formatReminderTypeBadge(em.templateType);
+                  const st = String(em.status || em.deliveryStatus || 'Delivered');
+                  const isFailed = st.toLowerCase().includes('fail');
+                  return (
+                    <tr key={em.id} className="hover:bg-[#F9FBFA] transition-colors">
+                      <td className="py-3 px-4 whitespace-nowrap text-[11.5px] text-[#55695E]">
+                        <div className="font-semibold text-[#17231E]">{em.createdAt}</div>
+                        <div className="text-[10.5px] text-[#8C9C93]">
+                          {em.sentBy || 'Automated Email Scheduler'}
+                        </div>
+                      </td>
+
+                      <td className="py-3 px-3">
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-bold text-[#17231E]">{em.recipientName}</span>
+                          {em.tenantRef && (
+                            <span className="font-mono text-[10px] font-bold px-1.5 py-0.5 rounded bg-[#F0F4F2] text-[#145338]">
+                              {em.tenantRef}
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-[11px] text-[#697B71]">
+                          {em.recipientEmail}
+                          {em.propertyName ? ` • ${em.propertyName} (${em.unitNumber || 'Unit'})` : ''}
+                        </div>
+                      </td>
+
+                      <td className="py-3 px-3 whitespace-nowrap">
+                        <span className={`inline-block px-2.5 py-0.5 rounded-full text-[10.5px] font-bold border ${badge.cls}`}>
+                          {badge.label}
+                        </span>
+                      </td>
+
+                      <td className="py-3 px-3 max-w-md">
+                        <div className="font-semibold text-[#17231E] truncate" title={em.subject}>
+                          {em.subject}
+                        </div>
+                        <div className="text-[11px] text-[#55695E] flex items-center gap-2 mt-0.5">
+                          {em.amountDue !== undefined && (
+                            <span className="font-bold text-[#145338]">
+                              KES {Number(em.amountDue).toLocaleString()}
+                            </span>
+                          )}
+                          {em.dueDate && <span>• Due/Date: {em.dueDate}</span>}
+                          {em.resendId && (
+                            <span className="font-mono text-[10px] text-[#697B71]">
+                              • ID: {em.resendId}
+                            </span>
+                          )}
+                        </div>
+                        {em.errorMessage && (
+                          <div className="text-[10.5px] text-red-600 mt-0.5 truncate" title={em.errorMessage}>
+                            {em.errorMessage}
+                          </div>
+                        )}
+                      </td>
+
+                      <td className="py-3 px-3 text-center whitespace-nowrap">
+                        <span
+                          className={`inline-block px-2.5 py-0.5 rounded-full text-[10.5px] font-bold ${
+                            isFailed
+                              ? 'bg-red-100 text-red-800 border border-red-200'
+                              : 'bg-[#D8F3E5] text-[#145338] border border-[#BCE9D3]'
+                          }`}
+                        >
+                          {st}
+                        </span>
+                        {em.retryCount ? (
+                          <div className="text-[10px] text-[#697B71] mt-0.5">
+                            Retried {em.retryCount}x
+                          </div>
+                        ) : null}
+                      </td>
+
+                      <td className="py-3 px-4 text-right whitespace-nowrap">
+                        <div className="inline-flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => handleRetryEmail(em.id)}
+                            disabled={retryingEmailId === em.id}
+                            className={`px-2.5 py-1 rounded-xl text-[11px] font-bold flex items-center gap-1 transition-colors cursor-pointer ${
+                              isFailed
+                                ? 'bg-[#FEE2E2] hover:bg-[#FECACA] text-[#B91C1C] border border-[#FECACA]'
+                                : 'bg-[#F0F4F2] hover:bg-[#E2EBE5] text-[#145338] border border-[#D0E2D6]'
+                            }`}
+                            title="Retry sending this email notification via Resend"
+                          >
+                            <RefreshCw className={`w-3 h-3 ${retryingEmailId === em.id ? 'animate-spin' : ''}`} />
+                            <span>{retryingEmailId === em.id ? 'Retrying...' : isFailed ? 'Retry Failed' : 'Resend'}</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => setPreviewEmailRecord(em)}
+                            className="p-1.5 rounded-xl bg-[#F4F8F6] hover:bg-[#D5F267] text-[#17231E] transition-colors cursor-pointer border border-[#E4ECE8]"
+                            title="Preview branded HTML email"
+                          >
+                            <Eye className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* =========================================================================
           MODAL: BULK SMS REMINDER COMPOSER
          ========================================================================= */}
       {isBulkModalOpen && (
@@ -1449,7 +2019,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
                   <span>Send Bulk SMS Reminders</span>
                 </h3>
                 <p className="text-[12px] text-[#697B71]">
-                  Dispatched securely via Sozuri SMS Gateway backend service
+                  Dispatched securely via ARabella SMS Notification Service
                 </p>
               </div>
               <button
@@ -1649,7 +2219,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
                 {isSendingBulk ? (
                   <>
                     <RefreshCw className="w-4 h-4 animate-spin" />
-                    <span>Sending via Sozuri SMS Gateway...</span>
+                    <span>Sending SMS Reminders...</span>
                   </>
                 ) : (
                   <>
@@ -1688,8 +2258,9 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
 
             <div className="p-3 bg-[#F8FAF9] rounded-xl border border-[#E5EAE7] flex items-center justify-between text-[12.5px]">
               <div>
-                <span className="text-[11px] text-[#697B71] block">Phone Number</span>
-                <span className="font-mono font-bold text-[#17231E]">{singleReminderTenant.phone || 'None on file'}</span>
+                <span className="text-[11px] text-[#697B71] block">Phone & Email</span>
+                <span className="font-mono font-bold text-[#17231E]">{singleReminderTenant.phone || 'None'}</span>
+                <span className="text-[11px] text-[#55695E] block">{singleReminderTenant.email || 'No email'}</span>
               </div>
               <div className="text-right">
                 <span className="text-[11px] text-[#697B71] block">Outstanding Balance</span>
@@ -1699,9 +2270,42 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
               </div>
             </div>
 
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-[11px] font-bold text-[#3B4D43] uppercase tracking-wider block mb-1">
+                  Delivery Channel
+                </label>
+                <select
+                  value={singleReminderChannel}
+                  onChange={(e) => setSingleReminderChannel(e.target.value as 'sms' | 'email' | 'both')}
+                  className="w-full px-3 py-2 bg-[#F8FAF9] border border-[#D8DFDB] rounded-xl text-[12px] font-bold text-[#17231E]"
+                >
+                  <option value="both">SMS (Sozuri) + Email (Resend)</option>
+                  <option value="email">Email Only (Resend)</option>
+                  <option value="sms">SMS Only (Sozuri)</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-[11px] font-bold text-[#3B4D43] uppercase tracking-wider block mb-1">
+                  Reminder Category
+                </label>
+                <select
+                  value={singleEmailTriggerType}
+                  onChange={(e) => setSingleEmailTriggerType(e.target.value as EmailReminderTriggerType)}
+                  className="w-full px-3 py-2 bg-[#F8FAF9] border border-[#D8DFDB] rounded-xl text-[12px] font-bold text-[#17231E]"
+                >
+                  <option value="rent_upcoming_3d">Upcoming Rent (3 Days Before)</option>
+                  <option value="rent_due_today">Rent Due Today</option>
+                  <option value="rent_overdue">Overdue Rent Reminder</option>
+                  <option value="lease_expiry_30d">Lease Expiry (30 Days)</option>
+                  <option value="lease_expiry_7d">Lease Expiry (7 Days)</option>
+                </select>
+              </div>
+            </div>
+
             <div>
               <label className="text-[11.5px] font-bold text-[#3B4D43] uppercase tracking-wider block mb-1">
-                SMS Message Body
+                Reminder Message Body
               </label>
               <textarea
                 rows={4}
@@ -1723,8 +2327,8 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
               <button
                 type="button"
                 onClick={handleSendSingleReminder}
-                disabled={isSendingSingle || !singleReminderTenant.phone}
-                className="px-4 py-2 rounded-xl bg-[#D5F267] hover:bg-[#c8e858] disabled:opacity-50 text-[#17231E] text-[12.5px] font-bold shadow-xs flex items-center gap-1.5"
+                disabled={isSendingSingle}
+                className="px-4 py-2 rounded-xl bg-[#D5F267] hover:bg-[#c8e858] disabled:opacity-50 text-[#17231E] text-[12.5px] font-bold shadow-xs flex items-center gap-1.5 cursor-pointer"
               >
                 {isSendingSingle ? (
                   <>
@@ -1734,7 +2338,13 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
                 ) : (
                   <>
                     <Send className="w-3.5 h-3.5" />
-                    <span>Send SMS</span>
+                    <span>
+                      {singleReminderChannel === 'both'
+                        ? 'Send SMS & Email'
+                        : singleReminderChannel === 'email'
+                        ? 'Send Resend Email'
+                        : 'Send SMS'}
+                    </span>
                   </>
                 )}
               </button>
@@ -1744,7 +2354,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
       )}
 
       {/* =========================================================================
-          MODAL: SOZURI SMS DELIVERY HISTORY
+          MODAL: SMS DELIVERY HISTORY
          ========================================================================= */}
       {isHistoryModalOpen && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
@@ -1753,10 +2363,10 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
               <div>
                 <h3 className="text-base font-bold text-[#17231E] flex items-center gap-2">
                   <History className="w-5 h-5 text-[#145338]" />
-                  <span>Sozuri SMS Delivery History</span>
+                  <span>SMS Delivery History</span>
                 </h3>
                 <p className="text-[12px] text-[#697B71]">
-                  Live audit trail of dispatched Sozuri notifications recorded in database
+                  Live audit trail of dispatched SMS notifications recorded in database
                 </p>
               </div>
               <button
@@ -1791,20 +2401,48 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
                         <p className="text-[11.5px] text-[#55695E] font-mono mt-1">
                           {log.messageBody}
                         </p>
-                        <span className="text-[10px] text-[#8C9C93] mt-1 block">
-                          {new Date(log.createdAt).toLocaleString()} &bull; Phone: {log.recipientPhone} &bull; Cost: KES {log.costKes || 0.8}
+                        <span className="text-[10px] text-[#8C9C93] mt-1 flex flex-wrap items-center gap-2">
+                          <span>{new Date(log.createdAt).toLocaleString()}</span>
+                          <span>&bull;</span>
+                          <span>Phone: {log.recipientPhone}</span>
+                          <span>&bull;</span>
+                          <span className="font-mono text-[#145338] bg-[#E8F1EC] px-1.5 py-0.5 rounded">
+                            {log.providerMessageId || 'ID: Pending'}
+                          </span>
+                          <span>&bull;</span>
+                          <span>Provider: {log.provider || 'Sozuri'}</span>
+                          <span>&bull;</span>
+                          <span>Cost: KES {log.costKes || '0.80'}</span>
                         </span>
                       </div>
 
-                      <span
-                        className={`px-2.5 py-1 rounded-full text-[10.5px] font-bold shrink-0 ${
-                          log.deliveryStatus === 'Delivered' || log.deliveryStatus === 'Sent'
-                            ? 'bg-[#D8F3E5] text-[#145338]'
-                            : 'bg-red-100 text-red-700'
-                        }`}
-                      >
-                        {log.deliveryStatus}
-                      </span>
+                      <div className="flex items-center gap-2 shrink-0">
+                        {log.providerMessageId && (
+                          <button
+                            type="button"
+                            onClick={() => handleQueryDlr(log.providerMessageId!)}
+                            disabled={queryingDlrId === log.providerMessageId}
+                            className="px-2 py-1 text-[11px] font-bold text-[#145338] hover:bg-[#E8F1EC] rounded-lg border border-[#D0E2D6] cursor-pointer flex items-center gap-1"
+                            title="Query carrier delivery status"
+                          >
+                            <RefreshCw className={`w-3 h-3 ${queryingDlrId === log.providerMessageId ? 'animate-spin' : ''}`} />
+                            <span>Status</span>
+                          </button>
+                        )}
+                        <span
+                          className={`px-2.5 py-1 rounded-full text-[10.5px] font-bold ${
+                            log.deliveryStatus === 'Delivered' || log.status === 'Delivered'
+                              ? 'bg-[#D8F3E5] text-[#145338]'
+                              : log.deliveryStatus === 'Sent' || log.status === 'Sent'
+                              ? 'bg-[#E3EFFB] text-[#1C5182]'
+                              : log.deliveryStatus === 'Queued' || log.status === 'Queued'
+                              ? 'bg-[#FEF5D1] text-[#7A5B04]'
+                              : 'bg-red-100 text-red-700'
+                          }`}
+                        >
+                          {log.deliveryStatus || log.status}
+                        </span>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -1824,7 +2462,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
       )}
 
       {/* =========================================================================
-          MODAL: GATEWAY & AUTOMATION SETTINGS
+          MODAL: SMS NOTIFICATION & AUTOMATION SETTINGS
          ========================================================================= */}
       {isSettingsModalOpen && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
@@ -1833,10 +2471,10 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
               <div>
                 <h3 className="text-base font-bold text-[#17231E] flex items-center gap-2">
                   <SlidersHorizontal className="w-5 h-5 text-[#145338]" />
-                  <span>Sozuri SMS Gateway Settings</span>
+                  <span>SMS Notification Settings</span>
                 </h3>
                 <p className="text-[12px] text-[#697B71]">
-                  Configure Sozuri SMS Gateway (https://sozuri.net/api/v1/messaging)
+                  Configure automated tenant SMS reminders & sender preferences
                 </p>
               </div>
               <button
@@ -1847,10 +2485,40 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
               </button>
             </div>
 
-            <div className="space-y-3.5 text-[12.5px]">
+            <div className="space-y-3.5 text-[12.5px] max-h-[75vh] overflow-y-auto pr-1">
+              {/* SMS Gateway Status Banner */}
+              <div className="p-3 rounded-2xl bg-[#F4F8F5] border border-[#D0E2D6] space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="w-2.5 h-2.5 rounded-full bg-[#145338] animate-pulse" />
+                    <span className="font-bold text-[#145338] text-[12px]">Sozuri SMS Gateway</span>
+                  </div>
+                  <span className="text-[10.5px] font-mono px-2 py-0.5 rounded-md bg-[#E2EDE5] text-[#145338] font-bold">
+                    POST /api/v1/messaging
+                  </span>
+                </div>
+                <p className="text-[11px] text-[#4F6457]">
+                  Active Provider: <span className="font-semibold text-[#145338]">{settingsDraft.provider || 'Sozuri'}</span> &bull; Endpoint: <code className="text-[10px] bg-white px-1 py-0.5 rounded border border-[#DFEBE3]">https://sozuri.net/api/v1/messaging</code>
+                </p>
+                <div className="flex items-center justify-between pt-1 border-t border-[#DFEBE3]">
+                  <span className="text-[11px] text-[#4F6457]">
+                    {balanceInfo || (settingsDraft.environment === 'production' ? 'Live Sozuri Gateway Active' : 'Sandbox (Simulated Mode Active)')}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleCheckBalance}
+                    disabled={isCheckingBalance}
+                    className="text-[11px] font-bold text-[#145338] hover:underline flex items-center gap-1 cursor-pointer"
+                  >
+                    <RefreshCw className={`w-3 h-3 ${isCheckingBalance ? 'animate-spin' : ''}`} />
+                    <span>{isCheckingBalance ? 'Checking...' : 'Check Balance'}</span>
+                  </button>
+                </div>
+              </div>
+
               <div>
                 <label className="text-[11px] font-bold text-[#3B4D43] uppercase tracking-wider block mb-1">
-                  Gateway Mode
+                  Delivery Mode
                 </label>
                 <div className="grid grid-cols-2 gap-2">
                   <button
@@ -1873,45 +2541,26 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
                         : 'bg-[#F8FAF9] text-[#4A5D52] border-[#DFE5E1]'
                     }`}
                   >
-                    Production (Live Sozuri)
+                    Production Mode
                   </button>
                 </div>
               </div>
 
-              <div>
-                <label className="text-[11px] font-bold text-[#3B4D43] uppercase tracking-wider block mb-1">
-                  Sozuri Project Name
-                </label>
-                <input
-                  type="text"
-                  placeholder="e.g. ARAbella agency"
-                  value={settingsDraft.sozuriProject || ''}
-                  onChange={(e) => setSettingsDraft((prev) => ({ ...prev, sozuriProject: e.target.value }))}
-                  className="w-full px-3 py-2 bg-[#F8FAF9] border border-[#DFE5E1] rounded-xl text-[#17231E]"
-                />
-                <p className="text-[10px] text-[#697B71] mt-1">
-                  Must exactly match your project name in sozuri.net (case-sensitive, e.g. <span className="font-semibold text-[#145338]">ARAbella agency</span>).
-                </p>
-              </div>
-
-              <div>
-                <label className="text-[11px] font-bold text-[#3B4D43] uppercase tracking-wider block mb-1">
-                  Approved Sender ID
-                </label>
-                <input
-                  type="text"
-                  placeholder="e.g. Sozuri or ARAbella agency"
-                  value={settingsDraft.senderId}
-                  onChange={(e) => setSettingsDraft((prev) => ({ ...prev, senderId: e.target.value }))}
-                  className="w-full px-3 py-2 bg-[#F8FAF9] border border-[#DFE5E1] rounded-xl text-[#17231E]"
-                />
-                <p className="text-[10px] text-[#697B71] mt-1">
-                  In Kenya, custom alphanumeric Sender IDs must be registered on your Sozuri project and approved by Safaricom & Airtel before live SMS delivery. Use <span className="font-semibold text-[#145338]">Sandbox (Simulated)</span> mode for immediate real-time testing.
-                </p>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
+              <div className="grid grid-cols-3 gap-3">
+                <div className="col-span-1">
+                  <label className="text-[11px] font-bold text-[#3B4D43] uppercase tracking-wider block mb-1">
+                    Sender ID
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g. ARABELLA"
+                    value={settingsDraft.senderId || ''}
+                    onChange={(e) => setSettingsDraft((prev) => ({ ...prev, senderId: e.target.value }))}
+                    className="w-full px-3 py-2 bg-[#F8FAF9] border border-[#DFE5E1] rounded-xl text-[#17231E] font-mono text-xs"
+                  />
+                  <p className="text-[10px] text-[#697B71] mt-1">Case-sensitive Sender ID</p>
+                </div>
+                <div className="col-span-1">
                   <label className="text-[11px] font-bold text-[#3B4D43] uppercase tracking-wider block mb-1">
                     Channel
                   </label>
@@ -1922,9 +2571,9 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
                     className="w-full px-3 py-2 bg-[#F8FAF9] border border-[#DFE5E1] rounded-xl text-[#17231E] text-xs font-mono"
                     placeholder="sms"
                   />
-                  <p className="text-[10px] text-[#697B71] mt-1">Sozuri channel (default: sms)</p>
+                  <p className="text-[10px] text-[#697B71] mt-1">Channel (default: sms)</p>
                 </div>
-                <div>
+                <div className="col-span-1">
                   <label className="text-[11px] font-bold text-[#3B4D43] uppercase tracking-wider block mb-1">
                     Message Type
                   </label>
@@ -1936,29 +2585,57 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
                     <option value="promotional">Promotional</option>
                     <option value="transactional">Transactional</option>
                   </select>
-                  <p className="text-[10px] text-[#697B71] mt-1">Sozuri routing type</p>
+                  <p className="text-[10px] text-[#697B71] mt-1">Routing type</p>
                 </div>
               </div>
 
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label className="text-[11px] font-bold text-[#3B4D43] uppercase tracking-wider">
-                    Sozuri API Key (Bearer Token & Body)
-                  </label>
-                  <span className="text-[10px] text-[#697B71]">
-                    {settingsDraft.apiKeyConfigured ? '✓ Token Configured' : 'No Token Set'}
+              {/* Direct Protected Test SMS to Phone */}
+              <div className="p-3.5 rounded-2xl bg-[#FAFBFB] border border-[#E0E6E2] space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11.5px] font-bold text-[#17231E] flex items-center gap-1.5">
+                    <Smartphone className="w-4 h-4 text-[#145338]" />
+                    <span>Send Verified Test SMS to Phone</span>
                   </span>
+                  <span className="text-[10px] text-[#6E8076]">Does NOT affect tenants</span>
                 </div>
-                <input
-                  type="password"
-                  placeholder={settingsDraft.apiKeyConfigured ? '••••••••••••••••••••••••••••••••' : 'Paste your sozuri.net API key'}
-                  value={settingsDraft.apiKey || ''}
-                  onChange={(e) => setSettingsDraft((prev) => ({ ...prev, apiKey: e.target.value }))}
-                  className="w-full px-3 py-2 bg-[#F8FAF9] border border-[#DFE5E1] rounded-xl text-[#17231E] font-mono text-xs"
-                />
-                <p className="text-[10.5px] text-[#697B71] mt-1">
-                  Passed securely to <a href="https://sozuri.net" target="_blank" rel="noopener noreferrer" className="underline text-[#145338] font-bold">sozuri.net/api/v1/messaging</a> via Authorization header and payload.
-                </p>
+
+                <div className="space-y-2">
+                  <input
+                    type="text"
+                    placeholder="Recipient Phone (e.g. 254712345678 or 0712345678)"
+                    value={testMobile}
+                    onChange={(e) => setTestMobile(e.target.value)}
+                    className="w-full px-3 py-2 bg-white border border-[#DFE5E1] rounded-xl text-[#17231E] text-xs font-mono"
+                  />
+                  <textarea
+                    rows={2}
+                    placeholder="Custom test message content..."
+                    value={testMessage}
+                    onChange={(e) => setTestMessage(e.target.value)}
+                    className="w-full px-3 py-2 bg-white border border-[#DFE5E1] rounded-xl text-[#17231E] text-xs resize-none"
+                  />
+                  <div className="flex items-center justify-between">
+                    <button
+                      type="button"
+                      onClick={handleSendTestSms}
+                      disabled={isSendingTest}
+                      className="px-3.5 py-1.5 bg-[#17231E] hover:bg-[#25362E] text-white text-[11.5px] font-bold rounded-xl flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                    >
+                      <Send className="w-3.5 h-3.5" />
+                      <span>{isSendingTest ? 'Sending...' : 'Send Test SMS'}</span>
+                    </button>
+                    {testResult && (
+                      <span className={`text-[11px] font-semibold ${testResult.success ? 'text-[#145338]' : 'text-red-600'}`}>
+                        {testResult.success ? `✓ Submitted (ID: ${testResult.messageId || 'OK'})` : '✗ Submission Failed'}
+                      </span>
+                    )}
+                  </div>
+                  {testResult && !testResult.success && testResult.message && (
+                    <div className="p-2.5 rounded-xl bg-red-50 border border-red-200 text-[11px] text-red-700 leading-relaxed">
+                      <strong>Sozuri Gateway Response:</strong> {testResult.message}
+                    </div>
+                  )}
+                </div>
               </div>
 
               <div className="pt-2 border-t border-[#EAEFEA] space-y-2">
@@ -1996,118 +2673,6 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
                   <span>Automatically send receipt confirmation when payment is verified</span>
                 </label>
               </div>
-
-              {/* Official Sozuri API Diagnostics & Live Test Panel */}
-              <div className="pt-3 border-t border-[#EAEFEA] space-y-2.5">
-                <div className="flex items-center justify-between">
-                  <span className="text-[11px] font-bold text-[#3B4D43] uppercase tracking-wider block">
-                    Sozuri Live API Diagnostics
-                  </span>
-                  <span className="text-[10px] text-[#55695C] font-mono">
-                    Postman API Spec v1
-                  </span>
-                </div>
-
-                <div className="grid grid-cols-3 gap-2">
-                  <button
-                    type="button"
-                    onClick={handleTestAuth}
-                    disabled={authTestState.loading}
-                    className="p-2 text-xs font-semibold rounded-xl border border-[#DFE5E1] bg-white hover:bg-[#F2F6F4] text-[#145338] transition-colors cursor-pointer flex items-center justify-center gap-1.5"
-                  >
-                    <ShieldCheck className="w-3.5 h-3.5 text-[#145338]" />
-                    {authTestState.loading ? 'Checking...' : 'Test Auth'}
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={handleTestPlatformHealth}
-                    disabled={platformHealthState.loading}
-                    className="p-2 text-xs font-semibold rounded-xl border border-[#DFE5E1] bg-white hover:bg-[#F2F6F4] text-[#145338] transition-colors cursor-pointer flex items-center justify-center gap-1.5"
-                  >
-                    <Zap className="w-3.5 h-3.5 text-[#145338]" />
-                    {platformHealthState.loading ? 'Checking...' : 'Platform Health'}
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={handleCheckWaChannels}
-                    disabled={waChannelsState.loading}
-                    className="p-2 text-xs font-semibold rounded-xl border border-[#DFE5E1] bg-white hover:bg-[#F2F6F4] text-[#145338] transition-colors cursor-pointer flex items-center justify-center gap-1.5"
-                  >
-                    <Smartphone className="w-3.5 h-3.5 text-[#145338]" />
-                    {waChannelsState.loading ? 'Checking...' : 'WhatsApp'}
-                  </button>
-                </div>
-
-                {/* Authtest result */}
-                {authTestState.result && (
-                  <div
-                    className={`p-2.5 rounded-xl border text-xs ${
-                      authTestState.result.authenticated
-                        ? 'bg-[#EBF7F0] border-[#BCE8C7] text-[#145338]'
-                        : 'bg-[#FEF2F2] border-[#FECACA] text-[#991B1B]'
-                    }`}
-                  >
-                    <div className="font-bold flex items-center gap-1.5">
-                      {authTestState.result.authenticated ? (
-                        <>
-                          <Check className="w-3.5 h-3.5" />
-                          <span>Authentication Accepted (HTTP 200)</span>
-                        </>
-                      ) : (
-                        <>
-                          <AlertTriangle className="w-3.5 h-3.5" />
-                          <span>Auth Failed (HTTP {authTestState.result.statusCode})</span>
-                        </>
-                      )}
-                    </div>
-                    <div className="text-[11px] mt-0.5 opacity-90">
-                      {authTestState.result.message}
-                    </div>
-                  </div>
-                )}
-
-                {/* Platform Health result */}
-                {platformHealthState.result && (
-                  <div className="p-2.5 rounded-xl border border-[#DFE5E1] bg-[#F8FAF9] text-xs text-[#2A3B31]">
-                    <div className="font-bold flex items-center justify-between mb-1">
-                      <span>Sozuri Platform Health:</span>
-                      <span className="font-mono text-[#145338] uppercase text-[10.5px]">
-                        {platformHealthState.result.status || 'unknown'}
-                      </span>
-                    </div>
-                    {platformHealthState.result.carriers && (
-                      <div className="grid grid-cols-3 gap-1.5 text-[10.5px] mt-1 pt-1 border-t border-[#EAEFEA]">
-                        <div>Safaricom: <span className="font-semibold text-[#145338]">{platformHealthState.result.carriers.safaricom}</span></div>
-                        <div>Airtel: <span className="font-semibold text-[#145338]">{platformHealthState.result.carriers.airtel}</span></div>
-                        <div>Telkom: <span className="font-semibold text-[#145338]">{platformHealthState.result.carriers.telkom}</span></div>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {/* WhatsApp channels result */}
-                {waChannelsState.result && (
-                  <div className="p-2.5 rounded-xl border border-[#DFE5E1] bg-[#F8FAF9] text-xs text-[#2A3B31]">
-                    <div className="font-bold mb-1">WhatsApp Channels Status:</div>
-                    <div className="text-[11px] text-[#55695C]">
-                      {Array.isArray(waChannelsState.result.channels) ? (
-                        waChannelsState.result.channels.map((c: any, i: number) => (
-                          <div key={i} className="flex justify-between py-0.5">
-                            <span className="capitalize">{c.channel} Channel:</span>
-                            <span className={c.available ? 'text-[#145338] font-bold' : 'text-[#991B1B] font-medium'}>
-                              {c.available ? 'Connected' : 'Not Connected'}
-                            </span>
-                          </div>
-                        ))
-                      ) : (
-                        <div>{JSON.stringify(waChannelsState.result)}</div>
-                      )}
-                    </div>
-                  </div>
-                )}
-              </div>
             </div>
 
             <div className="flex items-center justify-end gap-2.5 pt-3 border-t border-[#EAEFEA]">
@@ -2126,6 +2691,225 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
               >
                 {isSavingSettings ? 'Saving...' : 'Save Settings'}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* =========================================================================
+          MODAL: RESEND EMAIL NOTIFICATION SETTINGS & LIVE TEST
+         ========================================================================= */}
+      {isEmailSettingsModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl border border-[#DFE5E1] space-y-4 animate-in fade-in zoom-in-95 duration-200">
+            <div className="flex items-center justify-between pb-3 border-b border-[#EAEFEA]">
+              <div>
+                <h3 className="text-base font-bold text-[#17231E] flex items-center gap-2">
+                  <Mail className="w-5 h-5 text-[#145338]" />
+                  <span>Resend Email Reminder Settings</span>
+                </h3>
+                <p className="text-[12px] text-[#697B71]">
+                  Configure automatic tenant email reminders (Africa/Nairobi timezone)
+                </p>
+              </div>
+              <button
+                onClick={() => setIsEmailSettingsModalOpen(false)}
+                className="w-8 h-8 rounded-full bg-[#F0F3F1] hover:bg-[#E2E8E4] flex items-center justify-center text-[#55695E]"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-3.5 text-[12.5px] max-h-[75vh] overflow-y-auto pr-1">
+              {/* Live Test Email Box */}
+              <div className="p-3.5 rounded-2xl bg-[#F4F8F5] border border-[#D0E2D6] space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-[#145338] text-[12px] flex items-center gap-1.5">
+                    <Mail className="w-4 h-4" />
+                    <span>Send Live Verification Email via Resend</span>
+                  </span>
+                  <span className="text-[10.5px] font-mono px-2 py-0.5 rounded bg-white text-[#145338] font-bold border border-[#D0E2D6]">
+                    Africa/Nairobi EAT
+                  </span>
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    type="email"
+                    value={testEmailRecipient}
+                    onChange={(e) => setTestEmailRecipient(e.target.value)}
+                    placeholder="Recipient email address..."
+                    className="flex-1 px-3 py-2 bg-white border border-[#DFE5E1] rounded-xl text-xs text-[#17231E]"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleSendTestEmail}
+                    disabled={isSendingTestEmail}
+                    className="px-3.5 py-2 bg-[#17231E] hover:bg-[#25362E] text-[#D5F267] text-xs font-bold rounded-xl cursor-pointer disabled:opacity-50 whitespace-nowrap"
+                  >
+                    {isSendingTestEmail ? 'Sending...' : 'Send Test Email'}
+                  </button>
+                </div>
+              </div>
+
+              {/* Master Toggle */}
+              <label className="flex items-center justify-between p-3 rounded-xl bg-[#FAFBFB] border border-[#E5EAE7] cursor-pointer">
+                <div>
+                  <span className="font-bold text-[#17231E] block">Enable Automatic Email Scheduler</span>
+                  <span className="text-[11px] text-[#697B71]">
+                    Automatically dispatches tenant reminders in Kenya timezone (Africa/Nairobi)
+                  </span>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={emailSettingsDraft.masterEnabled}
+                  onChange={(e) =>
+                    setEmailSettingsDraft((prev) => ({ ...prev, masterEnabled: e.target.checked }))
+                  }
+                  className="rounded text-[#145338] w-4 h-4"
+                />
+              </label>
+
+              {/* Individual Reminder Type Checkboxes */}
+              <div className="space-y-2 pt-1">
+                <span className="text-[11px] font-bold text-[#3B4D43] uppercase tracking-wider block">
+                  Reminder Types (Enable / Disable)
+                </span>
+
+                {[
+                  {
+                    key: 'autoRentUpcoming3d',
+                    label: 'Upcoming rent payment reminders (3 days before due date)',
+                  },
+                  {
+                    key: 'autoRentDueToday',
+                    label: 'Rent due today notifications (on due date)',
+                  },
+                  {
+                    key: 'autoRentOverdue',
+                    label: 'Overdue rent payment reminders (unpaid past due date)',
+                  },
+                  {
+                    key: 'autoPaymentConfirmed',
+                    label: 'Payment confirmation emails after verified payment',
+                  },
+                  {
+                    key: 'autoLeaseExpiry30d',
+                    label: 'Lease expiry reminders (30 days before expiry)',
+                  },
+                  {
+                    key: 'autoLeaseExpiry7d',
+                    label: 'Lease expiry reminders (7 days before expiry)',
+                  },
+                ].map((item) => (
+                  <label key={item.key} className="flex items-center gap-2.5 cursor-pointer py-1">
+                    <input
+                      type="checkbox"
+                      checked={Boolean((emailSettingsDraft as any)[item.key])}
+                      onChange={(e) =>
+                        setEmailSettingsDraft((prev) => ({
+                          ...prev,
+                          [item.key]: e.target.checked,
+                        }))
+                      }
+                      className="rounded text-[#145338]"
+                    />
+                    <span className="text-[#17231E]">{item.label}</span>
+                  </label>
+                ))}
+              </div>
+
+              {/* Payment Instructions */}
+              <div>
+                <label className="text-[11px] font-bold text-[#3B4D43] uppercase tracking-wider block mb-1">
+                  Payment Instructions Included in Rent Emails
+                </label>
+                <textarea
+                  rows={2}
+                  value={emailSettingsDraft.paymentInstructions}
+                  onChange={(e) =>
+                    setEmailSettingsDraft((prev) => ({
+                      ...prev,
+                      paymentInstructions: e.target.value,
+                    }))
+                  }
+                  className="w-full p-2.5 bg-[#F8FAF9] border border-[#DFE5E1] rounded-xl text-xs text-[#17231E]"
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5 pt-3 border-t border-[#EAEFEA]">
+              <button
+                type="button"
+                onClick={() => setIsEmailSettingsModalOpen(false)}
+                className="px-4 py-2 rounded-xl border border-[#D8DFDB] text-[#4A5D52] hover:bg-[#F0F4F2] text-[12.5px] font-semibold"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveEmailSettings}
+                disabled={isSavingEmailSettings}
+                className="px-4 py-2 rounded-xl bg-[#D5F267] hover:bg-[#c8e858] text-[#17231E] text-[12.5px] font-bold shadow-xs cursor-pointer"
+              >
+                {isSavingEmailSettings ? 'Saving...' : 'Save Email Settings'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* =========================================================================
+          MODAL: BRANDED HTML EMAIL PREVIEW
+         ========================================================================= */}
+      {previewEmailRecord && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-white rounded-3xl max-w-2xl w-full max-h-[90vh] flex flex-col shadow-2xl border border-[#DFE5E1] overflow-hidden my-auto">
+            <div className="px-6 py-4 bg-[#FAFBFB] border-b border-[#EAEFEA] flex items-center justify-between">
+              <div>
+                <h3 className="text-sm font-bold text-[#17231E]">{previewEmailRecord.subject}</h3>
+                <p className="text-[11.5px] text-[#697B71]">
+                  To: {previewEmailRecord.recipientName} ({previewEmailRecord.recipientEmail}) &bull; Sent: {previewEmailRecord.createdAt}
+                </p>
+              </div>
+              <button
+                onClick={() => setPreviewEmailRecord(null)}
+                className="w-8 h-8 rounded-full bg-[#F0F3F1] hover:bg-[#E2E8E4] flex items-center justify-center text-[#55695E]"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="p-6 overflow-y-auto bg-[#F4F7F5]">
+              <div
+                dangerouslySetInnerHTML={{
+                  __html: previewEmailRecord.htmlBody || previewEmailRecord.bodyHtml || '',
+                }}
+              />
+            </div>
+            <div className="px-6 py-3.5 bg-[#FAFBFB] border-t border-[#EAEFEA] flex items-center justify-between">
+              <span className="text-[11px] text-[#697B71]">
+                Status: <strong>{previewEmailRecord.status}</strong>
+                {previewEmailRecord.resendId ? ` • Resend ID: ${previewEmailRecord.resendId}` : ''}
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const id = previewEmailRecord.id;
+                    setPreviewEmailRecord(null);
+                    void handleRetryEmail(id);
+                  }}
+                  className="px-4 py-1.5 bg-[#D8F3E5] hover:bg-[#BCE9D3] text-[#145338] text-xs font-bold rounded-xl cursor-pointer"
+                >
+                  Resend / Retry
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPreviewEmailRecord(null)}
+                  className="px-4 py-1.5 bg-[#17231E] text-white text-xs font-bold rounded-xl cursor-pointer"
+                >
+                  Close
+                </button>
+              </div>
             </div>
           </div>
         </div>

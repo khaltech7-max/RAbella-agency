@@ -1,4 +1,10 @@
 import React, { useState } from 'react';
+import { motion, AnimatePresence, useReducedMotion } from 'motion/react';
+import {
+  AnimatedCounter,
+  AnimatedProgressBar,
+  AnimatedChartReveal,
+} from './AnimatedMetrics';
 import {
   FileCheck2,
   LogIn,
@@ -41,9 +47,11 @@ import {
   DashboardTaskRecord,
   ActivityLogRecord,
   PropertyRecord,
+  UserSession,
 } from '../data/rentalData';
 
 interface DashboardPageProps {
+  currentUser?: UserSession;
   payments: RentPaymentRecord[];
   properties: PropertyRecord[];
   analytics: DashboardAnalytics;
@@ -69,6 +77,7 @@ interface DashboardPageProps {
 }
 
 export const DashboardPage: React.FC<DashboardPageProps> = ({
+  currentUser,
   payments,
   properties,
   analytics,
@@ -82,6 +91,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
   onSelectTenantRef,
   onNavigate,
 }) => {
+  const prefersReducedMotion = useReducedMotion();
   const [revenueRange, setRevenueRange] = useState<'6m' | '12m'>('6m');
   const [collectionRange, setCollectionRange] = useState<'7d' | '14d'>('7d');
   const [tableSearch, setTableSearch] = useState('');
@@ -187,16 +197,46 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
     return CheckCircle2;
   };
 
+  // Time-of-day greeting (medium size)
+  const hour = new Date().getHours();
+  const timeGreeting =
+    hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
+  const firstName = currentUser?.fullName?.trim().split(' ')[0];
+  const greetingHeading = firstName ? `${timeGreeting}, ${firstName}` : timeGreeting;
+
+  const todayFormatted = new Date().toLocaleDateString('en-US', {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+  });
+
   return (
-    <div className="grid grid-cols-1 xl:grid-cols-12 gap-4">
-      {/* LEFT / MAIN 9 COLUMNS */}
-      <div className="xl:col-span-9 space-y-4">
-        {/* ROW 1: 4 STAT CARDS COMPUTED 100% FROM LIVE POSTGRESQL DATABASE */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
+    <div className="space-y-4">
+      {/* Greeting Section (Medium Size) Before the Cards */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 pb-0.5">
+        <div>
+          <h2 className="text-[18px] sm:text-[20px] font-bold text-[#17231E] tracking-tight">
+            {greetingHeading} 👋
+          </h2>
+          <p className="text-[12px] sm:text-[12.5px] text-[#6E7A75] font-medium mt-0.5">
+            Here's what is happening across your rental properties today.
+          </p>
+        </div>
+        <div className="hidden sm:inline-flex items-center gap-2 text-[12px] font-medium text-[#76827D]">
+          <span className="w-2 h-2 rounded-full bg-[#D5F267]" />
+          <span>{todayFormatted}</span>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-12 gap-4">
+        {/* LEFT / MAIN 9 COLUMNS */}
+        <div className="xl:col-span-9 space-y-4">
+          {/* ROW 1: 4 STAT CARDS COMPUTED 100% FROM LIVE POSTGRESQL DATABASE */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
           {/* Card 1: Mint-green card — Active Leases */}
           <div
             onClick={() => onNavigate('tenants')}
-            className="rounded-2xl bg-[#D8F3E5] p-4 flex flex-col justify-between cursor-pointer hover:shadow-xs transition-all"
+            className="rms-card-hover rounded-2xl bg-[#D8F3E5] p-4 flex flex-col justify-between cursor-pointer"
           >
             <div className="flex items-start justify-between">
               <div>
@@ -204,7 +244,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                   Active Leases
                 </p>
                 <p className="text-[24px] font-extrabold text-[#17231E] mt-1 tracking-tight tabular-nums">
-                  {analytics.activeLeasesCount.toLocaleString()}
+                  <AnimatedCounter value={analytics.activeLeasesCount} />
                 </p>
               </div>
               <div className="w-9 h-9 rounded-xl bg-white flex items-center justify-center text-[#17231E] shadow-2xs">
@@ -214,7 +254,11 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
             <div className="mt-4 flex items-center gap-2">
               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-white text-[#145338] text-[10.5px] font-bold tabular-nums">
                 <TrendingUp className="w-3 h-3" />
-                {analytics.occupancyRatePct}%
+                <AnimatedCounter
+                  value={analytics.occupancyRatePct}
+                  decimals={Number.isInteger(analytics.occupancyRatePct) ? 0 : 1}
+                  suffix="%"
+                />
               </span>
               <span className="text-[11px] text-[#5B7268]">occupancy rate</span>
             </div>
@@ -223,7 +267,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
           {/* Card 2: White card — Rent Collected */}
           <div
             onClick={() => onNavigate('payments')}
-            className="rounded-2xl bg-white p-4 flex flex-col justify-between cursor-pointer hover:shadow-xs transition-all"
+            className="rms-card-hover rounded-2xl bg-white p-4 flex flex-col justify-between cursor-pointer"
           >
             <div className="flex items-start justify-between">
               <div>
@@ -231,7 +275,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                   Rent Collected
                 </p>
                 <p className="text-[24px] font-extrabold text-[#17231E] mt-1 tracking-tight tabular-nums">
-                  {analytics.rentCollectedCount.toLocaleString()}
+                  <AnimatedCounter value={analytics.rentCollectedCount} />
                 </p>
               </div>
               <div className="w-9 h-9 rounded-xl bg-[#D8F3E5] flex items-center justify-center text-[#17231E]">
@@ -241,7 +285,11 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
             <div className="mt-4 flex items-center gap-2">
               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-[#D8F3E5] text-[#145338] text-[10.5px] font-bold tabular-nums">
                 <TrendingUp className="w-3 h-3" />
-                {analytics.collectionRatePct}%
+                <AnimatedCounter
+                  value={analytics.collectionRatePct}
+                  decimals={Number.isInteger(analytics.collectionRatePct) ? 0 : 1}
+                  suffix="%"
+                />
               </span>
               <span className="text-[11px] text-[#88948F]">paid invoices</span>
             </div>
@@ -250,7 +298,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
           {/* Card 3: White card — Pending Rent */}
           <div
             onClick={() => onNavigate('payments')}
-            className="rounded-2xl bg-white p-4 flex flex-col justify-between cursor-pointer hover:shadow-xs transition-all"
+            className="rms-card-hover rounded-2xl bg-white p-4 flex flex-col justify-between cursor-pointer"
           >
             <div className="flex items-start justify-between">
               <div>
@@ -258,7 +306,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                   Pending Rent
                 </p>
                 <p className="text-[24px] font-extrabold text-[#17231E] mt-1 tracking-tight tabular-nums">
-                  {analytics.pendingRentCount.toLocaleString()}
+                  <AnimatedCounter value={analytics.pendingRentCount} />
                 </p>
               </div>
               <div className="w-9 h-9 rounded-xl bg-[#D8F3E5] flex items-center justify-center text-[#17231E]">
@@ -268,7 +316,11 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
             <div className="mt-4 flex items-center gap-2">
               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-[#FDE6E6] text-[#B91C1C] text-[10.5px] font-bold tabular-nums">
                 <TrendingDown className="w-3 h-3" />
-                {pendingRatePct}%
+                <AnimatedCounter
+                  value={pendingRatePct}
+                  decimals={Number.isInteger(pendingRatePct) ? 0 : 1}
+                  suffix="%"
+                />
               </span>
               <span className="text-[11px] text-[#88948F]">awaiting payment</span>
             </div>
@@ -277,7 +329,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
           {/* Card 4: White card — Total Revenue */}
           <div
             onClick={() => onNavigate('expenses')}
-            className="rounded-2xl bg-white p-4 flex flex-col justify-between cursor-pointer hover:shadow-xs transition-all"
+            className="rms-card-hover rounded-2xl bg-white p-4 flex flex-col justify-between cursor-pointer"
           >
             <div className="flex items-start justify-between">
               <div>
@@ -285,7 +337,10 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                   Total Revenue
                 </p>
                 <p className="text-[22px] font-extrabold text-[#17231E] mt-1 tracking-tight tabular-nums">
-                  KSh {analytics.totalRentRevenue.toLocaleString()}
+                  <AnimatedCounter
+                    value={analytics.totalRentRevenue}
+                    prefix="KSh "
+                  />
                 </p>
               </div>
               <div className="w-9 h-9 rounded-xl bg-[#D8F3E5] flex items-center justify-center text-[#17231E]">
@@ -295,7 +350,10 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
             <div className="mt-4 flex items-center gap-2">
               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-[#D8F3E5] text-[#145338] text-[10.5px] font-bold tabular-nums">
                 <TrendingUp className="w-3 h-3" />
-                KSh {analytics.netBalance.toLocaleString()}
+                <AnimatedCounter
+                  value={analytics.netBalance}
+                  prefix="KSh "
+                />
               </span>
               <span className="text-[11px] text-[#88948F]">net balance</span>
             </div>
@@ -305,7 +363,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
         {/* ROW 2: UNIT AVAILABILITY + RENT REVENUE AREA CHART */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
           {/* Unit Availability Card */}
-          <div className="lg:col-span-5 bg-white rounded-2xl p-5 flex flex-col justify-between">
+          <div className="rms-card-hover lg:col-span-5 bg-white rounded-2xl p-5 flex flex-col justify-between">
             <div>
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-[15px] font-bold text-[#17231E]">
@@ -320,7 +378,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                 </button>
               </div>
 
-              {/* Multi-segment Horizontal Bar */}
+              {/* Multi-segment Horizontal Bar (Animated) */}
               {rawTotalAvail === 0 ? (
                 <div className="h-10 w-full rounded-xl bg-[#EEF3F0] flex items-center justify-center text-[11px] font-medium text-[#7A8681]">
                   No units registered yet — Add a Property or Unit Type
@@ -328,38 +386,34 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
               ) : (
                 <div className="h-10 w-full rounded-xl overflow-hidden flex gap-1">
                   {avail.occupied > 0 && (
-                    <div
-                      className="bg-[#BCEAD2] h-full transition-all"
-                      style={{
-                        width: `${Math.max(8, Math.round((avail.occupied / totalAvail) * 100))}%`,
-                      }}
+                    <AnimatedProgressBar
+                      percent={Math.max(8, Math.round((avail.occupied / totalAvail) * 100))}
+                      delay={0.04}
+                      className="bg-[#BCEAD2] h-full rounded-l-xl"
                       title={`Occupied: ${avail.occupied} units`}
                     />
                   )}
                   {avail.reserved > 0 && (
-                    <div
-                      className="bg-[#E5F7A3] h-full transition-all"
-                      style={{
-                        width: `${Math.max(8, Math.round((avail.reserved / totalAvail) * 100))}%`,
-                      }}
+                    <AnimatedProgressBar
+                      percent={Math.max(8, Math.round((avail.reserved / totalAvail) * 100))}
+                      delay={0.1}
+                      className="bg-[#E5F7A3] h-full"
                       title={`Reserved / Pending: ${avail.reserved} units`}
                     />
                   )}
                   {avail.available > 0 && (
-                    <div
-                      className="bg-[#D5F267] h-full transition-all"
-                      style={{
-                        width: `${Math.max(8, Math.round((avail.available / totalAvail) * 100))}%`,
-                      }}
+                    <AnimatedProgressBar
+                      percent={Math.max(8, Math.round((avail.available / totalAvail) * 100))}
+                      delay={0.16}
+                      className="bg-[#D5F267] h-full"
                       title={`Available: ${avail.available} units`}
                     />
                   )}
                   {avail.notReady > 0 && (
-                    <div
-                      className="bg-[#E8F1EC] h-full transition-all"
-                      style={{
-                        width: `${Math.max(8, Math.round((avail.notReady / totalAvail) * 100))}%`,
-                      }}
+                    <AnimatedProgressBar
+                      percent={Math.max(8, Math.round((avail.notReady / totalAvail) * 100))}
+                      delay={0.22}
+                      className="bg-[#E8F1EC] h-full rounded-r-xl"
                       title={`Not Ready / Maintenance: ${avail.notReady} units`}
                     />
                   )}
@@ -374,7 +428,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                 <div>
                   <p className="text-[11px] text-[#7A8681] font-medium">Occupied</p>
                   <p className="text-[20px] font-extrabold text-[#17231E] leading-tight tabular-nums">
-                    {avail.occupied}
+                    <AnimatedCounter value={avail.occupied} />
                   </p>
                 </div>
               </div>
@@ -384,7 +438,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                 <div>
                   <p className="text-[11px] text-[#7A8681] font-medium">Reserved</p>
                   <p className="text-[20px] font-extrabold text-[#17231E] leading-tight tabular-nums">
-                    {avail.reserved}
+                    <AnimatedCounter value={avail.reserved} />
                   </p>
                 </div>
               </div>
@@ -394,7 +448,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                 <div>
                   <p className="text-[11px] text-[#7A8681] font-medium">Available</p>
                   <p className="text-[20px] font-extrabold text-[#17231E] leading-tight tabular-nums">
-                    {avail.available}
+                    <AnimatedCounter value={avail.available} />
                   </p>
                 </div>
               </div>
@@ -404,7 +458,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                 <div>
                   <p className="text-[11px] text-[#7A8681] font-medium">Not Ready</p>
                   <p className="text-[20px] font-extrabold text-[#17231E] leading-tight tabular-nums">
-                    {avail.notReady}
+                    <AnimatedCounter value={avail.notReady} />
                   </p>
                 </div>
               </div>
@@ -412,14 +466,14 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
           </div>
 
           {/* Revenue Area Chart Card */}
-          <div className="lg:col-span-7 bg-white rounded-2xl p-5">
+          <div className="rms-card-hover lg:col-span-7 bg-white rounded-2xl p-5">
             <div className="flex items-center justify-between mb-3">
               <h2 className="text-[15px] font-bold text-[#17231E]">Revenue</h2>
               <button
                 onClick={() =>
                   setRevenueRange(revenueRange === '6m' ? '12m' : '6m')
                 }
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#D5F267] text-[#17231E] text-[11.5px] font-bold hover:bg-[#c8e755] transition-colors cursor-pointer"
+                className="rms-interactive-btn inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#D5F267] text-[#17231E] text-[11.5px] font-bold hover:bg-[#c8e755] cursor-pointer"
               >
                 <span>
                   {revenueRange === '6m' ? 'Last 6 Months' : 'Last 12 Months'}
@@ -430,89 +484,111 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
 
             <div className="relative h-[175px] w-full">
               {analytics.totalRentRevenue > 0 && (
-                <div className="absolute left-[38%] top-2 z-10 pointer-events-none hidden sm:block">
+                <motion.div
+                  initial={{ opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.45, delay: 0.25, ease: 'easeOut' }}
+                  className="absolute left-[38%] top-2 z-10 pointer-events-none hidden sm:block"
+                >
                   <div className="px-2.5 py-1 rounded-lg bg-[#E4F69B] text-[#17231E] shadow-xs border border-[#CEE876]">
                     <p className="text-[9.5px] text-[#536643] font-medium leading-none">
                       Confirmed Revenue
                     </p>
                     <p className="text-[12px] font-extrabold tabular-nums mt-0.5">
-                      KSh {analytics.totalRentRevenue.toLocaleString()}
+                      <AnimatedCounter
+                        value={analytics.totalRentRevenue}
+                        prefix="KSh "
+                      />
                     </p>
                   </div>
-                </div>
+                </motion.div>
               )}
 
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart
-                  data={revenueData}
-                  margin={{ top: 18, right: 10, left: -10, bottom: 0 }}
-                >
-                  <defs>
-                    <linearGradient id="revGrad" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#CBEAD8" stopOpacity={0.65} />
-                      <stop offset="95%" stopColor="#CBEAD8" stopOpacity={0.05} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid
-                    strokeDasharray="3 3"
-                    vertical={false}
-                    stroke="#EEF3F0"
-                  />
-                  <XAxis
-                    dataKey="month"
-                    axisLine={false}
-                    tickLine={false}
-                    tick={{ fill: '#88948F', fontSize: 10.5 }}
-                  />
-                  <YAxis
-                    axisLine={false}
-                    tickLine={false}
-                    tick={{ fill: '#88948F', fontSize: 10 }}
-                    tickFormatter={(val) =>
-                      val === 0
-                        ? 'KSh 0'
-                        : val >= 1000
-                        ? `KSh ${(val / 1000).toFixed(0)}K`
-                        : `KSh ${val}`
-                    }
-                  />
-                  <Tooltip
-                    contentStyle={{
-                      backgroundColor: '#E4F69B',
-                      border: 'none',
-                      borderRadius: '10px',
-                      fontSize: '12px',
-                      fontWeight: 700,
-                      color: '#17231E',
-                    }}
-                    formatter={(value: any) => [
-                      `KSh ${Number(value || 0).toLocaleString()}`,
-                      'Rent Revenue',
-                    ]}
-                  />
-                  <Area
-                    type="monotone"
-                    dataKey="revenue"
-                    stroke="#C2E456"
-                    strokeWidth={2.5}
-                    fillOpacity={1}
-                    fill="url(#revGrad)"
-                    activeDot={{
-                      r: 5,
-                      fill: '#17231E',
-                      stroke: '#D5F267',
-                      strokeWidth: 2,
-                    }}
-                  />
-                </AreaChart>
-              </ResponsiveContainer>
+              <AnimatedChartReveal
+                key={`rev-chart-${revenueRange}`}
+                direction="left-to-right"
+                duration={0.88}
+                className="w-full h-full"
+              >
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart
+                    data={revenueData}
+                    margin={{ top: 18, right: 10, left: -10, bottom: 0 }}
+                  >
+                    <defs>
+                      <linearGradient id="revGrad" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#CBEAD8" stopOpacity={0.65} />
+                        <stop offset="95%" stopColor="#CBEAD8" stopOpacity={0.05} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid
+                      strokeDasharray="3 3"
+                      vertical={false}
+                      stroke="#EEF3F0"
+                    />
+                    <XAxis
+                      dataKey="month"
+                      axisLine={false}
+                      tickLine={false}
+                      tick={{ fill: '#88948F', fontSize: 10.5 }}
+                    />
+                    <YAxis
+                      axisLine={false}
+                      tickLine={false}
+                      tick={{ fill: '#88948F', fontSize: 10 }}
+                      tickFormatter={(val) =>
+                        val === 0
+                          ? 'KSh 0'
+                          : val >= 1000
+                          ? `KSh ${(val / 1000).toFixed(0)}K`
+                          : `KSh ${val}`
+                      }
+                    />
+                    <Tooltip
+                      isAnimationActive={!prefersReducedMotion}
+                      animationDuration={180}
+                      animationEasing="ease-out"
+                      contentStyle={{
+                        backgroundColor: '#E4F69B',
+                        border: 'none',
+                        borderRadius: '10px',
+                        fontSize: '12px',
+                        fontWeight: 700,
+                        color: '#17231E',
+                      }}
+                      formatter={(value: any) => [
+                        `KSh ${Number(value || 0).toLocaleString()}`,
+                        'Rent Revenue',
+                      ]}
+                    />
+                    <Area
+                      type="monotone"
+                      dataKey="revenue"
+                      stroke="#C2E456"
+                      strokeWidth={2.5}
+                      fillOpacity={1}
+                      fill="url(#revGrad)"
+                      isAnimationActive={!prefersReducedMotion}
+                      animationBegin={40}
+                      animationDuration={860}
+                      animationEasing="ease-out"
+                      activeDot={{
+                        r: 5,
+                        fill: '#17231E',
+                        stroke: '#D5F267',
+                        strokeWidth: 2,
+                      }}
+                    />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </AnimatedChartReveal>
             </div>
           </div>
         </div>
 
         {/* ROW 3: RENT COLLECTION BAR CHART + LEASES BY PROPERTY DONUT */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-          <div className="lg:col-span-7 bg-white rounded-2xl p-5">
+          <div className="rms-card-hover lg:col-span-7 bg-white rounded-2xl p-5">
             <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
               <div>
                 <h2 className="text-[15px] font-bold text-[#17231E]">
@@ -534,7 +610,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                 onClick={() =>
                   setCollectionRange(collectionRange === '7d' ? '14d' : '7d')
                 }
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#D5F267] text-[#17231E] text-[11.5px] font-bold hover:bg-[#c8e755] transition-colors cursor-pointer"
+                className="rms-interactive-btn inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#D5F267] text-[#17231E] text-[11.5px] font-bold hover:bg-[#c8e755] cursor-pointer"
               >
                 <span>
                   {collectionRange === '7d' ? 'Last 7 Days' : 'This Month'}
@@ -546,6 +622,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
             <div className="h-[180px] w-full">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart
+                  key={`rent-col-bar-${collectionRange}`}
                   data={analytics.rentCollection7D}
                   margin={{ top: 10, right: 8, left: -24, bottom: 0 }}
                   barSize={24}
@@ -568,6 +645,9 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                     tick={{ fill: '#88948F', fontSize: 10.5 }}
                   />
                   <Tooltip
+                    isAnimationActive={!prefersReducedMotion}
+                    animationDuration={180}
+                    animationEasing="ease-out"
                     cursor={{ fill: '#F4F8F6' }}
                     contentStyle={{
                       backgroundColor: '#FFFFFF',
@@ -582,6 +662,10 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                     stackId="a"
                     fill="#BCEAD2"
                     radius={[0, 0, 6, 6]}
+                    isAnimationActive={!prefersReducedMotion}
+                    animationBegin={60}
+                    animationDuration={820}
+                    animationEasing="ease-out"
                   />
                   <Bar
                     dataKey="pending"
@@ -589,6 +673,10 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                     stackId="a"
                     fill="#D5F267"
                     radius={[6, 6, 0, 0]}
+                    isAnimationActive={!prefersReducedMotion}
+                    animationBegin={180}
+                    animationDuration={860}
+                    animationEasing="ease-out"
                   />
                 </BarChart>
               </ResponsiveContainer>
@@ -596,7 +684,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
           </div>
 
           {/* Leases by Property Donut Chart */}
-          <div className="lg:col-span-5 bg-white rounded-2xl p-5 flex flex-col justify-between">
+          <div className="rms-card-hover lg:col-span-5 bg-white rounded-2xl p-5 flex flex-col justify-between">
             <div className="flex items-center justify-between mb-2">
               <h2 className="text-[15px] font-bold text-[#17231E]">
                 Leases by Property
@@ -632,17 +720,26 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                         data={analytics.leasesByProperty}
                         cx="50%"
                         cy="50%"
+                        startAngle={90}
+                        endAngle={-270}
                         innerRadius={38}
                         outerRadius={62}
                         paddingAngle={2}
                         dataKey="value"
                         stroke="none"
+                        isAnimationActive={!prefersReducedMotion}
+                        animationBegin={90}
+                        animationDuration={880}
+                        animationEasing="ease-out"
                       >
                         {analytics.leasesByProperty.map((entry, idx) => (
                           <Cell key={idx} fill={entry.color} />
                         ))}
                       </Pie>
                       <Tooltip
+                        isAnimationActive={!prefersReducedMotion}
+                        animationDuration={180}
+                        animationEasing="ease-out"
                         formatter={(val: any) => [`${val ?? 0}%`, 'Share']}
                         contentStyle={{
                           borderRadius: '10px',
@@ -665,7 +762,11 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                         style={{ backgroundColor: item.color }}
                       />
                       <span className="font-bold text-[#17231E] w-9 tabular-nums">
-                        {item.value}%
+                        <AnimatedCounter
+                          value={item.value}
+                          decimals={Number.isInteger(item.value) ? 0 : 1}
+                          suffix="%"
+                        />
                       </span>
                       <span className="text-[#6E7A75] truncate">{item.name}</span>
                     </div>
@@ -677,7 +778,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
         </div>
 
         {/* ROW 4: RENT PAYMENT LIST TABLE */}
-        <div className="bg-white rounded-2xl p-5">
+        <div className="rms-card-hover bg-white rounded-2xl p-5">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
             <h2 className="text-[15px] font-bold text-[#17231E]">
               Rent Payment List
@@ -849,14 +950,14 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
       {/* RIGHT 3 COLUMNS: RATING + TASKS + RECENT ACTIVITIES (100% DATABASE DRIVEN) */}
       <div className="xl:col-span-3 space-y-4">
         {/* Card 1: Overall Property Rating (Computed from public.property_reviews) */}
-        <div className="bg-white rounded-2xl p-5">
+        <div className="rms-card-hover bg-white rounded-2xl p-5">
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-[15px] font-bold text-[#17231E]">
               Overall Rating
             </h2>
             <button
               onClick={() => setReviewModalOpen(true)}
-              className="w-7 h-7 rounded-lg bg-[#D5F267] hover:bg-[#c8e755] text-[#17231E] flex items-center justify-center transition-colors cursor-pointer"
+              className="rms-interactive-btn w-7 h-7 rounded-lg bg-[#D5F267] hover:bg-[#c8e755] text-[#17231E] flex items-center justify-center cursor-pointer"
               title="Log tenant property review"
             >
               <Plus className="w-4 h-4" />
@@ -866,7 +967,10 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
           <div className="flex items-center gap-3 mb-4">
             <div className="px-3.5 py-2 rounded-2xl bg-[#D8F3E5] text-[#17231E] flex items-baseline gap-0.5">
               <span className="text-[22px] font-extrabold tabular-nums">
-                {rating.overallScore.toFixed(1)}
+                <AnimatedCounter
+                  value={rating.overallScore}
+                  decimals={1}
+                />
               </span>
               <span className="text-[12px] font-semibold text-[#556B60]">/5</span>
             </div>
@@ -875,27 +979,28 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                 {rating.label}
               </p>
               <p className="text-[11px] text-[#7A8681] tabular-nums">
-                from {rating.reviewCount} tenant{' '}
+                from <AnimatedCounter value={rating.reviewCount} /> tenant{' '}
                 {rating.reviewCount === 1 ? 'review' : 'reviews'}
               </p>
             </div>
           </div>
 
           <div className="space-y-2.5">
-            {rating.categories.map((item) => (
+            {rating.categories.map((item, idx) => (
               <div
                 key={item.label}
                 className="flex items-center gap-2 text-[11.5px]"
               >
                 <span className="w-20 text-[#6E7A75] shrink-0">{item.label}</span>
                 <div className="flex-1 h-2 rounded-full bg-[#EEF3F0] overflow-hidden">
-                  <div
-                    className="h-full rounded-full bg-[#D5F267] transition-all"
-                    style={{ width: `${item.pct}%` }}
+                  <AnimatedProgressBar
+                    percent={item.pct}
+                    delay={0.05 * idx}
+                    className="h-full rounded-full bg-[#D5F267]"
                   />
                 </div>
                 <span className="w-7 text-right font-bold text-[#17231E] tabular-nums">
-                  {item.score.toFixed(1)}
+                  <AnimatedCounter value={item.score} decimals={1} />
                 </span>
               </div>
             ))}
@@ -903,12 +1008,12 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
         </div>
 
         {/* Card 2: Tasks (Connected to public.property_tasks in PostgreSQL) */}
-        <div className="bg-white rounded-2xl p-5">
+        <div className="rms-card-hover bg-white rounded-2xl p-5">
           <div className="flex items-center justify-between mb-3.5">
             <h2 className="text-[15px] font-bold text-[#17231E]">Tasks</h2>
             <button
               onClick={() => setNewTaskModalOpen(true)}
-              className="w-7 h-7 rounded-lg bg-[#D5F267] hover:bg-[#c8e755] text-[#17231E] flex items-center justify-center transition-colors cursor-pointer"
+              className="rms-interactive-btn w-7 h-7 rounded-lg bg-[#D5F267] hover:bg-[#c8e755] text-[#17231E] flex items-center justify-center cursor-pointer"
               title="Add task"
             >
               <Plus className="w-4 h-4" />
@@ -922,7 +1027,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
               </p>
               <button
                 onClick={() => setNewTaskModalOpen(true)}
-                className="px-3 py-1.5 rounded-xl bg-[#D8F3E5] text-[#145338] text-[11px] font-bold cursor-pointer"
+                className="rms-interactive-btn px-3 py-1.5 rounded-xl bg-[#D8F3E5] text-[#145338] text-[11px] font-bold cursor-pointer"
               >
                 + Add First Task
               </button>
@@ -933,7 +1038,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                 <div
                   key={task.id}
                   onClick={() => onToggleTask(task.id)}
-                  className={`p-3 rounded-xl transition-all cursor-pointer group ${
+                  className={`rms-interactive-btn p-3 rounded-xl cursor-pointer group ${
                     task.tone === 'lime' ? 'bg-[#DDF576]' : 'bg-[#D8F3E5]'
                   } ${task.done ? 'opacity-65' : ''}`}
                 >
@@ -973,7 +1078,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
         </div>
 
         {/* Card 3: Recent Activities (Connected to public.activity_logs in PostgreSQL) */}
-        <div className="bg-white rounded-2xl p-5">
+        <div className="rms-card-hover bg-white rounded-2xl p-5">
           <div className="flex items-center justify-between mb-3.5">
             <h2 className="text-[15px] font-bold text-[#17231E]">
               Recent Activities
@@ -1023,157 +1128,188 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
       </div>
 
       {/* Add Task Modal */}
-      {newTaskModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-xs p-4">
-          <form
-            onSubmit={handleAddTask}
-            className="bg-white rounded-2xl max-w-md w-full p-5 shadow-xl border border-[#E4ECE8]"
+      <AnimatePresence>
+        {newTaskModalOpen && (
+          <motion.div
+            key="add-task-modal-backdrop"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.18, ease: 'easeOut' }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-xs p-4"
+            onClick={() => setNewTaskModalOpen(false)}
           >
-            <h3 className="text-[15px] font-bold text-[#17231E] mb-3">
-              Add Property Task
-            </h3>
-            <div className="space-y-3">
-              <div>
-                <label className="block text-[11.5px] font-semibold text-[#5A6762] mb-1">
-                  Scheduled Date
-                </label>
-                <input
-                  type="text"
-                  value={newTaskDate}
-                  onChange={(e) => setNewTaskDate(e.target.value)}
-                  className="w-full px-3 py-2 rounded-xl bg-[#F4F8F6] text-[12.5px] text-[#17231E] focus:outline-none focus:ring-2 focus:ring-[#D5F267]"
-                />
-              </div>
-              <div>
-                <label className="block text-[11.5px] font-semibold text-[#5A6762] mb-1">
-                  Task Description
-                </label>
-                <input
-                  type="text"
-                  required
-                  placeholder="e.g., Inspect smoke detectors in Building A"
-                  value={newTaskTitle}
-                  onChange={(e) => setNewTaskTitle(e.target.value)}
-                  className="w-full px-3 py-2 rounded-xl bg-[#F4F8F6] text-[12.5px] text-[#17231E] focus:outline-none focus:ring-2 focus:ring-[#D5F267]"
-                />
-              </div>
-            </div>
-            <div className="mt-4 flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setNewTaskModalOpen(false)}
-                className="px-3.5 py-2 rounded-xl bg-[#EEF3F0] text-[#5A6762] text-[12px] font-bold"
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                disabled={submittingTask}
-                className="px-4 py-2 rounded-xl bg-[#D5F267] text-[#17231E] text-[12px] font-bold hover:bg-[#c8e755]"
-              >
-                {submittingTask ? 'Saving...' : 'Save Task'}
-              </button>
-            </div>
-          </form>
-        </div>
-      )}
-
-      {/* Add Tenant Review Modal */}
-      {reviewModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-xs p-4">
-          <form
-            onSubmit={handleCreateReview}
-            className="bg-white rounded-2xl max-w-md w-full p-5 shadow-xl border border-[#E4ECE8]"
-          >
-            <h3 className="text-[15px] font-bold text-[#17231E] mb-3">
-              Log Tenant Property Rating
-            </h3>
-            <div className="space-y-3 text-[12px]">
-              <div className="grid grid-cols-2 gap-3">
+            <motion.form
+              initial={{ opacity: 0, y: 10, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 8, scale: 0.98 }}
+              transition={{ duration: 0.22, ease: 'easeOut' }}
+              onClick={(e) => e.stopPropagation()}
+              onSubmit={handleAddTask}
+              className="bg-white rounded-2xl max-w-md w-full p-5 shadow-xl border border-[#E4ECE8]"
+            >
+              <h3 className="text-[15px] font-bold text-[#17231E] mb-3">
+                Add Property Task
+              </h3>
+              <div className="space-y-3">
                 <div>
-                  <label className="block font-semibold text-[#5A6762] mb-1">
-                    Property
+                  <label className="block text-[11.5px] font-semibold text-[#5A6762] mb-1">
+                    Scheduled Date
                   </label>
                   <input
                     type="text"
-                    value={revProperty}
-                    onChange={(e) => setRevProperty(e.target.value)}
-                    placeholder={properties[0]?.name || 'Property Name'}
+                    value={newTaskDate}
+                    onChange={(e) => setNewTaskDate(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-[#F4F8F6] text-[12.5px] text-[#17231E] focus:outline-none focus:ring-2 focus:ring-[#D5F267]"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11.5px] font-semibold text-[#5A6762] mb-1">
+                    Task Description
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g., Inspect smoke detectors in Building A"
+                    value={newTaskTitle}
+                    onChange={(e) => setNewTaskTitle(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-[#F4F8F6] text-[12.5px] text-[#17231E] focus:outline-none focus:ring-2 focus:ring-[#D5F267]"
+                  />
+                </div>
+              </div>
+              <div className="mt-4 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setNewTaskModalOpen(false)}
+                  className="px-3.5 py-2 rounded-xl bg-[#EEF3F0] text-[#5A6762] text-[12px] font-bold cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={submittingTask}
+                  className="rms-interactive-btn px-4 py-2 rounded-xl bg-[#D5F267] text-[#17231E] text-[12px] font-bold hover:bg-[#c8e755] cursor-pointer"
+                >
+                  {submittingTask ? 'Saving...' : 'Save Task'}
+                </button>
+              </div>
+            </motion.form>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Add Tenant Review Modal */}
+      <AnimatePresence>
+        {reviewModalOpen && (
+          <motion.div
+            key="add-review-modal-backdrop"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.18, ease: 'easeOut' }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-xs p-4"
+            onClick={() => setReviewModalOpen(false)}
+          >
+            <motion.form
+              initial={{ opacity: 0, y: 10, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 8, scale: 0.98 }}
+              transition={{ duration: 0.22, ease: 'easeOut' }}
+              onClick={(e) => e.stopPropagation()}
+              onSubmit={handleCreateReview}
+              className="bg-white rounded-2xl max-w-md w-full p-5 shadow-xl border border-[#E4ECE8]"
+            >
+              <h3 className="text-[15px] font-bold text-[#17231E] mb-3">
+                Log Tenant Property Rating
+              </h3>
+              <div className="space-y-3 text-[12px]">
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block font-semibold text-[#5A6762] mb-1">
+                      Property
+                    </label>
+                    <input
+                      type="text"
+                      value={revProperty}
+                      onChange={(e) => setRevProperty(e.target.value)}
+                      placeholder={properties[0]?.name || 'Property Name'}
+                      className="w-full px-3 py-2 rounded-xl bg-[#F4F8F6] text-[#17231E]"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-semibold text-[#5A6762] mb-1">
+                      Tenant Ref
+                    </label>
+                    <input
+                      type="text"
+                      value={revTenantRef}
+                      onChange={(e) => setRevTenantRef(e.target.value)}
+                      className="w-full px-3 py-2 rounded-xl bg-[#F4F8F6] font-mono-num font-bold text-[#145338]"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block font-semibold text-[#5A6762] mb-1">
+                    Tenant Name
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={revTenantName}
+                    onChange={(e) => setRevTenantName(e.target.value)}
+                    placeholder="Resident Name"
                     className="w-full px-3 py-2 rounded-xl bg-[#F4F8F6] text-[#17231E]"
                   />
                 </div>
-                <div>
-                  <label className="block font-semibold text-[#5A6762] mb-1">
-                    Tenant Ref
-                  </label>
-                  <input
-                    type="text"
-                    value={revTenantRef}
-                    onChange={(e) => setRevTenantRef(e.target.value)}
-                    className="w-full px-3 py-2 rounded-xl bg-[#F4F8F6] font-mono-num font-bold text-[#145338]"
-                  />
+
+                <div className="grid grid-cols-5 gap-2">
+                  {[
+                    { label: 'Maint.', val: revMaint, set: setRevMaint },
+                    { label: 'Clean.', val: revClean, set: setRevClean },
+                    { label: 'Mgmt.', val: revMgmt, set: setRevMgmt },
+                    { label: 'Comfort', val: revComfort, set: setRevComfort },
+                    { label: 'Location', val: revLoc, set: setRevLoc },
+                  ].map((item) => (
+                    <div key={item.label}>
+                      <label className="block text-[10.5px] font-semibold text-[#5A6762] mb-1">
+                        {item.label}
+                      </label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={5}
+                        step={0.1}
+                        value={item.val}
+                        onChange={(e) => item.set(Number(e.target.value))}
+                        className="w-full px-2 py-1.5 rounded-xl bg-[#F4F8F6] text-[#17231E] tabular-nums text-center font-bold"
+                      />
+                    </div>
+                  ))}
                 </div>
               </div>
 
-              <div>
-                <label className="block font-semibold text-[#5A6762] mb-1">
-                  Tenant Name
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={revTenantName}
-                  onChange={(e) => setRevTenantName(e.target.value)}
-                  placeholder="Resident Name"
-                  className="w-full px-3 py-2 rounded-xl bg-[#F4F8F6] text-[#17231E]"
-                />
+              <div className="mt-4 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setReviewModalOpen(false)}
+                  className="px-3.5 py-2 rounded-xl bg-[#EEF3F0] text-[#5A6762] text-[12px] font-bold cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={submittingReview}
+                  className="rms-interactive-btn px-4 py-2 rounded-xl bg-[#D5F267] text-[#17231E] text-[12px] font-bold hover:bg-[#c8e755] cursor-pointer"
+                >
+                  {submittingReview ? 'Saving...' : 'Save Review'}
+                </button>
               </div>
-
-              <div className="grid grid-cols-5 gap-2">
-                {[
-                  { label: 'Maint.', val: revMaint, set: setRevMaint },
-                  { label: 'Clean.', val: revClean, set: setRevClean },
-                  { label: 'Mgmt.', val: revMgmt, set: setRevMgmt },
-                  { label: 'Comfort', val: revComfort, set: setRevComfort },
-                  { label: 'Location', val: revLoc, set: setRevLoc },
-                ].map((item) => (
-                  <div key={item.label}>
-                    <label className="block text-[10.5px] font-semibold text-[#5A6762] mb-1">
-                      {item.label}
-                    </label>
-                    <input
-                      type="number"
-                      min={1}
-                      max={5}
-                      step={0.1}
-                      value={item.val}
-                      onChange={(e) => item.set(Number(e.target.value))}
-                      className="w-full px-2 py-1.5 rounded-xl bg-[#F4F8F6] text-[#17231E] tabular-nums text-center font-bold"
-                    />
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div className="mt-4 flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setReviewModalOpen(false)}
-                className="px-3.5 py-2 rounded-xl bg-[#EEF3F0] text-[#5A6762] text-[12px] font-bold"
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                disabled={submittingReview}
-                className="px-4 py-2 rounded-xl bg-[#D5F267] text-[#17231E] text-[12px] font-bold hover:bg-[#c8e755]"
-              >
-                {submittingReview ? 'Saving...' : 'Save Review'}
-              </button>
-            </div>
-          </form>
-        </div>
-      )}
+            </motion.form>
+          </motion.div>
+        )}
+      </AnimatePresence>
+      </div>
     </div>
   );
 };

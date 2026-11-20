@@ -235,109 +235,183 @@ export default function App() {
 
   const bootstrapInFlightRef = useRef<Promise<void> | null>(null);
   const bgSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mutationVersionRef = useRef(0);
+  const activeMutationsCountRef = useRef(0);
 
-  const refreshDatabaseState = useCallback(async (options?: { silent?: boolean }) => {
-    const token = getStoredToken();
-    if (!token && !(isSupabaseConfigured && supabase)) {
-      setAuthChecking(false);
-      setLoading(false);
-      return;
-    }
-
-    if (bootstrapInFlightRef.current) {
-      return bootstrapInFlightRef.current;
-    }
-
-    if (!options?.silent) {
-      setLoading((prev) => (analytics ? prev : true));
-    }
-
-    const runFetch = (async () => {
-      try {
-        const data = await rentalApi.getBootstrap();
-        if (!data.user || data.user.status !== 'Active') {
-          clearAuthContext();
-          wipeProtectedState();
-          setRedirectNotice('Your account session is not active. Please sign in.');
-          window.history.replaceState(null, '', '/login');
-          return;
-        }
-
-        setAuthContext(data.user);
-        setCurrentUser(data.user);
-        setUsers(data.users || []);
-        setProperties(data.properties);
-        setUnitTypes(data.unitTypes);
-        setTenants(data.tenants);
-        setPayments(data.payments);
-        setMaintenanceItems(data.maintenance);
-        setChatThreads(data.threads);
-        setTransactions(data.expenses);
-        setTasks(data.tasks);
-        setActivities(data.activities || []);
-        setSecurityLogs(data.securityLogs || []);
-        setBrandedEmails(data.brandedEmails || []);
-        setSmsLogs(data.smsLogs || []);
-        setSmsSettings(data.smsSettings || null);
-        setAnalytics(data.analytics);
-
-        const allowed = getAllowedPagesForRole(data.user.role);
-        const defaultPage = getDefaultPageForRole(data.user.role);
-        const requested = requestedPageRef.current;
-        const resolvedPage =
-          requested && allowed.includes(requested)
-            ? requested
-            : allowed.includes(activePage)
-            ? activePage
-            : defaultPage;
-
-        requestedPageRef.current = null;
-        if (resolvedPage !== activePage) {
-          setActivePage(resolvedPage);
-        }
-        if (
-          PUBLIC_PATHS.has(window.location.pathname) ||
-          window.location.pathname === '/' ||
-          !allowed.includes(PATH_TO_PAGE[window.location.pathname] || resolvedPage)
-        ) {
-          window.history.replaceState(null, '', `/${resolvedPage}`);
-        }
-
-        if (data.tenants.length > 0 && !data.tenants.some((t) => t.tenantRef === selectedTenantRef)) {
-          setSelectedTenantRef(data.user.tenantRef || data.tenants[0].tenantRef);
-        }
-        if (data.threads.length > 0 && !data.threads.some((t) => t.id === activeThreadId)) {
-          setActiveThreadId(data.threads[0].id);
-        }
-      } catch (err: any) {
-        if (
-          String(err?.message || '').toLowerCase().includes('authentication') ||
-          String(err?.message || '').toLowerCase().includes('unauthorized') ||
-          String(err?.message || '').toLowerCase().includes('sign in')
-        ) {
-          clearAuthContext();
-          wipeProtectedState();
-          window.history.replaceState(null, '', '/login');
-        } else if (!options?.silent) {
-          setErrorBanner(err.message || 'Failed to synchronize with PostgreSQL database.');
-        }
-      } finally {
-        bootstrapInFlightRef.current = null;
+  const refreshDatabaseState = useCallback(
+    async (options?: { silent?: boolean; force?: boolean }) => {
+      const token = getStoredToken();
+      if (!token && !(isSupabaseConfigured && supabase)) {
         setAuthChecking(false);
         setLoading(false);
+        return;
       }
-    })();
 
-    bootstrapInFlightRef.current = runFetch;
-    return runFetch;
-  }, [activePage, activeThreadId, analytics, selectedTenantRef, wipeProtectedState]);
+      if (bootstrapInFlightRef.current) {
+        if (!options?.force) {
+          return bootstrapInFlightRef.current;
+        }
+        try {
+          await bootstrapInFlightRef.current;
+        } catch {
+          // Ignore error from superseded in-flight fetch
+        }
+      }
+
+      if (!options?.silent) {
+        setLoading((prev) => (analytics ? prev : true));
+      }
+
+      const startVersion = mutationVersionRef.current;
+
+      const runFetch = (async () => {
+        try {
+          const data = await rentalApi.getBootstrap();
+
+          // If a mutation started or completed while this bootstrap fetch was in flight,
+          // discard this stale snapshot and schedule a fresh sync.
+          if (
+            mutationVersionRef.current !== startVersion ||
+            activeMutationsCountRef.current > 0
+          ) {
+            if (bgSyncTimerRef.current) {
+              clearTimeout(bgSyncTimerRef.current);
+            }
+            bgSyncTimerRef.current = setTimeout(() => {
+              void refreshDatabaseState({ silent: true, force: true });
+            }, 250);
+            return;
+          }
+
+          if (!data.user || data.user.status !== 'Active') {
+            clearAuthContext();
+            wipeProtectedState();
+            setRedirectNotice('Your account session is not active. Please sign in.');
+            window.history.replaceState(null, '', '/login');
+            return;
+          }
+
+          setAuthContext(data.user);
+          setCurrentUser(data.user);
+          setUsers(data.users || []);
+          setProperties((prev) =>
+            options?.silent &&
+            prev.length > 0 &&
+            data.properties.length === 0 &&
+            data.tenants.length === 0
+              ? prev
+              : data.properties
+          );
+          setUnitTypes((prev) =>
+            options?.silent &&
+            prev.length > 0 &&
+            data.unitTypes.length === 0 &&
+            data.properties.length === 0
+              ? prev
+              : data.unitTypes
+          );
+          setTenants((prev) =>
+            options?.silent &&
+            prev.length > 0 &&
+            data.tenants.length === 0 &&
+            data.properties.length === 0
+              ? prev
+              : data.tenants
+          );
+          setPayments((prev) =>
+            options?.silent &&
+            prev.length > 0 &&
+            data.payments.length === 0 &&
+            data.properties.length === 0
+              ? prev
+              : data.payments
+          );
+          setMaintenanceItems(data.maintenance);
+          setChatThreads(data.threads);
+          setTransactions(data.expenses);
+          setTasks(data.tasks);
+          setActivities(data.activities || []);
+          setSecurityLogs(data.securityLogs || []);
+          setBrandedEmails(data.brandedEmails || []);
+          setSmsLogs(data.smsLogs || []);
+          setSmsSettings(data.smsSettings || null);
+          setAnalytics(data.analytics);
+
+          const allowed = getAllowedPagesForRole(data.user.role);
+          const defaultPage = getDefaultPageForRole(data.user.role);
+          const requested = requestedPageRef.current;
+          const resolvedPage =
+            requested && allowed.includes(requested)
+              ? requested
+              : allowed.includes(activePage)
+              ? activePage
+              : defaultPage;
+
+          requestedPageRef.current = null;
+          if (resolvedPage !== activePage) {
+            setActivePage(resolvedPage);
+          }
+          if (
+            PUBLIC_PATHS.has(window.location.pathname) ||
+            window.location.pathname === '/' ||
+            !allowed.includes(PATH_TO_PAGE[window.location.pathname] || resolvedPage)
+          ) {
+            window.history.replaceState(null, '', `/${resolvedPage}`);
+          }
+
+          if (
+            data.tenants.length > 0 &&
+            !data.tenants.some((t) => t.tenantRef === selectedTenantRef)
+          ) {
+            setSelectedTenantRef(data.user.tenantRef || data.tenants[0].tenantRef);
+          }
+          if (
+            data.threads.length > 0 &&
+            !data.threads.some((t) => t.id === activeThreadId)
+          ) {
+            setActiveThreadId(data.threads[0].id);
+          }
+        } catch (err: any) {
+          const isAuthError =
+            String(err?.message || '').toLowerCase().includes('authentication') ||
+            String(err?.message || '').toLowerCase().includes('unauthorized') ||
+            String(err?.message || '').toLowerCase().includes('sign in') ||
+            String(err?.message || '').toLowerCase().includes('session') ||
+            err?.diagnosticInfo?.statusCode === '401' ||
+            err?.diagnosticInfo?.statusCode === 401 ||
+            err?.diagnosticInfo?.category === 'Authentication';
+
+          if (isAuthError && !options?.silent) {
+            clearAuthContext();
+            wipeProtectedState();
+            setPublicView('login');
+            if (!PUBLIC_PATHS.has(window.location.pathname)) {
+              window.history.replaceState(null, '', '/login');
+            }
+          } else if (!options?.silent) {
+            setErrorBanner(
+              err.message || 'Failed to synchronize with PostgreSQL database.'
+            );
+          }
+        } finally {
+          bootstrapInFlightRef.current = null;
+          setAuthChecking(false);
+          setLoading(false);
+        }
+      })();
+
+      bootstrapInFlightRef.current = runFetch;
+      return runFetch;
+    },
+    [activePage, activeThreadId, analytics, selectedTenantRef, wipeProtectedState]
+  );
 
   const scheduleBackgroundSync = useCallback(() => {
     if (bgSyncTimerRef.current) {
       clearTimeout(bgSyncTimerRef.current);
     }
     bgSyncTimerRef.current = setTimeout(() => {
-      void refreshDatabaseState({ silent: true });
+      void refreshDatabaseState({ silent: true, force: true });
     }, 350);
   }, [refreshDatabaseState]);
 
@@ -347,9 +421,11 @@ export default function App() {
 
     if (isSupabaseConfigured && supabase) {
       setAuthChecking(true);
+      let initialSessionChecked = false;
       supabase.auth
         .getSession()
         .then(({ data }) => {
+          initialSessionChecked = true;
           if (data?.session || getStoredToken()) {
             void refreshDatabaseState();
           } else {
@@ -357,6 +433,7 @@ export default function App() {
           }
         })
         .catch(() => {
+          initialSessionChecked = true;
           if (getStoredToken()) {
             void refreshDatabaseState();
           } else {
@@ -366,12 +443,17 @@ export default function App() {
 
       const { data: listener } = supabase.auth.onAuthStateChange((event, session) => {
         if (event === 'SIGNED_OUT') {
-          clearAuthContext();
+          const existingToken = getStoredToken();
+          if (existingToken && existingToken.startsWith('rtk_')) {
+            return;
+          }
+          void clearAuthContext({ skipSupabaseSignOut: true });
           wipeProtectedState();
           setAuthChecking(false);
         } else if (
-          (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') &&
-          session?.access_token
+          event === 'TOKEN_REFRESHED' &&
+          session?.access_token &&
+          initialSessionChecked
         ) {
           scheduleBackgroundSync();
         }
@@ -427,17 +509,22 @@ export default function App() {
     options?: { skipSync?: boolean; awaitSync?: boolean }
   ): Promise<T | undefined> => {
     setErrorBanner(null);
+    mutationVersionRef.current += 1;
+    activeMutationsCountRef.current += 1;
     try {
       const result = await fn();
+      mutationVersionRef.current += 1;
+      activeMutationsCountRef.current = Math.max(0, activeMutationsCountRef.current - 1);
       if (!options?.skipSync) {
         if (options?.awaitSync) {
-          await refreshDatabaseState({ silent: true });
+          await refreshDatabaseState({ silent: true, force: true });
         } else {
           scheduleBackgroundSync();
         }
       }
       return result;
     } catch (err: any) {
+      activeMutationsCountRef.current = Math.max(0, activeMutationsCountRef.current - 1);
       setErrorBanner(err.message || 'Database operation failed.');
       throw err;
     }
@@ -603,6 +690,10 @@ export default function App() {
   const dueTenantsCount = tenants.filter((t) => t.rentBalance > 0).length;
   const unreadMessagesCount =
     dueTenantsCount || chatThreads.reduce((sum, t) => sum + t.unread, 0);
+  const pendingPaymentsCount = payments.filter((p) => p.status !== 'Paid').length;
+  const pendingMaintenanceCount = maintenanceItems.filter(
+    (m) => m.maintenanceStatus !== 'Completed'
+  ).length;
 
   const allowedPages = getAllowedPagesForRole(currentUser.role);
   const isPageAuthorized = allowedPages.includes(activePage);
@@ -614,6 +705,8 @@ export default function App() {
       globalSearch={globalSearch}
       onGlobalSearchChange={setGlobalSearch}
       unreadMessagesCount={unreadMessagesCount}
+      pendingPaymentsCount={pendingPaymentsCount}
+      pendingMaintenanceCount={pendingMaintenanceCount}
       currentUser={currentUser}
       users={users}
       activities={activities}
@@ -660,6 +753,7 @@ export default function App() {
         <>
           {activePage === 'dashboard' && (
             <DashboardPage
+              currentUser={currentUser}
               payments={payments}
               properties={properties}
               analytics={analytics}
@@ -929,6 +1023,8 @@ export default function App() {
               currentUser={currentUser}
               smsLogs={smsLogs}
               smsSettings={smsSettings}
+              brandedEmails={brandedEmails}
+              onBrandedEmailsChange={setBrandedEmails}
               onSendMessage={async (threadId, text, meta) => {
                 await runMutation(async () => {
                   const updated = await rentalApi.sendMessage(threadId, text, meta);
@@ -1125,6 +1221,10 @@ export default function App() {
                       prev.map((u) => (u.id === id ? { ...u, ...res.staff } : u))
                     );
                   }
+                  if (res?.brandedEmail) {
+                    setBrandedEmails((prev) => [res.brandedEmail!, ...prev]);
+                  }
+                  return res;
                 });
               }}
               onResendInvite={async (id) => {

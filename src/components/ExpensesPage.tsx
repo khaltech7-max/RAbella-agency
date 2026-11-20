@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import { useReducedMotion } from 'motion/react';
+import { AnimatedCounter } from './AnimatedMetrics';
 import {
   CircleDollarSign,
   TrendingUp,
@@ -51,6 +53,7 @@ export const ExpensesPage: React.FC<ExpensesPageProps> = ({
   onDeleteTransaction,
   globalSearch,
 }) => {
+  const prefersReducedMotion = useReducedMotion();
   const [breakdownTab, setBreakdownTab] = useState<'Income' | 'Expense'>('Expense');
   const [search, setSearch] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('All');
@@ -155,7 +158,7 @@ export const ExpensesPage: React.FC<ExpensesPageProps> = ({
           {/* 3 Summary Stat Cards computed from live database records */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             {/* Total Balance */}
-            <div className="bg-white rounded-2xl p-4 flex flex-col justify-between">
+            <div className="rms-card-hover bg-white rounded-2xl p-4 flex flex-col justify-between">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2.5">
                   <span className="w-8 h-8 rounded-xl bg-[#D8F3E5] flex items-center justify-center text-[#145338]">
@@ -172,7 +175,7 @@ export const ExpensesPage: React.FC<ExpensesPageProps> = ({
 
               <div className="mt-4 flex items-end justify-between">
                 <p className="text-[22px] font-extrabold text-[#17231E] tracking-tight tabular-nums">
-                  KSh {analytics.netBalance.toLocaleString()}
+                  <AnimatedCounter value={analytics.netBalance} prefix="KSh " />
                 </p>
                 <div className="text-right">
                   <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-[#E4F69B] text-[#283B0B] text-[10.5px] font-bold tabular-nums">
@@ -185,7 +188,7 @@ export const ExpensesPage: React.FC<ExpensesPageProps> = ({
             </div>
 
             {/* Total Income */}
-            <div className="bg-white rounded-2xl p-4 flex flex-col justify-between">
+            <div className="rms-card-hover bg-white rounded-2xl p-4 flex flex-col justify-between">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2.5">
                   <span className="w-8 h-8 rounded-xl bg-[#D8F3E5] flex items-center justify-center text-[#145338]">
@@ -202,11 +205,11 @@ export const ExpensesPage: React.FC<ExpensesPageProps> = ({
 
               <div className="mt-4 flex items-end justify-between">
                 <p className="text-[22px] font-extrabold text-[#17231E] tracking-tight tabular-nums">
-                  KSh {totalIncomeVal.toLocaleString()}
+                  <AnimatedCounter value={totalIncomeVal} prefix="KSh " />
                 </p>
                 <div className="text-right">
                   <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-[#D8F3E5] text-[#145338] text-[10.5px] font-bold tabular-nums">
-                    {analytics.rentCollectedCount} Paid
+                    <AnimatedCounter value={analytics.rentCollectedCount} suffix=" Paid" />
                   </span>
                   <p className="text-[10px] text-[#88948F] mt-0.5">verified rent</p>
                 </div>
@@ -214,7 +217,7 @@ export const ExpensesPage: React.FC<ExpensesPageProps> = ({
             </div>
 
             {/* Total Expenses */}
-            <div className="bg-white rounded-2xl p-4 flex flex-col justify-between">
+            <div className="rms-card-hover bg-white rounded-2xl p-4 flex flex-col justify-between">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2.5">
                   <span className="w-8 h-8 rounded-xl bg-[#D8F3E5] flex items-center justify-center text-[#145338]">
@@ -231,11 +234,11 @@ export const ExpensesPage: React.FC<ExpensesPageProps> = ({
 
               <div className="mt-4 flex items-end justify-between">
                 <p className="text-[22px] font-extrabold text-[#17231E] tracking-tight tabular-nums">
-                  KSh {analytics.totalExpenses.toLocaleString()}
+                  <AnimatedCounter value={analytics.totalExpenses} prefix="KSh " />
                 </p>
                 <div className="text-right">
                   <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-[#E4F69B] text-[#283B0B] text-[10.5px] font-bold tabular-nums">
-                    {transactions.length} Vouchers
+                    <AnimatedCounter value={transactions.length} suffix=" Vouchers" />
                   </span>
                   <p className="text-[10px] text-[#88948F] mt-0.5">in database</p>
                 </div>
@@ -244,7 +247,7 @@ export const ExpensesPage: React.FC<ExpensesPageProps> = ({
           </div>
 
           {/* Earnings Positive/Negative Bar Chart Card */}
-          <div className="bg-white rounded-2xl p-5 flex-1 flex flex-col justify-between">
+          <div className="rms-card-hover bg-white rounded-2xl p-5 flex-1 flex flex-col justify-between">
             <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
               <div>
                 <h2 className="text-[16px] font-bold text-[#17231E]">Earnings</h2>
@@ -272,10 +275,10 @@ export const ExpensesPage: React.FC<ExpensesPageProps> = ({
                   <div className="px-3 py-1.5 rounded-xl bg-[#E4F69B] text-[#17231E] shadow-xs border border-[#CEE876] text-[10.5px]">
                     <p className="text-[#4F613F] font-semibold">YTD Totals</p>
                     <p className="font-bold tabular-nums">
-                      Income: KSh {totalIncomeVal.toLocaleString()}
+                      Income: <AnimatedCounter value={totalIncomeVal} prefix="KSh " />
                     </p>
                     <p className="font-bold tabular-nums">
-                      Expense: KSh {analytics.totalExpenses.toLocaleString()}
+                      Expense: <AnimatedCounter value={analytics.totalExpenses} prefix="KSh " />
                     </p>
                   </div>
                 </div>
@@ -305,6 +308,9 @@ export const ExpensesPage: React.FC<ExpensesPageProps> = ({
                   />
                   <ReferenceLine y={0} stroke="#E4ECE8" />
                   <Tooltip
+                    isAnimationActive={!prefersReducedMotion}
+                    animationDuration={180}
+                    animationEasing="ease-out"
                     cursor={{ fill: '#F4F8F6' }}
                     contentStyle={{
                       backgroundColor: '#E4F69B',
@@ -323,12 +329,20 @@ export const ExpensesPage: React.FC<ExpensesPageProps> = ({
                     stackId="stack"
                     fill="#BCEAD2"
                     radius={[6, 6, 0, 0]}
+                    isAnimationActive={!prefersReducedMotion}
+                    animationBegin={60}
+                    animationDuration={820}
+                    animationEasing="ease-out"
                   />
                   <Bar
                     dataKey="expense"
                     stackId="stack"
                     fill="#DBF573"
                     radius={[6, 6, 0, 0]}
+                    isAnimationActive={!prefersReducedMotion}
+                    animationBegin={180}
+                    animationDuration={860}
+                    animationEasing="ease-out"
                   />
                 </BarChart>
               </ResponsiveContainer>
@@ -337,7 +351,7 @@ export const ExpensesPage: React.FC<ExpensesPageProps> = ({
         </div>
 
         {/* Right 4 Columns: Income / Expense Donut & Breakdown List */}
-        <div className="xl:col-span-4 bg-white rounded-2xl p-5 flex flex-col justify-between">
+        <div className="rms-card-hover xl:col-span-4 bg-white rounded-2xl p-5 flex flex-col justify-between">
           <div>
             {/* Segmented Tab Switcher matching reference */}
             <div className="grid grid-cols-2 p-1 rounded-xl bg-[#F4F8F6] mb-4">
@@ -367,9 +381,15 @@ export const ExpensesPage: React.FC<ExpensesPageProps> = ({
             <div className="relative h-[195px] w-full flex items-center justify-center">
               <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
                 <p className="text-[17px] font-extrabold text-[#17231E] tabular-nums">
-                  {breakdownTab === 'Expense'
-                    ? `KSh ${analytics.totalExpenses.toLocaleString()}`
-                    : `KSh ${totalIncomeVal.toLocaleString()}`}
+                  <AnimatedCounter
+                    key={breakdownTab}
+                    value={
+                      breakdownTab === 'Expense'
+                        ? analytics.totalExpenses
+                        : totalIncomeVal
+                    }
+                    prefix="KSh "
+                  />
                 </p>
                 <p className="text-[11px] text-[#7A8681]">
                   Total {breakdownTab}
@@ -377,7 +397,7 @@ export const ExpensesPage: React.FC<ExpensesPageProps> = ({
               </div>
 
               <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
+                <PieChart key={`donut-${breakdownTab}`}>
                   <Pie
                     data={
                       activeDonutData.some((d) => d.value > 0)
@@ -386,11 +406,17 @@ export const ExpensesPage: React.FC<ExpensesPageProps> = ({
                     }
                     cx="50%"
                     cy="50%"
+                    startAngle={90}
+                    endAngle={-270}
                     innerRadius={58}
                     outerRadius={82}
                     paddingAngle={2}
                     dataKey="value"
                     stroke="none"
+                    isAnimationActive={!prefersReducedMotion}
+                    animationBegin={80}
+                    animationDuration={880}
+                    animationEasing="ease-out"
                   >
                     {(activeDonutData.some((d) => d.value > 0)
                       ? activeDonutData
@@ -422,7 +448,11 @@ export const ExpensesPage: React.FC<ExpensesPageProps> = ({
                   </span>
                 </div>
                 <span className="font-bold text-[#17231E] tabular-nums shrink-0">
-                  KSh {cat.value.toLocaleString()}
+                  <AnimatedCounter
+                    key={`${breakdownTab}-${cat.name}`}
+                    value={cat.value}
+                    prefix="KSh "
+                  />
                 </span>
               </div>
             ))}
@@ -431,7 +461,7 @@ export const ExpensesPage: React.FC<ExpensesPageProps> = ({
       </div>
 
       {/* BOTTOM SECTION: TRANSACTIONS TABLE */}
-      <div className="bg-white rounded-2xl p-5">
+      <div className="rms-card-hover bg-white rounded-2xl p-5">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 mb-5">
           <h2 className="text-[16px] font-bold text-[#17231E]">Transactions</h2>
 

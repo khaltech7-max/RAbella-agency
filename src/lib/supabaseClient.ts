@@ -31,21 +31,41 @@ export class SupabaseIntegrationError extends Error {
 
 const envMeta = (import.meta as any).env || {};
 
-const rawSupabaseUrl: string =
-  envMeta.VITE_SUPABASE_URL ||
-  envMeta.NEXT_PUBLIC_SUPABASE_URL ||
-  envMeta.REACT_APP_SUPABASE_URL ||
-  envMeta.__RESOLVED_SUPABASE_URL__ ||
-  '';
+function pickValidEnvVal(...candidates: (string | undefined)[]): string {
+  for (const c of candidates) {
+    const val = String(c || '')
+      .trim()
+      .replace(/^['"]+|['"]+$/g, '')
+      .trim();
+    if (
+      val &&
+      !val.includes('your-project-ref') &&
+      !val.includes('example.supabase.co') &&
+      val !== 'your-supabase-anon-key' &&
+      val !== 'your-anon-key' &&
+      val !== 'your-supabase-service-role-key'
+    ) {
+      return val;
+    }
+  }
+  return '';
+}
 
-const rawSupabaseAnonKey: string =
-  envMeta.VITE_SUPABASE_ANON_KEY ||
-  envMeta.VITE_SUPABASE_PUBLISHABLE_KEY ||
-  envMeta.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-  envMeta.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY ||
-  envMeta.REACT_APP_SUPABASE_ANON_KEY ||
-  envMeta.__RESOLVED_SUPABASE_ANON_KEY__ ||
-  '';
+const rawSupabaseUrl: string = pickValidEnvVal(
+  envMeta.VITE_SUPABASE_URL,
+  envMeta.NEXT_PUBLIC_SUPABASE_URL,
+  envMeta.REACT_APP_SUPABASE_URL,
+  envMeta.__RESOLVED_SUPABASE_URL__
+);
+
+const rawSupabaseAnonKey: string = pickValidEnvVal(
+  envMeta.VITE_SUPABASE_ANON_KEY,
+  envMeta.VITE_SUPABASE_PUBLISHABLE_KEY,
+  envMeta.NEXT_PUBLIC_SUPABASE_ANON_KEY,
+  envMeta.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY,
+  envMeta.REACT_APP_SUPABASE_ANON_KEY,
+  envMeta.__RESOLVED_SUPABASE_ANON_KEY__
+);
 
 /**
  * Normalizes a Supabase Project URL so accidental quotes, trailing slashes,
@@ -211,14 +231,32 @@ export function createDiagnosticError(params: {
     params.hint ? ` — Hint: ${params.hint}` : ''
   }`;
 
-  console.error('[Supabase Diagnostic Error]', {
-    failedRequest: params.failedRequest,
-    statusCode: statusStr,
-    endpoint: cleanEndpoint,
-    supabaseError: params.supabaseError,
-    category: params.category,
-    hint: params.hint,
-  });
+  const isExpectedAuthExpiry =
+    statusStr === '401' ||
+    params.category === 'Authentication' ||
+    params.supabaseError.toLowerCase().includes('sign in') ||
+    params.supabaseError.toLowerCase().includes('expired') ||
+    params.supabaseError.toLowerCase().includes('authentication required');
+
+  if (isExpectedAuthExpiry) {
+    console.warn('[Supabase Auth Info]', {
+      failedRequest: params.failedRequest,
+      statusCode: statusStr,
+      endpoint: cleanEndpoint,
+      supabaseError: params.supabaseError,
+      category: params.category,
+      hint: params.hint,
+    });
+  } else {
+    console.error('[Supabase Diagnostic Error]', {
+      failedRequest: params.failedRequest,
+      statusCode: statusStr,
+      endpoint: cleanEndpoint,
+      supabaseError: params.supabaseError,
+      category: params.category,
+      hint: params.hint,
+    });
+  }
 
   return new SupabaseIntegrationError(formattedMessage, {
     failedRequest: params.failedRequest,

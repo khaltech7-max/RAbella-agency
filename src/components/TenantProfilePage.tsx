@@ -1,4 +1,5 @@
 import React, { useState, useMemo } from 'react';
+import { AnimatedCounter } from './AnimatedMetrics';
 import {
   Search,
   Building2,
@@ -48,6 +49,7 @@ interface TenantProfilePageProps {
     unitNumber: string;
     unitType: 'Standard' | 'Deluxe' | 'Suite' | 'Family' | 'Single';
     monthlyRent: number;
+    dueDate?: string;
     leaseDuration?: string;
     leaseNotes?: string;
     dob?: string;
@@ -107,6 +109,37 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
   const [formError, setFormError] = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
+  const getDefaultNairobiDateInput = () => {
+    try {
+      return new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Africa/Nairobi',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      }).format(new Date());
+    } catch {
+      return new Date().toISOString().slice(0, 10);
+    }
+  };
+
+  const toDateInputValue = (raw?: string) => {
+    if (!raw) return getDefaultNairobiDateInput();
+    const s = String(raw).trim();
+    if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+    const dotMatch = s.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
+    if (dotMatch) {
+      return `${dotMatch[3]}-${dotMatch[2].padStart(2, '0')}-${dotMatch[1].padStart(2, '0')}`;
+    }
+    const parsed = new Date(s);
+    if (!Number.isNaN(parsed.getTime())) {
+      const y = parsed.getFullYear();
+      const m = String(parsed.getMonth() + 1).padStart(2, '0');
+      const d = String(parsed.getDate()).padStart(2, '0');
+      return `${y}-${m}-${d}`;
+    }
+    return getDefaultNairobiDateInput();
+  };
+
   // Edit Tenant & Lease state
   const [editName, setEditName] = useState('');
   const [editPhone, setEditPhone] = useState('');
@@ -118,6 +151,7 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
   >('Deluxe');
   const [editRent, setEditRent] = useState(35000);
   const [editDeposit, setEditDeposit] = useState(35000);
+  const [editDueDate, setEditDueDate] = useState(getDefaultNairobiDateInput);
   const [editDuration, setEditDuration] = useState('12 Months');
   const [editOccupants, setEditOccupants] = useState('2 Adults');
   const [customNote, setCustomNote] = useState('');
@@ -133,6 +167,7 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
     'Standard' | 'Deluxe' | 'Suite' | 'Family' | 'Single'
   >('Deluxe');
   const [newRent, setNewRent] = useState(35000);
+  const [newDueDate, setNewDueDate] = useState(getDefaultNairobiDateInput);
   const [newDuration, setNewDuration] = useState('12 Months');
   const [newDeposit, setNewDeposit] = useState(35000);
   const [newOccupants, setNewOccupants] = useState('2 Adults');
@@ -321,6 +356,7 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
       setSelectedPropertyId('');
       setNewProperty('');
     }
+    setNewDueDate(getDefaultNairobiDateInput());
     setAddModalOpen(true);
   };
 
@@ -334,7 +370,21 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
 
     const propName =
       chosenProp?.name || newProperty.trim() || properties[0]?.name || 'Main Property';
-    if (!newName.trim() || !propName) return;
+    if (!newName.trim() || !propName) {
+      setFormError('Tenant full name and assigned property are required.');
+      return;
+    }
+
+    const cleanEmail = newEmail.trim().toLowerCase();
+    const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!cleanEmail || !emailPattern.test(cleanEmail)) {
+      setFormError(
+        'A valid tenant email address is required (used for automatic rent reminders, receipts, and lease notices).'
+      );
+      return;
+    }
+
+    const resolvedDueDate = newDueDate.trim() || getDefaultNairobiDateInput();
 
     setSaving(true);
     setFormError(null);
@@ -342,14 +392,13 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
       const created = await onAddTenant({
         name: newName.trim(),
         phone: newPhone.trim() || 'On file',
-        email:
-          newEmail.trim() ||
-          `${newName.toLowerCase().replace(/\s+/g, '.')}@tenant.io`,
+        email: cleanEmail,
         propertyId: chosenProp?.id,
         property: propName,
         unitNumber: newUnitNumber.trim() || 'Unit 101',
         unitType: newUnitType,
         monthlyRent: Number(newRent),
+        dueDate: resolvedDueDate,
         securityDeposit: Number(newDeposit),
         occupants: newOccupants,
         leaseDuration: newDuration,
@@ -363,8 +412,9 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
       setNewName('');
       setNewPhone('');
       setNewEmail('');
+      setNewDueDate(getDefaultNairobiDateInput());
       showToast(
-        `Tenant ${created.name} registered and assigned to ${propName} (Ref: ${created.tenantRef})`
+        `Tenant ${created.name} registered (Due: ${resolvedDueDate}) and assigned to ${propName} (Ref: ${created.tenantRef})`
       );
     } catch (err: any) {
       setFormError(err?.message || 'Failed to save tenant to Supabase.');
@@ -388,6 +438,11 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
     setEditUnitType(t.unitType);
     setEditRent(t.monthlyRent);
     setEditDeposit(t.securityDeposit);
+    setEditDueDate(
+      toDateInputValue(
+        t.dueDate || t.paymentHistory?.[0]?.periodStart || t.leaseStart
+      )
+    );
     setEditDuration(t.leaseDuration);
     setEditOccupants(t.occupants);
     setCustomNote(t.leaseNotes);
@@ -398,6 +453,12 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
   const handleSaveTenantEdit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingTenant) return;
+    const cleanEmail = editEmail.trim().toLowerCase();
+    const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!cleanEmail || !emailPattern.test(cleanEmail)) {
+      setFormError('Please provide a valid email address for the tenant.');
+      return;
+    }
     setSaving(true);
     setFormError(null);
     try {
@@ -405,12 +466,13 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
       await onUpdateTenant(editingTenant.id, {
         name: editName.trim() || editingTenant.name,
         phone: editPhone.trim() || editingTenant.phone,
-        email: editEmail.trim() || editingTenant.email,
+        email: cleanEmail,
         propertyId: chosenProp?.id || editingTenant.propertyId,
         property: chosenProp?.name || editingTenant.property,
         unitNumber: editUnitNumber.trim() || editingTenant.unitNumber,
         unitType: editUnitType,
         monthlyRent: Number(editRent),
+        dueDate: editDueDate.trim() || editingTenant.dueDate,
         securityDeposit: Number(editDeposit),
         leaseDuration: editDuration,
         occupants: editOccupants,
@@ -510,28 +572,28 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
 
         {/* Compact KPI Row */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-5 pt-4 border-t border-[#E7ECE9]">
-          <div className="p-3 rounded-xl bg-[#F5F7F6] border border-[#E7ECE9]">
+          <div className="rms-card-hover p-3 rounded-xl bg-[#F5F7F6] border border-[#E7ECE9]">
             <p className="text-[11px] font-medium text-[#7B8983]">Total Registered</p>
             <p className="text-xl font-bold text-[#172B25] mt-0.5 tabular-nums">
-              {totalTenantsCount} Tenants
+              <AnimatedCounter value={totalTenantsCount} suffix=" Tenants" />
             </p>
           </div>
-          <div className="p-3 rounded-xl bg-[#F5F7F6] border border-[#E7ECE9]">
+          <div className="rms-card-hover p-3 rounded-xl bg-[#F5F7F6] border border-[#E7ECE9]">
             <p className="text-[11px] font-medium text-[#7B8983]">Apartment Groups</p>
             <p className="text-xl font-bold text-[#172B25] mt-0.5 tabular-nums">
-              {properties.length} Properties
+              <AnimatedCounter value={properties.length} suffix=" Properties" />
             </p>
           </div>
-          <div className="p-3 rounded-xl bg-[#FEF3C7]/60 border border-[#FDE68A]">
+          <div className="rms-card-hover p-3 rounded-xl bg-[#FEF3C7]/60 border border-[#FDE68A]">
             <p className="text-[11px] font-medium text-[#92400E]">Rent Due</p>
             <p className="text-xl font-bold text-[#92400E] mt-0.5 tabular-nums">
-              {dueTotal} Tenants
+              <AnimatedCounter value={dueTotal} suffix=" Tenants" />
             </p>
           </div>
-          <div className="p-3 rounded-xl bg-[#FDE6E6]/60 border border-[#F8CACA]">
+          <div className="rms-card-hover p-3 rounded-xl bg-[#FDE6E6]/60 border border-[#F8CACA]">
             <p className="text-[11px] font-medium text-[#B91C1C]">Overdue Arrears</p>
             <p className="text-xl font-bold text-[#B91C1C] mt-0.5 tabular-nums">
-              {overdueTotal} Tenants
+              <AnimatedCounter value={overdueTotal} suffix=" Tenants" />
             </p>
           </div>
         </div>
@@ -814,6 +876,9 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
                                   </p>
                                   <p className="text-[10px] text-[#7B8983]">
                                     Paid: KSh {t.totalPaid.toLocaleString()}
+                                  </p>
+                                  <p className="text-[10px] font-medium text-[#145338]">
+                                    Due: {t.dueDate || t.paymentHistory?.[0]?.periodStart || t.leaseStart}
                                   </p>
                                 </td>
 
@@ -1109,13 +1174,14 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block font-bold text-[#172B25] mb-1">
-                    Email Address
+                    Email Address (Email Reminders) *
                   </label>
                   <input
                     type="email"
+                    required
                     value={newEmail}
                     onChange={(e) => setNewEmail(e.target.value)}
-                    placeholder="grace.wanjiku@domain.io"
+                    placeholder="e.g. grace.wanjiku@gmail.com"
                     className="w-full px-3 py-2 rounded-xl bg-[#F5F7F6] border border-[#E7ECE9] text-xs text-[#172B25]"
                   />
                 </div>
@@ -1177,7 +1243,19 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="block font-bold text-[#172B25] mb-1">
+                    Rent Due Date *
+                  </label>
+                  <input
+                    type="date"
+                    required
+                    value={newDueDate}
+                    onChange={(e) => setNewDueDate(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-[#F5F7F6] border border-[#E7ECE9] text-xs text-[#172B25] tabular-nums"
+                  />
+                </div>
                 <div>
                   <label className="block font-bold text-[#172B25] mb-1">
                     Lease Duration
@@ -1252,11 +1330,17 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
               </button>
             </div>
 
+            {formError && (
+              <div className="p-3 rounded-xl bg-[#FDE6E6] text-[#B91C1C] text-xs font-medium">
+                {formError}
+              </div>
+            )}
+
             <div className="space-y-3 text-xs">
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block font-bold text-[#172B25] mb-1">
-                    Full Name
+                    Full Name *
                   </label>
                   <input
                     type="text"
@@ -1281,6 +1365,20 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
 
               <div>
                 <label className="block font-bold text-[#172B25] mb-1">
+                  Email Address (Email Reminders) *
+                </label>
+                <input
+                  type="email"
+                  required
+                  value={editEmail}
+                  onChange={(e) => setEditEmail(e.target.value)}
+                  placeholder="tenant@example.com"
+                  className="w-full px-3 py-2 rounded-xl bg-[#F5F7F6] border border-[#E7ECE9] text-xs text-[#172B25]"
+                />
+              </div>
+
+              <div>
+                <label className="block font-bold text-[#172B25] mb-1">
                   Assigned Property
                 </label>
                 <select
@@ -1296,7 +1394,7 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
                 </select>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
                   <label className="block font-bold text-[#172B25] mb-1">
                     Unit Number
@@ -1316,6 +1414,18 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
                     type="number"
                     value={editRent}
                     onChange={(e) => setEditRent(Number(e.target.value) || 0)}
+                    className="w-full px-3 py-2 rounded-xl bg-[#F5F7F6] border border-[#E7ECE9] text-xs text-[#172B25] tabular-nums"
+                  />
+                </div>
+                <div>
+                  <label className="block font-bold text-[#172B25] mb-1">
+                    Rent Due Date *
+                  </label>
+                  <input
+                    type="date"
+                    required
+                    value={editDueDate}
+                    onChange={(e) => setEditDueDate(e.target.value)}
                     className="w-full px-3 py-2 rounded-xl bg-[#F5F7F6] border border-[#E7ECE9] text-xs text-[#172B25] tabular-nums"
                   />
                 </div>

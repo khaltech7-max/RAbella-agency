@@ -13,9 +13,13 @@ import {
   AccountStatus,
   DashboardTaskRecord,
   ActivityLogRecord,
+  DatabaseCleanupLogRecord,
+  DatabaseHealthSummary,
   PropertyReviewRecord,
   SecurityAuditLogRecord,
   BrandedEmailRecord,
+  EmailNotificationSettings,
+  EmailReminderTriggerType,
   SmsLogRecord,
   SmsNotificationSettings,
   SmsTriggerType,
@@ -68,15 +72,22 @@ export function setOnUnauthorized(handler: (() => void) | null) {
   unauthorizedHandler = handler;
 }
 
+function isRealSessionToken(token?: string | null): boolean {
+  if (!token || typeof token !== 'string') return false;
+  const trimmed = token.trim();
+  return trimmed.startsWith('rtk_') || trimmed.split('.').length === 3;
+}
+
 export function getStoredToken(): string | null {
-  if (currentToken) return currentToken;
+  if (isRealSessionToken(currentToken)) return currentToken;
+
   if (typeof window !== 'undefined') {
     const stored =
       window.sessionStorage.getItem(AUTH_STORAGE_KEY) ||
       window.localStorage.getItem(AUTH_STORAGE_KEY);
-    if (stored) return stored;
+    if (isRealSessionToken(stored)) return stored;
 
-    // Also check if Supabase itself persisted a session token in localStorage
+    // Check if Supabase itself persisted a session token in localStorage
     try {
       for (let i = 0; i < window.localStorage.length; i++) {
         const key = window.localStorage.key(i);
@@ -93,27 +104,48 @@ export function getStoredToken(): string | null {
     } catch {
       // Ignore storage access errors
     }
+
+    if (stored) return stored;
   }
-  return null;
+  return currentToken;
 }
 
 export function setAuthContext(session: UserSession, rememberMe?: boolean) {
-  currentToken = session.token;
+  const existingValidToken = getStoredToken();
+  const resolvedToken = isRealSessionToken(session.token)
+    ? session.token
+    : isRealSessionToken(existingValidToken)
+    ? existingValidToken!
+    : session.token;
+
+  currentToken = resolvedToken;
   currentUserId = session.id;
   currentRole = session.role;
   currentEmail = session.email;
   currentTenantRef = session.tenantRef;
-  if (typeof window !== 'undefined' && session.token) {
-    window.sessionStorage.setItem(AUTH_STORAGE_KEY, session.token);
-    window.sessionStorage.setItem(AUTH_USER_STORAGE_KEY, JSON.stringify(session));
+  const normalizedSession: UserSession = {
+    ...session,
+    token: resolvedToken,
+  };
+  if (typeof window !== 'undefined' && resolvedToken) {
+    window.sessionStorage.setItem(AUTH_STORAGE_KEY, resolvedToken);
+    window.sessionStorage.setItem(
+      AUTH_USER_STORAGE_KEY,
+      JSON.stringify(normalizedSession)
+    );
     if (rememberMe !== false) {
-      window.localStorage.setItem(AUTH_STORAGE_KEY, session.token);
-      window.localStorage.setItem(AUTH_USER_STORAGE_KEY, JSON.stringify(session));
+      window.localStorage.setItem(AUTH_STORAGE_KEY, resolvedToken);
+      window.localStorage.setItem(
+        AUTH_USER_STORAGE_KEY,
+        JSON.stringify(normalizedSession)
+      );
     }
   }
 }
 
-export async function clearAuthContext() {
+let isClearingAuth = false;
+
+export async function clearAuthContext(options?: { skipSupabaseSignOut?: boolean }) {
   currentToken = null;
   currentUserId = '';
   currentEmail = '';
@@ -124,8 +156,13 @@ export async function clearAuthContext() {
     window.sessionStorage.removeItem(AUTH_USER_STORAGE_KEY);
     window.localStorage.removeItem(AUTH_USER_STORAGE_KEY);
   }
-  if (supabase) {
-    await supabase.auth.signOut().catch(() => {});
+  if (supabase && !options?.skipSupabaseSignOut && !isClearingAuth) {
+    isClearingAuth = true;
+    try {
+      await supabase.auth.signOut({ scope: 'local' }).catch(() => {});
+    } finally {
+      isClearingAuth = false;
+    }
   }
 }
 
@@ -563,7 +600,7 @@ async function resolveSupabaseUserSession(
       meta.invite_expires_at || profRow?.invite_expires_at || undefined,
     inviteUsed: Boolean(meta.invite_used ?? profRow?.invite_used),
     inviteRevoked: Boolean(meta.invite_revoked ?? profRow?.invite_revoked),
-    inviteToken: meta.invite_token || profRow?.invite_token || undefined,
+    inviteToken: meta.invite_token || profRow?.invite_token || profRow?.invite_token_hash || undefined,
     mfaEnabled: Boolean(meta.mfa_enabled ?? profRow?.mfa_enabled),
     permissions:
       customPerms && customPerms.length > 0
@@ -643,27 +680,36 @@ async function fetchBootstrapFromSupabase(): Promise<BootstrapPayload> {
     smsLogsRes,
     smsSetRes,
   ] = await Promise.all([
-    supabase.from('profiles').select('*').order('created_at', { ascending: true }),
-    supabase.from('properties').select('*').order('created_at', { ascending: true }),
-    supabase.from('unit_types').select('*').order('created_at', { ascending: false }),
-    supabase.from('units').select('*').order('created_at', { ascending: true }),
-    supabase.from('tenants').select('*').order('tenant_ref', { ascending: true }),
-    supabase.from('leases').select('*').order('created_at', { ascending: false }),
-    supabase.from('rent_payments').select('*').order('created_at', { ascending: false }),
-    supabase.from('expenses').select('*').order('created_at', { ascending: false }),
+    supabase.from('profiles').select('*').order('created_at', { ascending: true }).limit(100),
+    supabase
+      .from('properties')
+      .select(
+        'id, code_prefix, property_code, name, address, description, status, total_units, occupied_units, monthly_revenue, manager_id, manager_name, caretaker_id, rating, variant, cover_image_url, created_at'
+      )
+      .order('created_at', { ascending: true })
+      .limit(100),
+    supabase.from('unit_types').select('*').order('created_at', { ascending: false }).limit(100),
+    supabase.from('units').select('*').order('created_at', { ascending: true }).limit(250),
+    supabase.from('tenants').select('*').order('tenant_ref', { ascending: true }).limit(250),
+    supabase.from('leases').select('*').order('created_at', { ascending: false }).limit(250),
+    supabase.from('rent_payments').select('*').order('created_at', { ascending: false }).limit(200),
+    supabase.from('expenses').select('*').order('created_at', { ascending: false }).limit(100),
     supabase
       .from('maintenance_requests')
       .select('*')
-      .order('created_at', { ascending: false }),
-    supabase.from('chat_threads').select('*').order('created_at', { ascending: false }),
+      .order('created_at', { ascending: false })
+      .limit(100),
+    supabase.from('chat_threads').select('*').order('created_at', { ascending: false }).limit(50),
     supabase
       .from('property_tasks')
       .select('*')
-      .order('created_at', { ascending: false }),
+      .order('created_at', { ascending: false })
+      .limit(100),
     supabase
       .from('property_reviews')
       .select('*')
-      .order('created_at', { ascending: false }),
+      .order('created_at', { ascending: false })
+      .limit(50),
     supabase
       .from('activity_logs')
       .select('*')
@@ -671,23 +717,24 @@ async function fetchBootstrapFromSupabase(): Promise<BootstrapPayload> {
       .limit(25),
     supabase
       .from('property_images')
-      .select('*')
-      .order('display_order', { ascending: true }),
+      .select('id, property_id, image_url, storage_path, is_cover, display_order, caption, created_at')
+      .order('display_order', { ascending: true })
+      .limit(30),
     supabase
       .from('security_audit_logs')
       .select('*')
       .order('created_at', { ascending: false })
-      .limit(100),
+      .limit(40),
     supabase
       .from('branded_emails')
-      .select('*')
+      .select('id, template_type, recipient_email, recipient_name, subject, status, created_at')
       .order('created_at', { ascending: false })
-      .limit(50),
+      .limit(25),
     supabase
       .from('sms_logs')
-      .select('*')
+      .select('id, tenant_id, tenant_ref, tenant_name, recipient_phone, property_name, unit_number, trigger_type, message_body, status, delivery_status, delivered_at, environment, provider, provider_message_id, provider_status_code, provider_cost, cost_kes, error_message, dedupe_key, payment_id, sent_by, created_at')
       .order('created_at', { ascending: false })
-      .limit(200),
+      .limit(80),
     supabase
       .from('sms_notification_settings')
       .select('*')
@@ -695,17 +742,33 @@ async function fetchBootstrapFromSupabase(): Promise<BootstrapPayload> {
       .maybeSingle(),
   ]);
 
-  // Check if core tables failed due to missing schema or RLS block
-  const coreError = pRes.error || tRes.error || payRes.error;
-  if (coreError && (coreError as any).code === 'PGRST301') {
-    throw createDiagnosticError({
-      failedRequest: 'SELECT Core Tables (properties, tenants, rent_payments)',
-      statusCode: 401,
-      endpoint: getSanitizedSupabaseEndpoint('/rest/v1/properties'),
-      supabaseError: `${coreError.message} (${coreError.code})`,
-      category: 'Authentication',
-      hint: 'Your Supabase JWT token expired or is invalid. Please sign in again.',
-    });
+  // Check if core tables failed due to missing schema, RLS block, or Supabase egress quota restriction
+  const coreError = pRes.error || tRes.error || payRes.error || uRes.error;
+  if (coreError) {
+    const errMsg = String(coreError.message || '');
+    if (
+      errMsg.toLowerCase().includes('exceed_egress_quota') ||
+      errMsg.toLowerCase().includes('service for this project is restricted')
+    ) {
+      throw createDiagnosticError({
+        failedRequest: 'SELECT Core Tables (Supabase Egress Quota Restricted)',
+        statusCode: 402,
+        endpoint: getSanitizedSupabaseEndpoint('/rest/v1/properties'),
+        supabaseError: errMsg,
+        category: 'Database Access',
+        hint: 'Your Supabase project REST API is temporarily restricted due to exceed_egress_quota. Upgrade your Supabase plan or remove spend caps in the Supabase Dashboard to lift the restriction.',
+      });
+    }
+    if ((coreError as any).code === 'PGRST301') {
+      throw createDiagnosticError({
+        failedRequest: 'SELECT Core Tables (properties, tenants, rent_payments)',
+        statusCode: 401,
+        endpoint: getSanitizedSupabaseEndpoint('/rest/v1/properties'),
+        supabaseError: `${coreError.message} (${coreError.code})`,
+        category: 'Authentication',
+        hint: 'Your Supabase JWT token expired or is invalid. Please sign in again.',
+      });
+    }
   }
 
   const usersRows: any[] = uRes.data || [];
@@ -773,7 +836,17 @@ async function fetchBootstrapFromSupabase(): Promise<BootstrapPayload> {
       role: resolvedRole,
       roleLabel: getRoleDisplayLabel(resolvedRole, tRef),
       status: resolvedStatus,
-      invitationStatus: u.invitation_status || undefined,
+      invitationStatus:
+        u.invitation_status ||
+        (u.invite_revoked
+          ? 'Expired'
+          : u.invite_used
+          ? 'Accepted'
+          : u.invite_expires_at && new Date(u.invite_expires_at).getTime() < Date.now()
+          ? 'Expired'
+          : u.account_status === 'Pending Invitation' || u.invite_token_hash || u.invite_token
+          ? 'Pending'
+          : undefined),
       invitationDeliveryStatus:
         u.delivery_status || (u.resend_id ? 'Delivered' : undefined),
       invitationDeliveredAt:
@@ -794,7 +867,7 @@ async function fetchBootstrapFromSupabase(): Promise<BootstrapPayload> {
       inviteUsed: Boolean(u.invite_used),
       inviteRevoked: Boolean(u.invite_revoked),
       activatedAt: u.activated_at || undefined,
-      inviteToken: u.invite_token || undefined,
+      inviteToken: u.invite_token || u.invite_token_hash || undefined,
       mfaEnabled: Boolean(u.mfa_enabled),
       permissions:
         customPerms && customPerms.length > 0
@@ -806,7 +879,9 @@ async function fetchBootstrapFromSupabase(): Promise<BootstrapPayload> {
         (resolvedRole === 'owner' || resolvedRole === 'super_admin'
           ? '#D5F267'
           : '#D8F3E5'),
-      token: u.token || u.id,
+      token: isRealSessionToken(u.token)
+        ? u.token
+        : accessToken || currentToken || u.id,
       portal: resolvedRole === 'tenant' ? 'tenant' : 'management',
     };
   });
@@ -1060,7 +1135,7 @@ async function fetchBootstrapFromSupabase(): Promise<BootstrapPayload> {
     };
   });
 
-  const unitTypes: UnitTypeItem[] = unitTypesRows.map((u) => {
+  let unitTypes: UnitTypeItem[] = unitTypesRows.map((u) => {
     const occ = Number(u.occupied_count || 0);
     const tot = Number(u.total_count || 1);
     const resolvedProp = u.property_id ? propsById.get(u.property_id) : undefined;
@@ -1083,6 +1158,76 @@ async function fetchBootstrapFromSupabase(): Promise<BootstrapPayload> {
       amenities: Array.isArray(u.amenities) ? u.amenities : [],
     };
   });
+
+  if (unitTypes.length === 0 && properties.length > 0) {
+    unitTypes = properties.map((p) => {
+      const propUnits = unitsRows.filter(
+        (un) =>
+          un.property_id === p.id ||
+          String(un.property_name || '')
+            .trim()
+            .toLowerCase() === String(p.name || '').trim().toLowerCase()
+      );
+      const propTenants = tenants.filter(
+        (t) =>
+          t.propertyId === p.id ||
+          String(t.property || '')
+            .trim()
+            .toLowerCase() === String(p.name || '').trim().toLowerCase()
+      );
+      const primaryUnit = propUnits[0];
+      const primaryTenant = propTenants[0];
+      const utName =
+        primaryUnit?.unit_type_name ||
+        primaryTenant?.unitType ||
+        (p.variant === 'suite'
+          ? 'Suite'
+          : p.variant === 'standard'
+          ? 'Standard'
+          : 'Deluxe');
+      const rentVal = Number(
+        primaryUnit?.monthly_rent ||
+          primaryTenant?.monthlyRent ||
+          (p.occupiedUnits > 0
+            ? Math.round(p.monthlyRevenue / p.occupiedUnits)
+            : 35000)
+      );
+      const occ = Math.max(Number(p.occupiedUnits || 0), propTenants.length);
+      const tot = Math.max(Number(p.totalUnits || 1), occ);
+      return {
+        id: `ut-derived-${p.id}`,
+        propertyId: p.id,
+        name: utName,
+        property: p.name,
+        variant: (p.variant || 'deluxe') as 'standard' | 'deluxe' | 'suite',
+        sizeSqm:
+          p.variant === 'suite' ? 110 : p.variant === 'standard' ? 55 : 75,
+        bedrooms:
+          utName.toLowerCase().includes('family') || p.variant === 'suite'
+            ? '3 Bedrooms'
+            : p.variant === 'standard'
+            ? '1 Bedroom'
+            : '2 Bedrooms',
+        maxTenants:
+          utName.toLowerCase().includes('family') || p.variant === 'suite'
+            ? 5
+            : 3,
+        occupiedCount: occ,
+        totalCount: tot,
+        status: occ < tot ? 'Available' : 'Occupied',
+        monthlyRent: rentVal,
+        description: `${utName} residential units at ${p.name} (${p.address}).`,
+        longDescription: `Modern ${utName} residential apartments at ${p.name} located in ${p.address}, managed by ${p.manager}.`,
+        features: [
+          'Spacious Living Area',
+          'Modern Kitchen',
+          'Private Balcony',
+          'High-Speed Fiber Ready',
+        ],
+        amenities: ['24/7 Security', 'Reliable Water Supply', 'Resident Parking'],
+      };
+    });
+  }
 
   const maintenance: MaintenanceItem[] = maintRows.map((m) => ({
     id: m.id,
@@ -1217,13 +1362,16 @@ async function fetchBootstrapFromSupabase(): Promise<BootstrapPayload> {
     messageBody: row.message_body || '',
     status: row.status || 'Delivered',
     environment: row.environment === 'production' ? 'production' : 'sandbox',
-    provider: row.provider || 'Sozuri',
+    provider: row.provider || 'Standard SMS Gateway',
     providerMessageId: row.provider_message_id || undefined,
+    deliveryStatus: row.delivery_status || row.status || 'Pending',
+    deliveredAt: row.delivered_at || undefined,
     providerStatusCode:
       row.provider_status_code !== undefined && row.provider_status_code !== null
         ? Number(row.provider_status_code)
         : undefined,
     providerCost: row.provider_cost || 'KES 0.80',
+    costKes: row.cost_kes || '0.8000',
     apiResponse:
       typeof row.api_response === 'object' && row.api_response !== null
         ? row.api_response
@@ -1240,15 +1388,14 @@ async function fetchBootstrapFromSupabase(): Promise<BootstrapPayload> {
     ? {
         environment:
           supaSmsRow.environment === 'production' ? 'production' : 'sandbox',
-        senderId: supaSmsRow.sender_id || 'Sozuri',
-        username: supaSmsRow.sozuri_project || 'ARAbella agency',
-        sozuriProject: supaSmsRow.sozuri_project || 'ARAbella agency',
+        senderId: supaSmsRow.sender_id || 'ARABELLA',
+        username: supaSmsRow.username || 'ARAbella agency',
         channel: supaSmsRow.channel || 'sms',
         smsType:
           supaSmsRow.sms_type === 'transactional'
             ? 'transactional'
             : 'promotional',
-        provider: 'Sozuri',
+        provider: supaSmsRow.provider || 'Standard SMS Gateway',
         apiKeyConfigured: true,
         masterEnabled: Boolean(supaSmsRow.master_enabled),
         autoTenantRegistered: Boolean(supaSmsRow.auto_tenant_registered),
@@ -1264,12 +1411,11 @@ async function fetchBootstrapFromSupabase(): Promise<BootstrapPayload> {
       }
     : {
         environment: 'sandbox',
-        senderId: 'Sozuri',
+        senderId: 'ARABELLA',
         username: 'ARAbella agency',
-        sozuriProject: 'ARAbella agency',
         channel: 'sms',
         smsType: 'promotional',
-        provider: 'Sozuri',
+        provider: 'Standard SMS Gateway',
         apiKeyConfigured: false,
         masterEnabled: true,
         autoTenantRegistered: true,
@@ -1281,6 +1427,23 @@ async function fetchBootstrapFromSupabase(): Promise<BootstrapPayload> {
         updatedBy: 'System Default',
         updatedAt: new Date().toISOString(),
       };
+
+  if (
+    !activeSession?.user &&
+    propsRows.length === 0 &&
+    tenantsRows.length === 0 &&
+    paymentsRows.length === 0
+  ) {
+    throw createDiagnosticError({
+      failedRequest: 'GET Supabase Bootstrap (Unauthenticated Session)',
+      statusCode: 401,
+      endpoint: getSanitizedSupabaseEndpoint('/rest/v1/properties'),
+      supabaseError:
+        'No active authenticated Supabase session found to read protected portfolio records.',
+      category: 'Authentication',
+      hint: 'Please sign in to load your properties, tenants, and payment records.',
+    });
+  }
 
   const resolvedUser = activeSession?.user
     ? await resolveSupabaseUserSession(activeSession.user, accessToken, {
@@ -1371,29 +1534,40 @@ async function fetchBootstrapFromSupabase(): Promise<BootstrapPayload> {
 async function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
   const method = (options.method || 'GET').toUpperCase();
   let bearerToken = getStoredToken();
-  if (!bearerToken && supabase) {
+  if ((!bearerToken || !isRealSessionToken(bearerToken)) && supabase) {
     const { data } = await supabase.auth.getSession();
     if (data?.session?.access_token) {
       bearerToken = data.session.access_token;
     }
   }
 
-  const headers: Record<string, string> = {
+  const buildHeaders = (tokenOverride?: string | null): Record<string, string> => ({
     'Content-Type': 'application/json',
     ...(currentUserId ? { 'X-User-Id': currentUserId } : {}),
     ...(currentEmail ? { 'X-User-Email': currentEmail } : {}),
     ...(currentRole ? { 'X-User-Role': currentRole } : {}),
     ...(currentTenantRef ? { 'X-Tenant-Ref': currentTenantRef } : {}),
-    ...(bearerToken ? { Authorization: `Bearer ${bearerToken}` } : {}),
+    ...(tokenOverride ? { Authorization: `Bearer ${tokenOverride}` } : {}),
     ...((options.headers as Record<string, string>) || {}),
-  };
+  });
 
   let response: Response;
   try {
     response = await fetch(path, {
       ...options,
-      headers,
+      headers: buildHeaders(bearerToken),
     });
+    if (response.status === 401 && supabase) {
+      const { data } = await supabase.auth.getSession();
+      const freshJwt = data?.session?.access_token;
+      if (freshJwt && freshJwt !== bearerToken) {
+        bearerToken = freshJwt;
+        response = await fetch(path, {
+          ...options,
+          headers: buildHeaders(freshJwt),
+        });
+      }
+    }
   } catch (networkErr: any) {
     throw createDiagnosticError({
       failedRequest: `${method} ${path}`,
@@ -1414,9 +1588,16 @@ async function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T
       path.startsWith('/api/auth/validate-invite');
 
     if (response.status === 401 && !isPublicAuthAction) {
-      await clearAuthContext();
-      if (unauthorizedHandler) {
-        unauthorizedHandler();
+      let hasLiveSupabaseSession = false;
+      if (isSupabaseConfigured && supabase) {
+        const { data } = await supabase.auth.getSession().catch(() => ({ data: null }));
+        hasLiveSupabaseSession = Boolean(data?.session?.access_token);
+      }
+      if (!hasLiveSupabaseSession) {
+        await clearAuthContext({ skipSupabaseSignOut: true });
+        if (unauthorizedHandler && path !== '/api/bootstrap') {
+          unauthorizedHandler();
+        }
       }
     }
 
@@ -1447,9 +1628,10 @@ async function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T
         payload.error ||
         payload.message ||
         `Request failed with status code ${response.status}`,
-      category: path.startsWith('/api/auth')
-        ? 'Authentication'
-        : 'Database Access',
+      category:
+        response.status === 401 || response.status === 403 || path.startsWith('/api/auth')
+          ? 'Authentication'
+          : 'Database Access',
     });
   }
   return payload as T;
@@ -1498,6 +1680,7 @@ export interface BootstrapPayload {
   activities: ActivityLogRecord[];
   securityLogs?: SecurityAuditLogRecord[];
   brandedEmails?: BrandedEmailRecord[];
+  emailSettings?: EmailNotificationSettings;
   smsLogs?: SmsLogRecord[];
   smsSettings?: SmsNotificationSettings;
   analytics: DashboardAnalytics;
@@ -1505,29 +1688,69 @@ export interface BootstrapPayload {
 
 export const rentalApi = {
   getBootstrap: async (): Promise<BootstrapPayload> => {
-    if (isSupabaseConfigured && supabase) {
-      return await fetchBootstrapFromSupabase();
+    let apiData: BootstrapPayload | null = null;
+    try {
+      apiData = await apiRequest<BootstrapPayload>('/api/bootstrap');
+      if (
+        apiData &&
+        (apiData.properties.length > 0 ||
+          apiData.tenants.length > 0 ||
+          apiData.payments.length > 0 ||
+          !isSupabaseConfigured ||
+          !supabase)
+      ) {
+        return apiData;
+      }
+    } catch (apiErr) {
+      if (!isSupabaseConfigured || !supabase) {
+        throw apiErr;
+      }
     }
-    return await apiRequest<BootstrapPayload>('/api/bootstrap');
+    try {
+      const supaData = await fetchBootstrapFromSupabase();
+      if (
+        apiData &&
+        supaData.properties.length === 0 &&
+        supaData.tenants.length === 0 &&
+        supaData.payments.length === 0
+      ) {
+        return apiData;
+      }
+      return supaData;
+    } catch (supaErr) {
+      if (apiData) {
+        return apiData;
+      }
+      throw supaErr;
+    }
   },
 
   getSession: async (): Promise<{ authenticated: boolean; user: UserSession }> => {
     if (isSupabaseConfigured && supabase) {
       const { data, error } = await supabase.auth.getSession();
-      if (error || !data?.session?.user) {
-        throw createDiagnosticError({
-          failedRequest: 'GET Supabase Auth Session (supabase.auth.getSession)',
-          statusCode: (error as any)?.status || 401,
-          endpoint: getSanitizedSupabaseEndpoint('/auth/v1/user'),
-          supabaseError: error?.message || 'No active Supabase authentication session.',
-          category: 'Authentication',
-        });
+      if (!error && data?.session?.user) {
+        const user = await resolveSupabaseUserSession(
+          data.session.user,
+          data.session.access_token
+        );
+        return { authenticated: true, user };
       }
-      const user = await resolveSupabaseUserSession(
-        data.session.user,
-        data.session.access_token
-      );
-      return { authenticated: true, user };
+      if (getStoredToken()) {
+        try {
+          return await apiRequest<{ authenticated: boolean; user: UserSession }>(
+            '/api/auth/session'
+          );
+        } catch {
+          // Fall through to diagnostic error
+        }
+      }
+      throw createDiagnosticError({
+        failedRequest: 'GET Supabase Auth Session (supabase.auth.getSession)',
+        statusCode: (error as any)?.status || 401,
+        endpoint: getSanitizedSupabaseEndpoint('/auth/v1/user'),
+        supabaseError: error?.message || 'No active Supabase authentication session.',
+        category: 'Authentication',
+      });
     }
     return await apiRequest<{ authenticated: boolean; user: UserSession }>(
       '/api/auth/session'
@@ -1565,6 +1788,36 @@ export const rentalApi = {
         });
 
       if (signInErr || !signInData?.user) {
+        try {
+          const backendLogin = await apiRequest<{
+            user?: UserSession;
+            mfaRequired?: boolean;
+            mfaChallengeCode?: string;
+            message?: string;
+          }>('/api/auth/login', {
+            method: 'POST',
+            body: JSON.stringify({
+              email: cleanEmail,
+              password,
+              role,
+              portal: options?.portal,
+              rememberMe: options?.rememberMe,
+              mfaCode: options?.mfaCode,
+            }),
+          });
+          if (backendLogin?.user) {
+            await supabase.auth
+              .signInWithPassword({
+                email: cleanEmail,
+                password: String(password),
+              })
+              .catch(() => {});
+          }
+          return backendLogin;
+        } catch {
+          // Fall through to throw Supabase diagnostic error
+        }
+
         const statusCode = (signInErr as any)?.status || 400;
         const rawErrMsg =
           signInErr?.message || 'Invalid login credentials returned by Supabase Auth.';
@@ -1663,16 +1916,25 @@ export const rentalApi = {
   },
 
   logout: async (): Promise<{ success: boolean }> => {
-    if (isSupabaseConfigured && supabase) {
-      const { error } = await supabase.auth.signOut();
-      if (error) {
-        console.warn('[Supabase Auth signOut warning]', error.message);
+    const token = getStoredToken();
+    if (token && token.startsWith('rtk_')) {
+      await apiRequest<{ success: boolean }>('/api/auth/logout', {
+        method: 'POST',
+      }).catch(() => {});
+    }
+    if (isSupabaseConfigured && supabase && !isClearingAuth) {
+      isClearingAuth = true;
+      try {
+        const { error } = await supabase.auth.signOut({ scope: 'local' });
+        if (error) {
+          console.warn('[Supabase Auth signOut warning]', error.message);
+        }
+      } finally {
+        isClearingAuth = false;
       }
       return { success: true };
     }
-    return await apiRequest<{ success: boolean }>('/api/auth/logout', {
-      method: 'POST',
-    });
+    return { success: true };
   },
 
   validateInvite: async (
@@ -1722,7 +1984,7 @@ export const rentalApi = {
       }
 
       const storedToken = String(
-        profRow?.invite_token || invRow?.token_hash || ''
+        profRow?.invite_token || profRow?.invite_token_hash || invRow?.token_hash || ''
       )
         .trim()
         .toUpperCase();
@@ -1929,10 +2191,8 @@ export const rentalApi = {
           .from('profiles')
           .update({
             account_status: 'Active',
-            invitation_status: 'Accepted',
             activated_at: nowIso,
-            password_set: true,
-            invite_token: null,
+            invite_token_hash: null,
             invite_used: true,
             invite_revoked: false,
           })
@@ -2005,7 +2265,7 @@ export const rentalApi = {
       await supabase
         .from('profiles')
         .update({
-          invite_token: recoveryToken,
+          invite_token_hash: recoveryToken,
           invite_expires_at: expiresIso,
           invite_used: false,
           invite_revoked: false,
@@ -2110,6 +2370,31 @@ export const rentalApi = {
     mfaEnabled?: boolean;
     status?: AccountStatus;
   }) => {
+    // 1. Prioritize full-stack backend endpoint to guarantee that a branded role assignment
+    // and setup invitation email is dispatched to the recipient's email address via Resend.
+    try {
+      const serverRes = await apiRequest<{
+        staff: UserSession;
+        message: string;
+        inviteToken?: string;
+        inviteLink?: string;
+        resendId?: string;
+        deliveryStatus?: string;
+        brandedEmail?: BrandedEmailRecord;
+      }>('/api/staff', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      });
+      if (serverRes?.staff) {
+        return serverRes;
+      }
+    } catch (backendErr: any) {
+      console.warn(
+        '[createStaff] Backend route unavailable, falling back to direct Supabase client:',
+        backendErr?.message || backendErr
+      );
+    }
+
     if (isSupabaseConfigured && supabase) {
       const cleanEmail = String(data.email).trim().toLowerCase();
       const cleanName = String(data.fullName).trim();
@@ -2152,13 +2437,11 @@ export const rentalApi = {
         assigned_property_ids: data.assignedPropertyIds || [],
         custom_permissions: data.customPermissions || [],
         mfa_enabled: Boolean(data.mfaEnabled),
-        invite_token: inviteToken,
+        invite_token_hash: inviteToken,
         invite_expires_at: expiresIso,
         invite_used: false,
         invite_revoked: false,
         invited_at: nowIso,
-        invited_by: currentEmail || 'Super Administrator',
-        invitation_status: 'Pending',
         updated_at: nowIso,
       };
 
@@ -2259,7 +2542,28 @@ export const rentalApi = {
       mfaEnabled: boolean;
       status: AccountStatus;
     }>
-  ) => {
+  ): Promise<{ staff: UserSession; message: string; brandedEmail?: BrandedEmailRecord }> => {
+    // 1. Prioritize full-stack backend endpoint so that when a role is assigned or updated,
+    // a branded notification email is dispatched to the recipient's email address via Resend.
+    try {
+      const serverRes = await apiRequest<{
+        staff: UserSession;
+        message: string;
+        brandedEmail?: BrandedEmailRecord;
+      }>(`/api/staff/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      });
+      if (serverRes?.staff) {
+        return serverRes;
+      }
+    } catch (backendErr: any) {
+      console.warn(
+        '[updateStaff] Backend route unavailable, falling back to direct Supabase client:',
+        backendErr?.message || backendErr
+      );
+    }
+
     if (isSupabaseConfigured && supabase) {
       const patch: Record<string, any> = {
         updated_at: new Date().toISOString(),
@@ -2316,7 +2620,7 @@ export const rentalApi = {
       };
     }
 
-    return await apiRequest<{ staff: UserSession; message: string }>(
+    return await apiRequest<{ staff: UserSession; message: string; brandedEmail?: BrandedEmailRecord }>(
       `/api/staff/${id}`,
       {
         method: 'PUT',
@@ -2325,7 +2629,64 @@ export const rentalApi = {
     );
   },
 
+  assignStaffRole: async (
+    id: string,
+    data: {
+      role: UserRole;
+      jobTitle?: string;
+      assignedPropertyId?: string;
+      assignedPropertyName?: string;
+      permissions?: string[];
+    }
+  ) => {
+    try {
+      const serverRes = await apiRequest<{
+        staff: UserSession;
+        message: string;
+        resendId?: string;
+        brandedEmail?: BrandedEmailRecord;
+      }>(`/api/staff/${id}/assign-role`, {
+        method: 'POST',
+        body: JSON.stringify(data),
+      });
+      if (serverRes?.staff) {
+        return serverRes;
+      }
+    } catch (backendErr: any) {
+      console.warn(
+        '[assignStaffRole] Backend route error, falling back to updateStaff:',
+        backendErr?.message || backendErr
+      );
+    }
+    return await rentalApi.updateStaff(id, data);
+  },
+
   resendStaffInvite: async (id: string) => {
+    // 1. Try full-stack backend endpoint first
+    // This executes server-side Supabase Auth user management, Resend delivery, and staff_invitations logging
+    try {
+      const serverRes = await apiRequest<{
+        staff: UserSession;
+        message: string;
+        inviteToken?: string;
+        inviteLink?: string;
+        resendId?: string;
+        deliveryStatus?: string;
+        brandedEmail?: BrandedEmailRecord;
+      }>(`/api/staff/${id}/resend-invite`, {
+        method: 'POST',
+      });
+      if (serverRes?.staff) {
+        return serverRes;
+      }
+    } catch (backendErr: any) {
+      console.warn(
+        '[resendStaffInvite] Backend route error, falling back to direct Supabase client update:',
+        backendErr?.message || backendErr
+      );
+    }
+
+    // 2. Direct Supabase client fallback using only columns that exist on public.profiles
     if (isSupabaseConfigured && supabase) {
       const inviteToken = `INV-${Math.random()
         .toString(36)
@@ -2339,12 +2700,12 @@ export const rentalApi = {
       const { data: updated, error } = await supabase
         .from('profiles')
         .update({
-          invite_token: inviteToken,
+          invite_token_hash: inviteToken,
           invite_expires_at: expiresIso,
           invite_used: false,
           invite_revoked: false,
           invited_at: nowIso,
-          invitation_status: 'Pending',
+          account_status: 'Pending Invitation',
         })
         .eq('id', id)
         .select('*')
@@ -2359,6 +2720,25 @@ export const rentalApi = {
           category: 'Database Access',
         });
       }
+
+      await supabase
+        .from('staff_invitations')
+        .insert({
+          staff_id: updated.id,
+          email: updated.email,
+          role: updated.role,
+          job_title: updated.job_title || '',
+          assigned_property_id: updated.assigned_property_id || null,
+          assigned_property_name: updated.assigned_property_name || 'All Properties',
+          token_hash: inviteToken,
+          status: 'Pending Invitation',
+          expires_at: expiresIso,
+          invited_by: currentEmail || 'Super Administrator',
+        })
+        .then(
+          () => {},
+          () => {}
+        );
 
       const origin =
         typeof window !== 'undefined' ? window.location.origin : '';
@@ -2383,7 +2763,7 @@ export const rentalApi = {
         },
         inviteToken,
         inviteLink,
-        message: `New invitation code (${inviteToken}) generated in Supabase for ${updated.email}.`,
+        message: `New invitation code (${inviteToken}) generated for ${updated.email}.`,
       };
     }
 
@@ -2401,13 +2781,31 @@ export const rentalApi = {
   },
 
   revokeStaffInvite: async (id: string) => {
+    // 1. Try backend API endpoint first
+    try {
+      const serverRes = await apiRequest<{
+        staff: UserSession;
+        message: string;
+      }>(`/api/staff/${id}/revoke-invite`, {
+        method: 'POST',
+      });
+      if (serverRes?.staff) {
+        return serverRes;
+      }
+    } catch (backendErr: any) {
+      console.warn(
+        '[revokeStaffInvite] Backend route error, falling back to direct Supabase client update:',
+        backendErr?.message || backendErr
+      );
+    }
+
     if (isSupabaseConfigured && supabase) {
       const { data: updated, error } = await supabase
         .from('profiles')
         .update({
-          invite_token: null,
+          invite_token_hash: null,
           invite_revoked: true,
-          invitation_status: 'Expired',
+          account_status: 'Deactivated',
         })
         .eq('id', id)
         .select('*')
@@ -2423,6 +2821,15 @@ export const rentalApi = {
         });
       }
 
+      await supabase
+        .from('staff_invitations')
+        .update({ status: 'Expired', revoked_at: new Date().toISOString() })
+        .eq('staff_id', id)
+        .then(
+          () => {},
+          () => {}
+        );
+
       const role = (updated.role as UserRole) || 'property_manager';
       return {
         staff: {
@@ -2431,7 +2838,7 @@ export const rentalApi = {
           fullName: updated.full_name,
           role,
           roleLabel: getRoleDisplayLabel(role),
-          status: (updated.account_status as AccountStatus) || 'Pending Invitation',
+          status: 'Deactivated' as AccountStatus,
           invitationStatus: 'Expired' as const,
           inviteRevoked: true,
           permissions: getAllowedPagesForRole(role),
@@ -2457,6 +2864,19 @@ export const rentalApi = {
       reason?: string;
     }
   ) => {
+    try {
+      return await apiRequest<{
+        staff: UserSession;
+        message: string;
+        transferredPropertiesCount: number;
+      }>(`/api/staff/${id}/offboard`, {
+        method: 'POST',
+        body: JSON.stringify(data),
+      });
+    } catch (backendErr) {
+      if (!isSupabaseConfigured || !supabase) throw backendErr;
+    }
+
     if (isSupabaseConfigured && supabase) {
       const { data: updated, error } = await supabase
         .from('profiles')
@@ -2464,7 +2884,7 @@ export const rentalApi = {
           account_status: data.targetStatus,
           assigned_property_id: null,
           assigned_property_name: 'Unassigned (Offboarded)',
-          invite_token: null,
+          invite_token_hash: null,
           invite_revoked: true,
         })
         .eq('id', id)
@@ -2509,6 +2929,14 @@ export const rentalApi = {
   },
 
   deleteStaff: async (id: string) => {
+    try {
+      return await apiRequest<{ success: boolean }>(`/api/staff/${id}`, {
+        method: 'DELETE',
+      });
+    } catch (backendErr) {
+      if (!isSupabaseConfigured || !supabase) throw backendErr;
+    }
+
     if (isSupabaseConfigured && supabase) {
       const { error } = await supabase.from('profiles').delete().eq('id', id);
       if (error) {
@@ -2530,6 +2958,15 @@ export const rentalApi = {
 
   // Properties CRUD
   createProperty: async (data: Partial<PropertyRecord>): Promise<PropertyRecord> => {
+    try {
+      return await apiRequest<PropertyRecord>('/api/properties', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      });
+    } catch (backendErr) {
+      if (!isSupabaseConfigured || !supabase) throw backendErr;
+    }
+
     if (isSupabaseConfigured && supabase) {
       const cleanName = String(data.name || '').trim();
       const cleanAddress = String(data.address || '').trim();
@@ -2659,6 +3096,15 @@ export const rentalApi = {
     id: string,
     data: Partial<PropertyRecord>
   ): Promise<PropertyRecord> => {
+    try {
+      return await apiRequest<PropertyRecord>(`/api/properties/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      });
+    } catch (backendErr) {
+      if (!isSupabaseConfigured || !supabase) throw backendErr;
+    }
+
     if (isSupabaseConfigured && supabase) {
       const patch: Record<string, any> = {};
       if (data.name !== undefined) patch.name = String(data.name).trim();
@@ -2724,6 +3170,14 @@ export const rentalApi = {
   },
 
   deleteProperty: async (id: string): Promise<{ success: boolean }> => {
+    try {
+      return await apiRequest<{ success: boolean }>(`/api/properties/${id}`, {
+        method: 'DELETE',
+      });
+    } catch (backendErr) {
+      if (!isSupabaseConfigured || !supabase) throw backendErr;
+    }
+
     if (isSupabaseConfigured && supabase) {
       const { error } = await supabase.from('properties').delete().eq('id', id);
       if (error) {
@@ -2748,6 +3202,18 @@ export const rentalApi = {
     fileName: string;
     contentType?: string;
   }) => {
+    try {
+      return await apiRequest<{ publicUrl: string; storagePath: string }>(
+        '/api/properties/upload-image',
+        {
+          method: 'POST',
+          body: JSON.stringify(data),
+        }
+      );
+    } catch (backendErr) {
+      if (!isSupabaseConfigured || !supabase) throw backendErr;
+    }
+
     if (isSupabaseConfigured && supabase) {
       return {
         publicUrl: data.fileBase64,
@@ -2773,6 +3239,18 @@ export const rentalApi = {
       caption?: string;
     }
   ) => {
+    try {
+      return await apiRequest<{ image: PropertyImageItem; coverImageUrl?: string }>(
+        `/api/properties/${propertyId}/images`,
+        {
+          method: 'POST',
+          body: JSON.stringify(data),
+        }
+      );
+    } catch (backendErr) {
+      if (!isSupabaseConfigured || !supabase) throw backendErr;
+    }
+
     if (isSupabaseConfigured && supabase) {
       const imageId = crypto.randomUUID();
       const shouldBeCover = Boolean(data.isCover);
@@ -2820,6 +3298,17 @@ export const rentalApi = {
   },
 
   setPropertyCoverImage: async (propertyId: string, imageId: string) => {
+    try {
+      return await apiRequest<{ success: boolean; coverImageUrl: string }>(
+        `/api/properties/${propertyId}/images/${imageId}/cover`,
+        {
+          method: 'PUT',
+        }
+      );
+    } catch (backendErr) {
+      if (!isSupabaseConfigured || !supabase) throw backendErr;
+    }
+
     if (isSupabaseConfigured && supabase) {
       const { data: imgRow } = await supabase
         .from('property_images')
@@ -2852,6 +3341,17 @@ export const rentalApi = {
   },
 
   deletePropertyImage: async (propertyId: string, imageId: string) => {
+    try {
+      return await apiRequest<{ success: boolean; newCoverImageUrl: string }>(
+        `/api/properties/${propertyId}/images/${imageId}`,
+        {
+          method: 'DELETE',
+        }
+      );
+    } catch (backendErr) {
+      if (!isSupabaseConfigured || !supabase) throw backendErr;
+    }
+
     if (isSupabaseConfigured && supabase) {
       await supabase.from('property_images').delete().eq('id', imageId);
       return { success: true, newCoverImageUrl: '' };
@@ -2867,6 +3367,15 @@ export const rentalApi = {
 
   // Unit Types & Units CRUD
   createUnitType: async (data: Partial<UnitTypeItem>): Promise<UnitTypeItem> => {
+    try {
+      return await apiRequest<UnitTypeItem>('/api/unit-types', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      });
+    } catch (backendErr) {
+      if (!isSupabaseConfigured || !supabase) throw backendErr;
+    }
+
     if (isSupabaseConfigured && supabase) {
       const occ = Math.max(0, Number(data.occupiedCount) || 0);
       const tot = Math.max(1, Number(data.totalCount) || 1);
@@ -2955,6 +3464,15 @@ export const rentalApi = {
     id: string,
     data: Partial<UnitTypeItem>
   ): Promise<UnitTypeItem> => {
+    try {
+      return await apiRequest<UnitTypeItem>(`/api/unit-types/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      });
+    } catch (backendErr) {
+      if (!isSupabaseConfigured || !supabase) throw backendErr;
+    }
+
     if (isSupabaseConfigured && supabase) {
       const { data: cur } = await supabase
         .from('unit_types')
@@ -3036,6 +3554,14 @@ export const rentalApi = {
   },
 
   deleteUnitType: async (id: string): Promise<{ success: boolean }> => {
+    try {
+      return await apiRequest<{ success: boolean }>(`/api/unit-types/${id}`, {
+        method: 'DELETE',
+      });
+    } catch (backendErr) {
+      if (!isSupabaseConfigured || !supabase) throw backendErr;
+    }
+
     if (isSupabaseConfigured && supabase) {
       const { error } = await supabase.from('unit_types').delete().eq('id', id);
       if (error) {
@@ -3066,6 +3592,7 @@ export const rentalApi = {
     unitNumber: string;
     unitType: 'Standard' | 'Deluxe' | 'Suite' | 'Family' | 'Single';
     monthlyRent: number;
+    dueDate?: string;
     leaseDuration?: string;
     leaseNotes?: string;
     dob?: string;
@@ -3077,6 +3604,23 @@ export const rentalApi = {
     occupants?: string;
     initialPaymentStatus?: 'Paid' | 'Pending';
   }): Promise<TenantProfile> => {
+    const cleanEmail = String(data.email || '').trim().toLowerCase();
+    const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!cleanEmail || !emailPattern.test(cleanEmail)) {
+      throw new Error('A valid tenant email address is required when adding a tenant.');
+    }
+
+    try {
+      return await apiRequest<TenantProfile>('/api/tenants', {
+        method: 'POST',
+        body: JSON.stringify({ ...data, email: cleanEmail }),
+      });
+    } catch (backendErr: any) {
+      if (backendErr?.statusCode === 400 || !isSupabaseConfigured || !supabase) {
+        throw backendErr;
+      }
+    }
+
     if (isSupabaseConfigured && supabase) {
       const cleanName = String(data.name).trim();
       const cleanUnitNumber = String(data.unitNumber).trim();
@@ -3085,10 +3629,6 @@ export const rentalApi = {
         data.securityDeposit !== undefined
           ? Number(data.securityDeposit)
           : rentNum;
-      const cleanEmail =
-        data.email && String(data.email).trim()
-          ? String(data.email).trim()
-          : `${cleanName.toLowerCase().replace(/\s+/g, '.')}@tenant.io`;
 
       let propRow: any = null;
       if (data.propertyId) {
@@ -3152,6 +3692,10 @@ export const rentalApi = {
       const maint = Math.round(rentNum * 0.04);
       const park = Math.max(0, rentNum - base - util - maint);
       const startStr = formatShortDate();
+      const resolvedDueDate =
+        data.dueDate && String(data.dueDate).trim()
+          ? String(data.dueDate).trim()
+          : startStr;
       const nextYear = new Date();
       nextYear.setFullYear(nextYear.getFullYear() + 1);
       const endStr = formatShortDate(nextYear);
@@ -3194,7 +3738,7 @@ export const rentalApi = {
           unit_number: cleanUnitNumber,
           payment_note: 'Lease Rent Invoice',
           lease_term: data.leaseDuration || '12 Months',
-          due_date: startStr,
+          due_date: resolvedDueDate,
           paid_date: startStr,
           amount: rentNum,
           status: payStatus,
@@ -3223,7 +3767,7 @@ export const rentalApi = {
             unitNumber: cleanUnitNumber,
             paymentNote: 'Lease Rent Invoice',
             leaseTerm: data.leaseDuration || '12 Months',
-            dueDate: startStr,
+            dueDate: resolvedDueDate,
             paidDate: startStr,
             amount: rentNum,
             status: payStatus,
@@ -3251,6 +3795,7 @@ export const rentalApi = {
         unitNumber: cleanUnitNumber,
         property: propName,
         monthlyRent: rentNum,
+        dueDate: resolvedDueDate,
         rentBalance: payStatus === 'Paid' ? 0 : rentNum,
         totalPaid: payStatus === 'Paid' ? rentNum : 0,
         occupants: data.occupants || '1 Adult',
@@ -3281,6 +3826,15 @@ export const rentalApi = {
     id: string,
     data: Partial<TenantProfile>
   ): Promise<TenantProfile> => {
+    try {
+      return await apiRequest<TenantProfile>(`/api/tenants/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      });
+    } catch (backendErr) {
+      if (!isSupabaseConfigured || !supabase) throw backendErr;
+    }
+
     if (isSupabaseConfigured && supabase) {
       const patch: Record<string, any> = {};
       if (data.name !== undefined) patch.full_name = String(data.name).trim();
@@ -3298,6 +3852,13 @@ export const rentalApi = {
         .from('tenants')
         .update(patch)
         .or(`id.eq.${id},tenant_ref.eq.${id}`);
+
+      if (data.dueDate && String(data.dueDate).trim()) {
+        await supabase
+          .from('rent_payments')
+          .update({ due_date: String(data.dueDate).trim() })
+          .or(`tenant_id.eq.${id},tenant_ref.eq.${id}`);
+      }
 
       const state = await fetchBootstrapFromSupabase();
       const updated = state.tenants.find(
@@ -3322,6 +3883,14 @@ export const rentalApi = {
   },
 
   deleteTenant: async (id: string): Promise<{ success: boolean }> => {
+    try {
+      return await apiRequest<{ success: boolean }>(`/api/tenants/${id}`, {
+        method: 'DELETE',
+      });
+    } catch (backendErr) {
+      if (!isSupabaseConfigured || !supabase) throw backendErr;
+    }
+
     if (isSupabaseConfigured && supabase) {
       await supabase
         .from('tenants')
@@ -3339,6 +3908,15 @@ export const rentalApi = {
   createPayment: async (
     data: Partial<RentPaymentRecord>
   ): Promise<RentPaymentRecord> => {
+    try {
+      return await apiRequest<RentPaymentRecord>('/api/payments', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      });
+    } catch (backendErr) {
+      if (!isSupabaseConfigured || !supabase) throw backendErr;
+    }
+
     if (isSupabaseConfigured && supabase) {
       const todayStr = formatShortDate();
       const amtNum = Math.max(0, Number(data.amount) || 0);
@@ -3406,6 +3984,14 @@ export const rentalApi = {
   },
 
   confirmPayment: async (id: string): Promise<RentPaymentRecord> => {
+    try {
+      return await apiRequest<RentPaymentRecord>(`/api/payments/${id}/confirm`, {
+        method: 'POST',
+      });
+    } catch (backendErr) {
+      if (!isSupabaseConfigured || !supabase) throw backendErr;
+    }
+
     if (isSupabaseConfigured && supabase) {
       const todayStr = formatShortDate();
       const nowIso = new Date().toISOString();
@@ -3484,6 +4070,14 @@ export const rentalApi = {
   },
 
   deletePayment: async (id: string): Promise<{ success: boolean }> => {
+    try {
+      return await apiRequest<{ success: boolean }>(`/api/payments/${id}`, {
+        method: 'DELETE',
+      });
+    } catch (backendErr) {
+      if (!isSupabaseConfigured || !supabase) throw backendErr;
+    }
+
     if (isSupabaseConfigured && supabase) {
       const { error } = await supabase
         .from('rent_payments')
@@ -3510,6 +4104,15 @@ export const rentalApi = {
   createMaintenance: async (
     data: Partial<MaintenanceItem>
   ): Promise<MaintenanceItem> => {
+    try {
+      return await apiRequest<MaintenanceItem>('/api/maintenance', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      });
+    } catch (backendErr) {
+      if (!isSupabaseConfigured || !supabase) throw backendErr;
+    }
+
     if (isSupabaseConfigured && supabase) {
       const ref = String(
         data.tenantRef || currentTenantRef || 'GENERAL'
@@ -3569,6 +4172,15 @@ export const rentalApi = {
     id: string,
     data: Partial<MaintenanceItem>
   ): Promise<MaintenanceItem> => {
+    try {
+      return await apiRequest<MaintenanceItem>(`/api/maintenance/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      });
+    } catch (backendErr) {
+      if (!isSupabaseConfigured || !supabase) throw backendErr;
+    }
+
     if (isSupabaseConfigured && supabase) {
       const patch: Record<string, any> = {};
       if (data.maintenanceStatus !== undefined)
@@ -3620,6 +4232,14 @@ export const rentalApi = {
   },
 
   deleteMaintenance: async (id: string): Promise<{ success: boolean }> => {
+    try {
+      return await apiRequest<{ success: boolean }>(`/api/maintenance/${id}`, {
+        method: 'DELETE',
+      });
+    } catch (backendErr) {
+      if (!isSupabaseConfigured || !supabase) throw backendErr;
+    }
+
     if (isSupabaseConfigured && supabase) {
       const { error } = await supabase
         .from('maintenance_requests')
@@ -3648,6 +4268,15 @@ export const rentalApi = {
   createExpense: async (
     data: Partial<ExpenseTransaction>
   ): Promise<ExpenseTransaction> => {
+    try {
+      return await apiRequest<ExpenseTransaction>('/api/expenses', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      });
+    } catch (backendErr) {
+      if (!isSupabaseConfigured || !supabase) throw backendErr;
+    }
+
     if (isSupabaseConfigured && supabase) {
       const expDate = data.date || formatShortDate();
       const amtNum = Number(data.amount || 0);
@@ -3695,6 +4324,14 @@ export const rentalApi = {
   },
 
   deleteExpense: async (id: string): Promise<{ success: boolean }> => {
+    try {
+      return await apiRequest<{ success: boolean }>(`/api/expenses/${id}`, {
+        method: 'DELETE',
+      });
+    } catch (backendErr) {
+      if (!isSupabaseConfigured || !supabase) throw backendErr;
+    }
+
     if (isSupabaseConfigured && supabase) {
       const { error } = await supabase.from('expenses').delete().eq('id', id);
       if (error) {
@@ -3719,6 +4356,15 @@ export const rentalApi = {
     date: string;
     title: string;
   }): Promise<DashboardTaskRecord> => {
+    try {
+      return await apiRequest<DashboardTaskRecord>('/api/tasks', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      });
+    } catch (backendErr) {
+      if (!isSupabaseConfigured || !supabase) throw backendErr;
+    }
+
     if (isSupabaseConfigured && supabase) {
       const tone = Date.now() % 2 === 0 ? 'mint' : 'lime';
       const { data: created, error } = await supabase
@@ -3758,6 +4404,14 @@ export const rentalApi = {
   },
 
   toggleTask: async (id: string): Promise<DashboardTaskRecord> => {
+    try {
+      return await apiRequest<DashboardTaskRecord>(`/api/tasks/${id}/toggle`, {
+        method: 'POST',
+      });
+    } catch (backendErr) {
+      if (!isSupabaseConfigured || !supabase) throw backendErr;
+    }
+
     if (isSupabaseConfigured && supabase) {
       const { data: existing } = await supabase
         .from('property_tasks')
@@ -3797,6 +4451,14 @@ export const rentalApi = {
   },
 
   deleteTask: async (id: string): Promise<{ success: boolean }> => {
+    try {
+      return await apiRequest<{ success: boolean }>(`/api/tasks/${id}`, {
+        method: 'DELETE',
+      });
+    } catch (backendErr) {
+      if (!isSupabaseConfigured || !supabase) throw backendErr;
+    }
+
     if (isSupabaseConfigured && supabase) {
       const { error } = await supabase
         .from('property_tasks')
@@ -3831,6 +4493,15 @@ export const rentalApi = {
     locationScore: number;
     comment?: string;
   }): Promise<PropertyReviewRecord> => {
+    try {
+      return await apiRequest<PropertyReviewRecord>('/api/reviews', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      });
+    } catch (backendErr) {
+      if (!isSupabaseConfigured || !supabase) throw backendErr;
+    }
+
     if (isSupabaseConfigured && supabase) {
       const m = Math.min(5, Math.max(1, Number(data.maintenanceScore) || 5));
       const c = Math.min(5, Math.max(1, Number(data.cleanlinessScore) || 5));
@@ -3906,6 +4577,15 @@ export const rentalApi = {
     balanceDue?: number;
     initialMessage: string;
   }): Promise<ChatThread> => {
+    try {
+      return await apiRequest<ChatThread>('/api/threads', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      });
+    } catch (backendErr) {
+      if (!isSupabaseConfigured || !supabase) throw backendErr;
+    }
+
     if (isSupabaseConfigured && supabase) {
       const resolvedRef = String(data.tenantRef || 'A-001').toUpperCase();
       const deliveryChannel = data.channel || 'SMS & Email';
@@ -4069,6 +4749,15 @@ export const rentalApi = {
       balanceDue?: number;
     }
   ): Promise<ChatThread> => {
+    try {
+      return await apiRequest<ChatThread>(`/api/messages/${threadId}`, {
+        method: 'POST',
+        body: JSON.stringify({ text, ...meta }),
+      });
+    } catch (backendErr) {
+      if (!isSupabaseConfigured || !supabase) throw backendErr;
+    }
+
     if (isSupabaseConfigured && supabase) {
       const { data: th } = await supabase
         .from('chat_threads')
@@ -4161,6 +4850,14 @@ export const rentalApi = {
   },
 
   markThreadRead: async (threadId: string): Promise<ChatThread> => {
+    try {
+      return await apiRequest<ChatThread>(`/api/messages/${threadId}/read`, {
+        method: 'POST',
+      });
+    } catch (backendErr) {
+      if (!isSupabaseConfigured || !supabase) throw backendErr;
+    }
+
     if (isSupabaseConfigured && supabase) {
       const { data } = await supabase
         .from('chat_threads')
@@ -4177,6 +4874,14 @@ export const rentalApi = {
   },
 
   deleteThread: async (id: string): Promise<{ success: boolean }> => {
+    try {
+      return await apiRequest<{ success: boolean }>(`/api/threads/${id}`, {
+        method: 'DELETE',
+      });
+    } catch (backendErr) {
+      if (!isSupabaseConfigured || !supabase) throw backendErr;
+    }
+
     if (isSupabaseConfigured && supabase) {
       await supabase.from('chat_threads').delete().eq('id', id);
       return { success: true };
@@ -4187,8 +4892,17 @@ export const rentalApi = {
     });
   },
 
-  // Sozuri SMS Gateway API & Notification Automation
+  // SMS Notification Service & Automation
   getSmsHistory: async () => {
+    try {
+      return await apiRequest<{
+        logs: SmsLogRecord[];
+        settings: SmsNotificationSettings;
+      }>('/api/sms/history');
+    } catch (backendErr) {
+      if (!isSupabaseConfigured || !supabase) throw backendErr;
+    }
+
     if (isSupabaseConfigured && supabase) {
       const state = await fetchBootstrapFromSupabase();
       return {
@@ -4213,61 +4927,6 @@ export const rentalApi = {
     messageBody: string;
     forceSend?: boolean;
   }) => {
-    if (isSupabaseConfigured && supabase) {
-      const logId = crypto.randomUUID();
-      const nowIso = new Date().toISOString();
-      const logRecord: SmsLogRecord = {
-        id: logId,
-        tenantId: data.tenantId,
-        tenantRef: String(data.tenantRef || 'A-001').toUpperCase(),
-        tenantName: data.tenantName,
-        recipientPhone: data.recipientPhone,
-        propertyName: data.propertyName,
-        unitNumber: data.unitNumber,
-        triggerType: data.triggerType || 'individual_sms',
-        messageBody: data.messageBody,
-        status: 'Delivered',
-        environment: 'sandbox',
-        provider: 'Sozuri',
-        providerMessageId: `sozuri_${logId.slice(0, 10)}`,
-        providerStatusCode: 200,
-        providerCost: 'KES 0.80',
-        sentBy: currentEmail || 'Administrator',
-        createdAt: nowIso,
-      };
-
-      await supabase
-        .from('sms_logs')
-        .insert({
-          id: logRecord.id,
-          tenant_ref: logRecord.tenantRef,
-          tenant_name: logRecord.tenantName,
-          recipient_phone: logRecord.recipientPhone,
-          property_name: logRecord.propertyName,
-          unit_number: logRecord.unitNumber,
-          trigger_type: logRecord.triggerType,
-          message_body: logRecord.messageBody,
-          status: logRecord.status,
-          environment: logRecord.environment,
-          provider: logRecord.provider,
-          provider_message_id: logRecord.providerMessageId,
-          provider_status_code: 200,
-          provider_cost: 'KES 0.80',
-          sent_by: logRecord.sentBy,
-          created_at: nowIso,
-        })
-        .then(
-          () => {},
-          () => {}
-        );
-
-      return {
-        success: true,
-        log: logRecord,
-        message: `SMS dispatched and logged in Supabase for ${data.tenantName}.`,
-      };
-    }
-
     return await apiRequest<{
       success: boolean;
       log: SmsLogRecord;
@@ -4287,59 +4946,6 @@ export const rentalApi = {
     messageTemplate: string;
     forceSend?: boolean;
   }) => {
-    if (isSupabaseConfigured && supabase) {
-      const state = await fetchBootstrapFromSupabase();
-      let recipients = [...state.tenants];
-      if (Array.isArray(data.tenantRefs) && data.tenantRefs.length > 0) {
-        const refSet = new Set(data.tenantRefs.map((r) => r.toUpperCase()));
-        recipients = recipients.filter((t) =>
-          refSet.has(t.tenantRef.toUpperCase())
-        );
-      } else if (data.audience === 'property' && data.propertyName) {
-        recipients = recipients.filter(
-          (t) =>
-            t.property.toLowerCase() === data.propertyName!.toLowerCase()
-        );
-      } else if (data.audience === 'rent_due') {
-        recipients = recipients.filter(
-          (t) => t.rentBalance > 0 || t.status !== 'Paid'
-        );
-      } else if (data.audience === 'overdue') {
-        recipients = recipients.filter((t) => t.status === 'Overdue');
-      }
-
-      const logs: SmsLogRecord[] = [];
-      for (const t of recipients) {
-        const msg = data.messageTemplate
-          .replace(/\{tenantName\}/gi, t.name)
-          .replace(/\{property\}/gi, t.property)
-          .replace(/\{unitNumber\}/gi, t.unitNumber)
-          .replace(/\{tenantRef\}/gi, t.tenantRef);
-        const res = await rentalApi.sendSms({
-          tenantId: t.id,
-          tenantRef: t.tenantRef,
-          tenantName: t.name,
-          recipientPhone: t.phone,
-          propertyName: t.property,
-          unitNumber: t.unitNumber,
-          triggerType: data.triggerType || 'admin_announcement',
-          messageBody: msg,
-          forceSend: data.forceSend,
-        });
-        logs.push(res.log);
-      }
-
-      return {
-        success: true,
-        totalTargeted: recipients.length,
-        sentCount: logs.length,
-        skippedDuplicatesCount: 0,
-        failedCount: 0,
-        logs,
-        message: `Bulk SMS complete: ${logs.length} delivered and logged in Supabase.`,
-      };
-    }
-
     return await apiRequest<{
       success: boolean;
       totalTargeted: number;
@@ -4355,13 +4961,24 @@ export const rentalApi = {
   },
 
   updateSmsSettings: async (data: Partial<SmsNotificationSettings>) => {
+    try {
+      return await apiRequest<{
+        settings: SmsNotificationSettings;
+        message: string;
+      }>('/api/sms/settings', {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      });
+    } catch (backendErr) {
+      if (!isSupabaseConfigured || !supabase) throw backendErr;
+    }
+
     if (isSupabaseConfigured && supabase) {
       const nowIso = new Date().toISOString();
       await supabase.from('sms_notification_settings').upsert({
         id: 'default',
         environment: data.environment || 'sandbox',
-        sender_id: data.senderId || 'Sozuri',
-        sozuri_project: data.sozuriProject || 'ARAbella agency',
+        sender_id: data.senderId || 'ARABELLA',
         master_enabled: data.masterEnabled ?? true,
         auto_tenant_registered: data.autoTenantRegistered ?? true,
         auto_rent_due_soon: data.autoRentDueSoon ?? true,
@@ -4390,6 +5007,21 @@ export const rentalApi = {
   },
 
   triggerAutomatedSmsChecks: async () => {
+    try {
+      return await apiRequest<{
+        success: boolean;
+        dueSoonSent: number;
+        overdueSent: number;
+        skippedDuplicates: number;
+        logs: SmsLogRecord[];
+        message: string;
+      }>('/api/sms/run-automated-checks', {
+        method: 'POST',
+      });
+    } catch (backendErr) {
+      if (!isSupabaseConfigured || !supabase) throw backendErr;
+    }
+
     if (isSupabaseConfigured && supabase) {
       return {
         success: true,
@@ -4413,76 +5045,205 @@ export const rentalApi = {
     });
   },
 
-  // Sozuri Official API Diagnostics & WhatsApp
-  getSozuriStatus: async () => {
-    try {
-      return await apiRequest<any>('/api/sozuri/status');
-    } catch {
-      return { status: 'online', provider: 'Sozuri' };
-    }
-  },
-
-  testSozuriAuth: async (project?: string) => {
-    try {
-      return await apiRequest<{
-        authenticated: boolean;
-        statusCode: number;
-        project: string;
-        message: string;
-        raw: any;
-      }>(
-        `/api/sozuri/authtest${
-          project ? `?project=${encodeURIComponent(project)}` : ''
-        }`
-      );
-    } catch {
-      return {
-        authenticated: true,
-        statusCode: 200,
-        project: project || 'ARAbella agency',
-        message: 'Connected via Supabase integration mode.',
-        raw: {},
-      };
-    }
-  },
-
-  getSozuriWhatsAppChannels: async (project?: string) => {
-    try {
-      return await apiRequest<any>(
-        `/api/sozuri/whatsapp/channels${
-          project ? `?project=${encodeURIComponent(project)}` : ''
-        }`
-      );
-    } catch {
-      return { channels: [] };
-    }
-  },
-
-  getSozuriWhatsAppTemplates: async (project?: string) => {
-    try {
-      return await apiRequest<any>(
-        `/api/sozuri/whatsapp/templates${
-          project ? `?project=${encodeURIComponent(project)}` : ''
-        }`
-      );
-    } catch {
-      return { templates: [] };
-    }
-  },
-
-  sendSozuriWhatsApp: (data: { to: string; text: string }) =>
-    apiRequest<{
+  testSms: async (data: {
+    mobile: string;
+    message: string;
+    senderId?: string;
+    environment?: 'sandbox' | 'production';
+    smsType?: 'promotional' | 'transactional';
+  }) => {
+    return await apiRequest<{
       success: boolean;
-      status: number;
-      channel?: string;
-      messageId?: string;
+      log?: SmsLogRecord;
       message: string;
-      data: any;
-    }>('/api/sozuri/whatsapp/send', {
+      simulated?: boolean;
+      messageId?: string;
+    }>('/api/sms/test', {
       method: 'POST',
       body: JSON.stringify(data),
-    }),
+    });
+  },
+
+  getSmsBalance: async () => {
+    return await apiRequest<{
+      success: boolean;
+      balanceCredits?: number;
+      currency?: string;
+      description?: string;
+      simulated?: boolean;
+      errorMessage?: string;
+    }>('/api/sms/balance', {
+      method: 'GET',
+    });
+  },
+
+  querySmsDlr: async (messageId: string) => {
+    return await apiRequest<{
+      success: boolean;
+      messageId: string;
+      deliveryStatus: string;
+      deliveredAt?: string;
+      reason?: string;
+    }>('/api/sms/dlr', {
+      method: 'POST',
+      body: JSON.stringify({ messageId }),
+    });
+  },
+
+  getEmailHistory: async () => {
+    return await apiRequest<{
+      emails: BrandedEmailRecord[];
+      settings: EmailNotificationSettings;
+    }>('/api/email/history', {
+      method: 'GET',
+    });
+  },
+
+  updateEmailSettings: async (data: Partial<EmailNotificationSettings>) => {
+    return await apiRequest<{
+      settings: EmailNotificationSettings;
+      message: string;
+    }>('/api/email/settings', {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  },
+
+  sendEmailReminder: async (data: {
+    tenantId?: string;
+    tenantRef: string;
+    tenantName: string;
+    recipientEmail?: string;
+    propertyName: string;
+    unitNumber: string;
+    triggerType: EmailReminderTriggerType;
+    amountDue?: number;
+    dueDate?: string;
+    leaseEndDate?: string;
+    customSubject?: string;
+    customBody?: string;
+    forceSend?: boolean;
+  }) => {
+    return await apiRequest<{
+      success: boolean;
+      log?: BrandedEmailRecord;
+      resendId?: string;
+      status?: string;
+      message: string;
+      duplicateSkipped?: boolean;
+      disabledSkipped?: boolean;
+    }>('/api/email/send', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  },
+
+  retryEmailNotification: async (emailId: string) => {
+    return await apiRequest<{
+      success: boolean;
+      email?: BrandedEmailRecord;
+      message: string;
+      error?: string;
+    }>(`/api/email/retry/${encodeURIComponent(emailId)}`, {
+      method: 'POST',
+    });
+  },
+
+  testEmail: async (data: { recipientEmail: string; customBody?: string }) => {
+    return await apiRequest<{
+      success: boolean;
+      log?: BrandedEmailRecord;
+      resendId?: string;
+      status?: string;
+      message: string;
+    }>('/api/email/test', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  },
+
+  triggerAutomatedEmailChecks: async () => {
+    return await apiRequest<{
+      success: boolean;
+      nairobiDate: string;
+      upcoming3dSent: number;
+      dueTodaySent: number;
+      overdueSent: number;
+      leaseExpiry30dSent: number;
+      leaseExpiry7dSent: number;
+      skippedDuplicates: number;
+      skippedPaidOrDisabled: number;
+      failedCount: number;
+      totalSent: number;
+      emails: BrandedEmailRecord[];
+      message: string;
+    }>('/api/email/run-automated-checks', {
+      method: 'POST',
+    });
+  },
+
+  getDatabaseMaintenance: async () => {
+    return await apiRequest<{
+      logs: DatabaseCleanupLogRecord[];
+      health: DatabaseHealthSummary;
+    }>('/api/database-maintenance');
+  },
+
+  runDatabaseMaintenance: async (data?: {
+    triggerType?: 'Automated Egress Guard' | 'Scheduled Maintenance' | 'Manual Admin Cleanup';
+    retentionLimitLogs?: number;
+    retentionLimitEmails?: number;
+  }) => {
+    return await apiRequest<{
+      success: boolean;
+      log: DatabaseCleanupLogRecord;
+      logs: DatabaseCleanupLogRecord[];
+      health: DatabaseHealthSummary;
+      message: string;
+    }>('/api/database-maintenance/run', {
+      method: 'POST',
+      body: JSON.stringify(data || {}),
+    });
+  },
+
+  updateDatabaseMaintenanceSettings: async (data: {
+    autoCleanupEnabled?: boolean;
+    retentionLimitLogs?: number;
+    retentionLimitEmails?: number;
+  }) => {
+    return await apiRequest<{
+      success: boolean;
+      health: DatabaseHealthSummary;
+      message: string;
+    }>('/api/database-maintenance/settings', {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  },
+};
+
+export const smsApi = {
+  getSmsHistory: rentalApi.getSmsHistory,
+  sendSingleSms: rentalApi.sendSms,
+  sendBulkSms: rentalApi.sendBulkSms,
+  updateNotificationSettings: rentalApi.updateSmsSettings,
+  updateSmsSettings: rentalApi.updateSmsSettings,
+  triggerAutomatedSmsChecks: rentalApi.triggerAutomatedSmsChecks,
+  testSms: rentalApi.testSms,
+  getSmsBalance: rentalApi.getSmsBalance,
+  querySmsDlr: rentalApi.querySmsDlr,
+};
+
+export const emailApi = {
+  getEmailHistory: rentalApi.getEmailHistory,
+  updateEmailSettings: rentalApi.updateEmailSettings,
+  sendEmailReminder: rentalApi.sendEmailReminder,
+  retryEmailNotification: rentalApi.retryEmailNotification,
+  testEmail: rentalApi.testEmail,
+  triggerAutomatedEmailChecks: rentalApi.triggerAutomatedEmailChecks,
 };
 
 export { SupabaseIntegrationError };
+
+
 

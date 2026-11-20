@@ -2,7 +2,7 @@
  * Real-Time SMS & Notification WebSocket / SSE / Supabase Synchronization Client
  * 
  * Provides instantaneous event streaming between ARabella agency server
- * and browser clients. Listens for real-time Sozuri SMS dispatches,
+ * and browser clients. Listens for real-time SMS notification dispatches,
  * payment verifications, thread messages, and SMS settings updates.
  * 
  * Supports dual-mode:
@@ -20,6 +20,8 @@ export type RealtimeEventType =
   | 'sms:dispatched'
   | 'sms:bulk_dispatched'
   | 'sms:settings_updated'
+  | 'email:dispatched'
+  | 'email:retried'
   | 'thread:updated'
   | 'payment:confirmed'
   | 'system:connected'
@@ -105,7 +107,7 @@ class RealtimeSmsClient {
 
   private dispatchEvent(type: RealtimeEventType, payload: any) {
     // Generate a deduplication key
-    const idKey = payload?.log?.id || payload?.threadId || payload?.payment?.id || payload?.timestamp || JSON.stringify(payload).slice(0, 60);
+    const idKey = payload?.log?.id || payload?.email?.id || payload?.threadId || payload?.payment?.id || payload?.timestamp || JSON.stringify(payload).slice(0, 60);
     const dedupeKey = `${type}:${idKey}`;
     if (this.recentEventKeys.has(dedupeKey)) {
       return; // Deduplicate
@@ -246,6 +248,18 @@ class RealtimeSmsClient {
       sse.addEventListener('sms:settings_updated', (e: MessageEvent) => {
         try {
           this.dispatchEvent('sms:settings_updated', JSON.parse(e.data));
+        } catch {}
+      });
+
+      sse.addEventListener('email:dispatched', (e: MessageEvent) => {
+        try {
+          this.dispatchEvent('email:dispatched', JSON.parse(e.data));
+        } catch {}
+      });
+
+      sse.addEventListener('email:retried', (e: MessageEvent) => {
+        try {
+          this.dispatchEvent('email:retried', JSON.parse(e.data));
         } catch {}
       });
 

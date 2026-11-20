@@ -279,6 +279,53 @@ export interface ActivityLogRecord {
   tenantRef?: string;
 }
 
+export interface DatabaseCleanupTableAction {
+  table: string;
+  action: 'Removed' | 'Archived' | 'Trimmed';
+  rowsAffected: number;
+  egressSavedKb: number;
+  details: string;
+}
+
+export interface DatabaseCleanupLogRecord {
+  id: string;
+  triggerType:
+    | 'Automated Egress Guard'
+    | 'Scheduled Maintenance'
+    | 'Manual Admin Cleanup';
+  status: 'Completed' | 'No Bloat Found' | 'Warning';
+  totalRowsAffected: number;
+  estimatedEgressSavedKb: number;
+  tablesCleaned: DatabaseCleanupTableAction[];
+  summary: string;
+  executedBy: string;
+  createdAt: string;
+}
+
+export interface DatabaseHealthSummary {
+  autoCleanupEnabled: boolean;
+  retentionLimitLogs: number;
+  retentionLimitEmails: number;
+  lastRunAt: string;
+  nextScheduledRun: string;
+  protectedTables: {
+    table: string;
+    label: string;
+    count: number;
+    status: '100% Protected';
+  }[];
+  monitoredLogTables: {
+    table: string;
+    label: string;
+    currentRows: number;
+    retentionLimit: number;
+    actionPolicy: 'Remove Expired / Excess' | 'Archive Heavy HTML / JSON';
+    status: 'Healthy' | 'Near Limit' | 'Trimmed';
+  }[];
+  totalRowsCleanedAllTime: number;
+  totalEgressSavedKbAllTime: number;
+}
+
 export interface SecurityAuditLogRecord {
   id: string;
   eventType:
@@ -316,6 +363,16 @@ export interface SecurityAuditLogRecord {
   createdAt: string;
 }
 
+export type EmailReminderTriggerType =
+  | 'rent_upcoming_3d'
+  | 'rent_due_today'
+  | 'rent_overdue'
+  | 'payment_confirmed'
+  | 'lease_expiry_30d'
+  | 'lease_expiry_7d'
+  | 'admin_announcement'
+  | 'test_email';
+
 export interface BrandedEmailRecord {
   id: string;
   templateType:
@@ -327,14 +384,52 @@ export interface BrandedEmailRecord {
     | 'account_suspended'
     | 'reactivation'
     | 'account_reactivated'
-    | 'security_alert';
+    | 'security_alert'
+    | 'role_updated'
+    | EmailReminderTriggerType
+    | string;
   recipientEmail: string;
   recipientName: string;
+  tenantId?: string;
+  tenantRef?: string;
+  propertyName?: string;
+  unitNumber?: string;
+  amountDue?: number;
+  dueDate?: string;
   subject: string;
   htmlBody: string;
   bodyHtml?: string;
   status: string;
+  resendId?: string;
+  deliveryStatus?: string;
+  errorMessage?: string;
+  sandboxForwarded?: boolean;
+  sandboxAccountEmail?: string;
+  notice?: string;
+  dedupeKey?: string;
+  paymentId?: string;
+  leaseId?: string;
+  retryCount?: number;
+  lastRetriedAt?: string;
+  sentBy?: string;
   createdAt: string;
+}
+
+export interface EmailNotificationSettings {
+  masterEnabled: boolean;
+  autoRentUpcoming3d: boolean;
+  autoRentDueToday: boolean;
+  autoRentOverdue: boolean;
+  autoPaymentConfirmed: boolean;
+  autoLeaseExpiry30d: boolean;
+  autoLeaseExpiry7d: boolean;
+  senderName: string;
+  fromEmail: string;
+  paymentInstructions: string;
+  preventDuplicatesHours: number;
+  apiKeyConfigured: boolean;
+  updatedBy?: string;
+  updatedAt?: string;
 }
 
 export type SmsTriggerType =
@@ -365,7 +460,8 @@ export interface SmsLogRecord {
   triggerType: SmsTriggerType;
   messageBody: string;
   status: SmsDeliveryStatus;
-  deliveryStatus?: string;
+  deliveryStatus?: 'Delivered' | 'Sent' | 'Queued' | 'Failed' | 'Pending' | string;
+  deliveredAt?: string;
   costKes?: number | string;
   environment: 'sandbox' | 'production';
   provider: string;
@@ -384,7 +480,6 @@ export interface SmsNotificationSettings {
   environment: 'sandbox' | 'production';
   senderId: string;
   username: string;
-  sozuriProject?: string;
   channel?: string;
   smsType?: 'promotional' | 'transactional';
   provider?: string;

@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { AnimatedCounter } from './AnimatedMetrics';
 import {
   Search,
   ChevronDown,
@@ -299,13 +300,13 @@ export const UnitsPage: React.FC<UnitsPageProps> = ({
                       <span className="text-[11.5px] text-[#6E7A75]">
                         Availability:{' '}
                         <strong className="text-[#17231E] tabular-nums">
-                          {unit.occupiedCount}/{unit.totalCount} Units
+                          <AnimatedCounter value={unit.occupiedCount} />/{unit.totalCount} Units
                         </strong>{' '}
                         <span className="text-[#88948F]">• {unit.property}</span>
                       </span>
                       <div className="text-right">
                         <span className="text-[17px] font-extrabold text-[#17231E] tabular-nums">
-                          KSh {unit.monthlyRent.toLocaleString()}
+                          <AnimatedCounter value={unit.monthlyRent} prefix="KSh " />
                         </span>
                         <span className="text-[11px] text-[#88948F]">/mo</span>
                       </div>
@@ -357,7 +358,7 @@ export const UnitsPage: React.FC<UnitsPageProps> = ({
               <p className="text-[11.5px] text-[#6E7A75] mt-1 tabular-nums">
                 Occupied:{' '}
                 <strong className="text-[#17231E]">
-                  {selectedUnit.occupiedCount}/{selectedUnit.totalCount} Units
+                  <AnimatedCounter value={selectedUnit.occupiedCount} />/{selectedUnit.totalCount} Units
                 </strong>{' '}
                 • {selectedUnit.property}
               </p>

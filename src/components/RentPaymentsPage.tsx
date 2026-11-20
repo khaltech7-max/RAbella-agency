@@ -1,4 +1,5 @@
 import React, { useState, useMemo } from 'react';
+import { AnimatedCounter } from './AnimatedMetrics';
 import {
   Search,
   ChevronDown,
@@ -742,7 +743,7 @@ Confirmed Date     : ${pay.confirmedAt || pay.paidDate || 'Verified'}
 
       {/* 3. FINANCIAL SUMMARY KPI CARDS */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="bg-white rounded-3xl p-5 border border-[#E7ECE9] shadow-xs">
+        <div className="rms-card-hover bg-white rounded-3xl p-5 border border-[#E7ECE9] shadow-xs">
           <div className="flex items-center justify-between text-xs font-semibold text-[#7B8983] mb-2">
             <span>Confirmed Collections</span>
             <span className="w-7 h-7 rounded-xl bg-[#EAF4EE] text-[#145338] flex items-center justify-center font-bold">
@@ -750,15 +751,17 @@ Confirmed Date     : ${pay.confirmedAt || pay.paidDate || 'Verified'}
             </span>
           </div>
           <p className="text-2xl font-bold text-[#172B25] tabular-nums tracking-tight">
-            KSh {kpiStats.totalCollected.toLocaleString()}
+            <AnimatedCounter value={kpiStats.totalCollected} prefix="KSh " />
           </p>
           <div className="mt-2 flex items-center justify-between text-[11px] text-[#7B8983]">
-            <span>{kpiStats.confirmedCount} Paid Transactions</span>
+            <span>
+              <AnimatedCounter value={kpiStats.confirmedCount} suffix=" Paid Transactions" />
+            </span>
             <span className="text-[#145338] font-bold">Verified Ledger</span>
           </div>
         </div>
 
-        <div className="bg-white rounded-3xl p-5 border border-[#E7ECE9] shadow-xs">
+        <div className="rms-card-hover bg-white rounded-3xl p-5 border border-[#E7ECE9] shadow-xs">
           <div className="flex items-center justify-between text-xs font-semibold text-[#7B8983] mb-2">
             <span>Pending Invoices</span>
             <span className="w-7 h-7 rounded-xl bg-[#FEF6D2] text-[#8A6508] flex items-center justify-center font-bold">
@@ -766,7 +769,7 @@ Confirmed Date     : ${pay.confirmedAt || pay.paidDate || 'Verified'}
             </span>
           </div>
           <p className="text-2xl font-bold text-[#8A6508] tabular-nums tracking-tight">
-            KSh {kpiStats.pendingTotal.toLocaleString()}
+            <AnimatedCounter value={kpiStats.pendingTotal} prefix="KSh " />
           </p>
           <div className="mt-2 flex items-center justify-between text-[11px] text-[#7B8983]">
             <span>Awaiting Confirmation</span>
@@ -774,7 +777,7 @@ Confirmed Date     : ${pay.confirmedAt || pay.paidDate || 'Verified'}
           </div>
         </div>
 
-        <div className="bg-white rounded-3xl p-5 border border-[#E7ECE9] shadow-xs">
+        <div className="rms-card-hover bg-white rounded-3xl p-5 border border-[#E7ECE9] shadow-xs">
           <div className="flex items-center justify-between text-xs font-semibold text-[#7B8983] mb-2">
             <span>Overdue Arrears</span>
             <span className="w-7 h-7 rounded-xl bg-[#FDE6E6] text-[#B91C1C] flex items-center justify-center font-bold">
@@ -782,7 +785,7 @@ Confirmed Date     : ${pay.confirmedAt || pay.paidDate || 'Verified'}
             </span>
           </div>
           <p className="text-2xl font-bold text-[#B91C1C] tabular-nums tracking-tight">
-            KSh {kpiStats.overdueTotal.toLocaleString()}
+            <AnimatedCounter value={kpiStats.overdueTotal} prefix="KSh " />
           </p>
           <div className="mt-2 flex items-center justify-between text-[11px] text-[#7B8983]">
             <span>Unpaid Balances</span>
@@ -790,7 +793,7 @@ Confirmed Date     : ${pay.confirmedAt || pay.paidDate || 'Verified'}
           </div>
         </div>
 
-        <div className="bg-white rounded-3xl p-5 border border-[#E7ECE9] shadow-xs">
+        <div className="rms-card-hover bg-white rounded-3xl p-5 border border-[#E7ECE9] shadow-xs">
           <div className="flex items-center justify-between text-xs font-semibold text-[#7B8983] mb-2">
             <span>Tenants in Current Scope</span>
             <span className="w-7 h-7 rounded-xl bg-[#F5F7F6] text-[#172B25] flex items-center justify-center font-bold">
@@ -798,14 +801,14 @@ Confirmed Date     : ${pay.confirmedAt || pay.paidDate || 'Verified'}
             </span>
           </div>
           <p className="text-2xl font-bold text-[#172B25] tabular-nums tracking-tight">
-            {kpiStats.totalTenants} Tenants
+            <AnimatedCounter value={kpiStats.totalTenants} suffix=" Tenants" />
           </p>
           <div className="mt-2 flex items-center justify-between text-[11px] text-[#7B8983]">
             <span className="text-[#145338] font-semibold">
-              {kpiStats.clearedTenantsCount} Cleared
+              <AnimatedCounter value={kpiStats.clearedTenantsCount} suffix=" Cleared" />
             </span>
             <span className="text-[#8A6508] font-semibold">
-              {kpiStats.dueTenantsCount} With Balance
+              <AnimatedCounter value={kpiStats.dueTenantsCount} suffix=" With Balance" />
             </span>
           </div>
         </div>
