@@ -788,6 +788,7 @@ export default function App() {
                 await runMutation(() => rentalApi.createReview(review));
               }}
               globalSearch={globalSearch}
+              onGlobalSearchChange={setGlobalSearch}
               onSelectTenantRef={handleOpenTenantByRef}
               onNavigate={handleSelectPage}
             />
@@ -844,6 +845,7 @@ export default function App() {
               }}
               onSelectTenantRef={handleOpenTenantByRef}
               globalSearch={globalSearch}
+              onGlobalSearchChange={setGlobalSearch}
             />
           )}
 
@@ -874,6 +876,7 @@ export default function App() {
                 await runMutation(() => rentalApi.deleteUnitType(id));
               }}
               globalSearch={globalSearch}
+              onGlobalSearchChange={setGlobalSearch}
             />
           )}
 
@@ -953,6 +956,8 @@ export default function App() {
                 });
               }}
               onNavigate={handleSelectPage}
+              globalSearch={globalSearch}
+              onGlobalSearchChange={setGlobalSearch}
             />
           )}
 
@@ -1012,6 +1017,7 @@ export default function App() {
                 await runMutation(() => rentalApi.deleteMaintenance(id));
               }}
               globalSearch={globalSearch}
+              onGlobalSearchChange={setGlobalSearch}
             />
           )}
 
@@ -1102,6 +1108,8 @@ export default function App() {
                   return res;
                 });
               }}
+              globalSearch={globalSearch}
+              onGlobalSearchChange={setGlobalSearch}
             />
           )}
 
@@ -1123,6 +1131,7 @@ export default function App() {
                 await runMutation(() => rentalApi.deleteExpense(id));
               }}
               globalSearch={globalSearch}
+              onGlobalSearchChange={setGlobalSearch}
             />
           )}
 
@@ -1159,6 +1168,7 @@ export default function App() {
               }}
               onNavigate={handleSelectPage}
               globalSearch={globalSearch}
+              onGlobalSearchChange={setGlobalSearch}
             />
           )}
 
@@ -1166,6 +1176,8 @@ export default function App() {
             <InvoicesPage
               payments={payments}
               onSelectTenantRef={handleOpenTenantByRef}
+              globalSearch={globalSearch}
+              onGlobalSearchChange={setGlobalSearch}
             />
           )}
 
@@ -1176,6 +1188,8 @@ export default function App() {
               expenses={transactions}
               maintenance={maintenanceItems}
               tenants={tenants}
+              globalSearch={globalSearch}
+              onGlobalSearchChange={setGlobalSearch}
             />
           )}
 
@@ -1245,6 +1259,7 @@ export default function App() {
               }}
               onSwitchUserSession={handleSwitchRole}
               globalSearch={globalSearch}
+              onGlobalSearchChange={setGlobalSearch}
             />
           )}
         </>

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Search,
   ChevronDown,
@@ -30,6 +30,7 @@ interface MaintenancePageProps {
   onAddMaintenance: (item: Partial<MaintenanceItem>) => Promise<void>;
   onDeleteMaintenance: (id: string) => Promise<void>;
   globalSearch: string;
+  onGlobalSearchChange?: (val: string) => void;
 }
 
 export const MaintenancePage: React.FC<MaintenancePageProps> = ({
@@ -42,8 +43,18 @@ export const MaintenancePage: React.FC<MaintenancePageProps> = ({
   onAddMaintenance,
   onDeleteMaintenance,
   globalSearch,
+  onGlobalSearchChange,
 }) => {
-  const [search, setSearch] = useState('');
+  const [search, setSearch] = useState(globalSearch || '');
+
+  useEffect(() => {
+    setSearch(globalSearch || '');
+  }, [globalSearch]);
+
+  const handleSearchChange = (val: string) => {
+    setSearch(val);
+    onGlobalSearchChange?.(val);
+  };
   const [typeFilter, setTypeFilter] = useState('All');
   const [statusFilter, setStatusFilter] = useState('All');
   const [priorityFilter, setPriorityFilter] = useState('All');
@@ -73,9 +84,12 @@ export const MaintenancePage: React.FC<MaintenancePageProps> = ({
       !query ||
       m.unitNumber.toLowerCase().includes(query) ||
       m.property.toLowerCase().includes(query) ||
+      (m.unitType || '').toLowerCase().includes(query) ||
       m.assignedTo.toLowerCase().includes(query) ||
       m.notes.toLowerCase().includes(query) ||
-      m.tenantRef.toLowerCase().includes(query);
+      m.tenantRef.toLowerCase().includes(query) ||
+      (m.maintenanceStatus || '').toLowerCase().includes(query) ||
+      (m.priority || '').toLowerCase().includes(query);
     return matchesType && matchesStatus && matchesPriority && matchesQuery;
   });
 
@@ -112,10 +126,19 @@ export const MaintenancePage: React.FC<MaintenancePageProps> = ({
             <input
               type="text"
               value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              onChange={(e) => handleSearchChange(e.target.value)}
               placeholder="Search unit, tech, ref (A-001)..."
-              className="pl-8 pr-3 py-2 rounded-xl bg-[#F4F8F6] text-[12px] text-[#17231E] placeholder-[#88948F] focus:outline-none focus:ring-2 focus:ring-[#D5F267] w-56"
+              className="pl-8 pr-7 py-2 rounded-xl bg-[#F4F8F6] text-[12px] text-[#17231E] placeholder-[#88948F] focus:outline-none focus:ring-2 focus:ring-[#D5F267] w-56"
             />
+            {search && (
+              <button
+                type="button"
+                onClick={() => handleSearchChange('')}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#88948F] hover:text-[#17231E] cursor-pointer"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
           </div>
 
           <div className="relative">

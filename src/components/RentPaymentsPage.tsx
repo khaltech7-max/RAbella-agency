@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { AnimatedCounter } from './AnimatedMetrics';
 import {
   Search,
@@ -41,6 +41,7 @@ interface RentPaymentsPageProps {
   onDeletePayment: (id: string) => Promise<void>;
   onSelectTenantRef: (ref: string) => void;
   globalSearch: string;
+  onGlobalSearchChange?: (val: string) => void;
 }
 
 export const RentPaymentsPage: React.FC<RentPaymentsPageProps> = ({
@@ -52,17 +53,29 @@ export const RentPaymentsPage: React.FC<RentPaymentsPageProps> = ({
   onDeletePayment,
   onSelectTenantRef,
   globalSearch,
+  onGlobalSearchChange,
 }) => {
   // Apartment prefix navigation state ('ALL' or property ID)
   const [selectedPropertyId, setSelectedPropertyId] = useState<string>('ALL');
 
   // Table filters & pagination
-  const [search, setSearch] = useState('');
+  const [search, setSearch] = useState(globalSearch || '');
   const [statusFilter, setStatusFilter] = useState<
     'All' | 'Paid' | 'Pending' | 'Overdue'
   >('All');
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 10;
+
+  useEffect(() => {
+    setSearch(globalSearch || '');
+    setCurrentPage(1);
+  }, [globalSearch]);
+
+  const handleSearchChange = (val: string) => {
+    setSearch(val);
+    onGlobalSearchChange?.(val);
+    setCurrentPage(1);
+  };
 
   // Modals state
   const [modalOpen, setModalOpen] = useState(false);
@@ -258,21 +271,29 @@ export const RentPaymentsPage: React.FC<RentPaymentsPageProps> = ({
       if (!matchesStatus) return false;
       if (!query) return true;
 
-      // Search across tenant name, account ref, payment id, unit, note, and property
+      // Search across tenant name, account ref, payment id, unit, unitType, note, property, status, dueDate, and amount
       const tenantMatch = item.tenantName.toLowerCase().includes(query);
       const refMatch = item.tenantRef.toLowerCase().includes(query);
       const idMatch = item.paymentId.toLowerCase().includes(query);
       const unitMatch = item.unitNumber.toLowerCase().includes(query);
+      const typeMatch = (item.unitType || '').toLowerCase().includes(query);
       const noteMatch = (item.paymentNote || '').toLowerCase().includes(query);
       const propMatch = item.property.toLowerCase().includes(query);
+      const statusMatch = (item.status || '').toLowerCase().includes(query);
+      const dueMatch = (item.dueDate || '').toLowerCase().includes(query);
+      const amountMatch = String(item.amount || '').includes(query);
 
       return (
         tenantMatch ||
         refMatch ||
         idMatch ||
         unitMatch ||
+        typeMatch ||
         noteMatch ||
-        propMatch
+        propMatch ||
+        statusMatch ||
+        dueMatch ||
+        amountMatch
       );
     });
   }, [scopedData.scopedPayments, statusFilter, query]);
@@ -834,10 +855,7 @@ Confirmed Date     : ${pay.confirmedAt || pay.paidDate || 'Verified'}
               <input
                 type="text"
                 value={search}
-                onChange={(e) => {
-                  setSearch(e.target.value);
-                  setCurrentPage(1);
-                }}
+                onChange={(e) => handleSearchChange(e.target.value)}
                 placeholder={
                   activeProperty
                     ? `Search within ${activeProperty.name}...`
@@ -847,7 +865,7 @@ Confirmed Date     : ${pay.confirmedAt || pay.paidDate || 'Verified'}
               />
               {search && (
                 <button
-                  onClick={() => setSearch('')}
+                  onClick={() => handleSearchChange('')}
                   className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#7B8983] hover:text-[#172B25] cursor-pointer"
                 >
                   <X className="w-3.5 h-3.5" />

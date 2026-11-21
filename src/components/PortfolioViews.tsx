@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useReducedMotion } from 'motion/react';
 import { AnimatedCounter } from './AnimatedMetrics';
 import {
@@ -10,6 +10,7 @@ import {
   X,
   Trash2,
   Building2,
+  Search,
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -439,17 +440,55 @@ export const PropertiesPage: React.FC<PropertiesViewProps> = ({
 interface InvoicesPageProps {
   payments: RentPaymentRecord[];
   onSelectTenantRef: (ref: string) => void;
+  globalSearch?: string;
+  onGlobalSearchChange?: (val: string) => void;
 }
 
 export const InvoicesPage: React.FC<InvoicesPageProps> = ({
   payments,
   onSelectTenantRef,
+  globalSearch = '',
+  onGlobalSearchChange,
 }) => {
   const [downloadedId, setDownloadedId] = useState<string | null>(null);
+  const [search, setSearch] = useState(globalSearch || '');
+
+  useEffect(() => {
+    setSearch(globalSearch || '');
+  }, [globalSearch]);
+
+  const handleSearchChange = (val: string) => {
+    setSearch(val);
+    onGlobalSearchChange?.(val);
+  };
+
+  const query = (search || globalSearch).trim().toLowerCase();
+  const currentYear = new Date().getFullYear();
+
+  const filteredInvoices = payments
+    .map((inv, idx) => ({
+      inv,
+      idx,
+      invoiceNumber: `INV-${currentYear}-${String(idx + 1).padStart(3, '0')}`,
+    }))
+    .filter(({ inv, invoiceNumber }) => {
+      if (!query) return true;
+      return (
+        invoiceNumber.toLowerCase().includes(query) ||
+        inv.tenantRef.toLowerCase().includes(query) ||
+        inv.tenantName.toLowerCase().includes(query) ||
+        inv.property.toLowerCase().includes(query) ||
+        inv.unitNumber.toLowerCase().includes(query) ||
+        (inv.unitType || '').toLowerCase().includes(query) ||
+        (inv.dueDate || '').toLowerCase().includes(query) ||
+        (inv.status || '').toLowerCase().includes(query) ||
+        String(inv.amount || '').includes(query)
+      );
+    });
 
   const handleDownloadInvoice = (inv: RentPaymentRecord, idx: number) => {
     setDownloadedId(inv.id);
-    const invoiceNumber = `INV-${new Date().getFullYear()}-${String(idx + 1).padStart(3, '0')}`;
+    const invoiceNumber = `INV-${currentYear}-${String(idx + 1).padStart(3, '0')}`;
     const text = [
       'RENTIFY OFFICIAL RENT INVOICE',
       '=============================',
@@ -474,27 +513,52 @@ export const InvoicesPage: React.FC<InvoicesPageProps> = ({
 
   return (
     <div className="bg-white rounded-2xl p-5">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-5">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-5">
         <div>
           <h2 className="text-[16px] font-bold text-[#17231E]">
             Monthly Rent Invoices & Statements
           </h2>
           <p className="text-[11.5px] text-[#7A8681]">
-            Automated invoices generated from live PostgreSQL rent ledger records
+            Automated invoices generated from live PostgreSQL rent ledger records ({filteredInvoices.length} of {payments.length})
           </p>
         </div>
-        <button
-          onClick={() => window.print()}
-          className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#D5F267] text-[#17231E] text-[12px] font-bold cursor-pointer"
-        >
-          <Printer className="w-3.5 h-3.5" />
-          Print Batch Statements
-        </button>
+
+        <div className="flex flex-wrap items-center gap-2.5">
+          <div className="relative">
+            <Search className="w-3.5 h-3.5 text-[#88948F] absolute left-3 top-1/2 -translate-y-1/2" />
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => handleSearchChange(e.target.value)}
+              placeholder="Search invoice, tenant, ref (A-001), property..."
+              className="pl-8 pr-7 py-2 rounded-xl bg-[#F4F8F6] text-[12px] text-[#17231E] placeholder-[#88948F] focus:outline-none focus:ring-2 focus:ring-[#D5F267] w-64"
+            />
+            {search && (
+              <button
+                type="button"
+                onClick={() => handleSearchChange('')}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#88948F] hover:text-[#17231E] cursor-pointer"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+
+          <button
+            onClick={() => window.print()}
+            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#D5F267] text-[#17231E] text-[12px] font-bold cursor-pointer"
+          >
+            <Printer className="w-3.5 h-3.5" />
+            Print Batch Statements
+          </button>
+        </div>
       </div>
 
-      {payments.length === 0 ? (
+      {filteredInvoices.length === 0 ? (
         <div className="py-10 text-center text-[13px] text-[#7A8681]">
-          No rent invoices in the database yet. Record a rent payment on the Rent Payments page to generate statements.
+          {payments.length === 0
+            ? 'No rent invoices in the database yet. Record a rent payment on the Rent Payments page to generate statements.'
+            : `No rent invoices match "${search || globalSearch}".`}
         </div>
       ) : (
         <div className="overflow-x-auto">
@@ -512,10 +576,10 @@ export const InvoicesPage: React.FC<InvoicesPageProps> = ({
               </tr>
             </thead>
             <tbody className="divide-y divide-[#EEF3F0] text-[12px]">
-              {payments.map((inv, idx) => (
+              {filteredInvoices.map(({ inv, idx, invoiceNumber }) => (
                 <tr key={inv.id} className="hover:bg-[#F8FBF9]">
                   <td className="py-3 px-3 font-bold text-[#17231E] tabular-nums">
-                    INV-{new Date().getFullYear()}-{String(idx + 1).padStart(3, '0')}
+                    {invoiceNumber}
                   </td>
                   <td className="py-3 px-3">
                     <button
@@ -580,6 +644,8 @@ interface ReportsPageProps {
   expenses: ExpenseTransaction[];
   maintenance: MaintenanceItem[];
   tenants: TenantProfile[];
+  globalSearch?: string;
+  onGlobalSearchChange?: (val: string) => void;
 }
 
 export const ReportsPage: React.FC<ReportsPageProps> = ({
@@ -588,9 +654,90 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
   expenses,
   maintenance,
   tenants,
+  globalSearch = '',
+  onGlobalSearchChange,
 }) => {
   const prefersReducedMotion = useReducedMotion();
-  const occupancyByProperty = properties.map((p) => {
+  const [search, setSearch] = useState(globalSearch || '');
+
+  useEffect(() => {
+    setSearch(globalSearch || '');
+  }, [globalSearch]);
+
+  const handleSearchChange = (val: string) => {
+    setSearch(val);
+    onGlobalSearchChange?.(val);
+  };
+
+  const query = (search || globalSearch).trim().toLowerCase();
+
+  const filteredProperties = properties.filter((p) => {
+    if (!query) return true;
+    const propNameLower = p.name.trim().toLowerCase();
+    const matchesTenant = tenants.some(
+      (t) =>
+        (t.propertyId === p.id || (t.property || '').trim().toLowerCase() === propNameLower) &&
+        (t.name.toLowerCase().includes(query) ||
+          t.tenantRef.toLowerCase().includes(query) ||
+          t.unitNumber.toLowerCase().includes(query))
+    );
+    return (
+      p.name.toLowerCase().includes(query) ||
+      p.codePrefix.toLowerCase().includes(query) ||
+      p.address.toLowerCase().includes(query) ||
+      p.manager.toLowerCase().includes(query) ||
+      matchesTenant
+    );
+  });
+
+  const filteredPayments = payments.filter((p) => {
+    if (!query) return true;
+    return (
+      p.tenantName.toLowerCase().includes(query) ||
+      p.tenantRef.toLowerCase().includes(query) ||
+      p.property.toLowerCase().includes(query) ||
+      p.unitNumber.toLowerCase().includes(query) ||
+      p.status.toLowerCase().includes(query) ||
+      String(p.amount).includes(query)
+    );
+  });
+
+  const filteredExpenses = expenses.filter((e) => {
+    if (!query) return true;
+    return (
+      e.expense.toLowerCase().includes(query) ||
+      e.category.toLowerCase().includes(query) ||
+      e.property.toLowerCase().includes(query) ||
+      e.status.toLowerCase().includes(query) ||
+      String(e.amount).includes(query)
+    );
+  });
+
+  const filteredMaintenance = maintenance.filter((m) => {
+    if (!query) return true;
+    return (
+      m.unitNumber.toLowerCase().includes(query) ||
+      m.property.toLowerCase().includes(query) ||
+      m.assignedTo.toLowerCase().includes(query) ||
+      m.notes.toLowerCase().includes(query) ||
+      m.tenantRef.toLowerCase().includes(query) ||
+      m.maintenanceStatus.toLowerCase().includes(query)
+    );
+  });
+
+  const filteredTenants = tenants.filter((t) => {
+    if (!query) return true;
+    return (
+      t.name.toLowerCase().includes(query) ||
+      t.tenantRef.toLowerCase().includes(query) ||
+      t.property.toLowerCase().includes(query) ||
+      t.unitNumber.toLowerCase().includes(query) ||
+      (t.email || '').toLowerCase().includes(query) ||
+      (t.phone || '').toLowerCase().includes(query)
+    );
+  });
+
+  const occupancyByProperty = filteredProperties.map((p) => {
     const occ = Math.round((p.occupiedUnits / Math.max(1, p.totalUnits)) * 100);
     return {
       name: p.name.split(' ')[0],
@@ -599,12 +746,12 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
     };
   });
 
-  const paidTotal = payments
+  const paidTotal = filteredPayments
     .filter((p) => p.status === 'Paid')
     .reduce((s, p) => s + p.amount, 0);
-  const expTotal = expenses.reduce((s, e) => s + e.amount, 0);
-  const depositTotal = tenants.reduce((s, t) => s + t.securityDeposit, 0);
-  const resolvedCount = maintenance.filter(
+  const expTotal = filteredExpenses.reduce((s, e) => s + e.amount, 0);
+  const depositTotal = filteredTenants.reduce((s, t) => s + t.securityDeposit, 0);
+  const resolvedCount = filteredMaintenance.filter(
     (m) => m.maintenanceStatus === 'Completed'
   ).length;
 
@@ -621,6 +768,36 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
 
   return (
     <div className="space-y-4">
+      <div className="bg-white rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div>
+          <h2 className="text-[15px] font-bold text-[#17231E]">
+            Filter Reports & Export Scope
+          </h2>
+          <p className="text-[11.5px] text-[#7A8681]">
+            Search by property, tenant ref (A-001), unit, or category to filter report analytics and CSV exports
+          </p>
+        </div>
+        <div className="relative w-full sm:w-72">
+          <Search className="w-3.5 h-3.5 text-[#88948F] absolute left-3 top-1/2 -translate-y-1/2" />
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => handleSearchChange(e.target.value)}
+            placeholder="Filter reports by property, tenant, ref..."
+            className="w-full pl-8 pr-7 py-2 rounded-xl bg-[#F4F8F6] text-[12px] text-[#17231E] placeholder-[#88948F] focus:outline-none focus:ring-2 focus:ring-[#D5F267]"
+          />
+          {search && (
+            <button
+              type="button"
+              onClick={() => handleSearchChange('')}
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#88948F] hover:text-[#17231E] cursor-pointer"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
+      </div>
+
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
         <div className="rms-card-hover lg:col-span-7 bg-white rounded-2xl p-5">
           <div className="flex items-center justify-between mb-4">
@@ -629,7 +806,7 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
                 Portfolio Occupancy & Retention Report
               </h2>
               <p className="text-[11.5px] text-[#7A8681]">
-                Live Occupancy % across <AnimatedCounter value={properties.length} /> database properties
+                Live Occupancy % across <AnimatedCounter value={filteredProperties.length} /> database properties
               </p>
             </div>
             <span className="px-3 py-1 rounded-xl bg-[#D5F267] text-[#17231E] text-[11.5px] font-bold">
@@ -707,7 +884,7 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
                     Monthly Rent Roll & Arrears Ledger
                   </p>
                   <p className="text-[10.5px] text-[#7A8681] tabular-nums">
-                    <AnimatedCounter value={payments.length} /> database records •{' '}
+                    <AnimatedCounter value={filteredPayments.length} /> database records •{' '}
                     <AnimatedCounter value={paidTotal} prefix="KSh " /> collected
                   </p>
                 </div>
@@ -715,7 +892,7 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
                   onClick={() =>
                     exportCsv('rent-roll-export.csv', [
                       ['Tenant Ref', 'Tenant Name', 'Property', 'Unit', 'Amount (KSh)', 'Status', 'Due Date'],
-                      ...payments.map((p) => [
+                      ...filteredPayments.map((p) => [
                         p.tenantRef,
                         p.tenantName,
                         p.property,
@@ -746,7 +923,7 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
                   onClick={() =>
                     exportCsv('noi-expenses-export.csv', [
                       ['Expense', 'Category', 'Property', 'Quantity', 'Amount (KSh)', 'Date', 'Status'],
-                      ...expenses.map((e) => [
+                      ...filteredExpenses.map((e) => [
                         e.expense,
                         e.category,
                         e.property,
@@ -770,14 +947,14 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
                   </p>
                   <p className="text-[10.5px] text-[#7A8681] tabular-nums">
                     <AnimatedCounter value={resolvedCount} /> of{' '}
-                    <AnimatedCounter value={maintenance.length} /> tickets resolved in database
+                    <AnimatedCounter value={filteredMaintenance.length} /> tickets resolved in database
                   </p>
                 </div>
                 <button
                   onClick={() =>
                     exportCsv('maintenance-tickets-export.csv', [
                       ['Unit', 'Property', 'Unit Type', 'Status', 'Priority', 'Technician', 'Issue'],
-                      ...maintenance.map((m) => [
+                      ...filteredMaintenance.map((m) => [
                         m.unitNumber,
                         m.property,
                         m.unitType,
@@ -800,7 +977,7 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
                     Security Deposit Escrow Reconciliation
                   </p>
                   <p className="text-[10.5px] text-[#7A8681] tabular-nums">
-                    <AnimatedCounter value={tenants.length} /> active tenants •{' '}
+                    <AnimatedCounter value={filteredTenants.length} /> active tenants •{' '}
                     <AnimatedCounter value={depositTotal} prefix="KSh " /> held in escrow
                   </p>
                 </div>
@@ -808,7 +985,7 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
                   onClick={() =>
                     exportCsv('tenant-escrow-export.csv', [
                       ['Tenant Ref', 'Name', 'Email', 'Phone', 'Property', 'Unit', 'Monthly Rent (KSh)', 'Security Deposit (KSh)', 'Rent Balance (KSh)'],
-                      ...tenants.map((t) => [
+                      ...filteredTenants.map((t) => [
                         t.tenantRef,
                         t.name,
                         t.email,

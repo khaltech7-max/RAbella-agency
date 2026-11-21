@@ -13,8 +13,6 @@ import {
   AccountStatus,
   DashboardTaskRecord,
   ActivityLogRecord,
-  DatabaseCleanupLogRecord,
-  DatabaseHealthSummary,
   PropertyReviewRecord,
   SecurityAuditLogRecord,
   BrandedEmailRecord,
@@ -5179,45 +5177,6 @@ export const rentalApi = {
       message: string;
     }>('/api/email/run-automated-checks', {
       method: 'POST',
-    });
-  },
-
-  getDatabaseMaintenance: async () => {
-    return await apiRequest<{
-      logs: DatabaseCleanupLogRecord[];
-      health: DatabaseHealthSummary;
-    }>('/api/database-maintenance');
-  },
-
-  runDatabaseMaintenance: async (data?: {
-    triggerType?: 'Automated Egress Guard' | 'Scheduled Maintenance' | 'Manual Admin Cleanup';
-    retentionLimitLogs?: number;
-    retentionLimitEmails?: number;
-  }) => {
-    return await apiRequest<{
-      success: boolean;
-      log: DatabaseCleanupLogRecord;
-      logs: DatabaseCleanupLogRecord[];
-      health: DatabaseHealthSummary;
-      message: string;
-    }>('/api/database-maintenance/run', {
-      method: 'POST',
-      body: JSON.stringify(data || {}),
-    });
-  },
-
-  updateDatabaseMaintenanceSettings: async (data: {
-    autoCleanupEnabled?: boolean;
-    retentionLimitLogs?: number;
-    retentionLimitEmails?: number;
-  }) => {
-    return await apiRequest<{
-      success: boolean;
-      health: DatabaseHealthSummary;
-      message: string;
-    }>('/api/database-maintenance/settings', {
-      method: 'PUT',
-      body: JSON.stringify(data),
     });
   },
 };

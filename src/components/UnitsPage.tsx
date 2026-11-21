@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { AnimatedCounter } from './AnimatedMetrics';
 import {
   Search,
@@ -28,6 +28,7 @@ interface UnitsPageProps {
   onUpdateUnitType: (id: string, unit: Partial<UnitTypeItem>) => Promise<void>;
   onDeleteUnitType: (id: string) => Promise<void>;
   globalSearch: string;
+  onGlobalSearchChange?: (val: string) => void;
 }
 
 export const UnitsPage: React.FC<UnitsPageProps> = ({
@@ -37,12 +38,22 @@ export const UnitsPage: React.FC<UnitsPageProps> = ({
   onUpdateUnitType,
   onDeleteUnitType,
   globalSearch,
+  onGlobalSearchChange,
 }) => {
   const [selectedId, setSelectedId] = useState<string>(unitTypes[0]?.id || '');
-  const [localSearch, setLocalSearch] = useState('');
+  const [localSearch, setLocalSearch] = useState(globalSearch || '');
   const [sortBy, setSortBy] = useState<'popular' | 'price-asc' | 'price-desc'>(
     'popular'
   );
+
+  useEffect(() => {
+    setLocalSearch(globalSearch || '');
+  }, [globalSearch]);
+
+  const handleSearchChange = (val: string) => {
+    setLocalSearch(val);
+    onGlobalSearchChange?.(val);
+  };
   const [typeFilter, setTypeFilter] = useState<string>('All');
   const [activeThumb, setActiveThumb] = useState<
     'main' | 'kitchen' | 'bath' | 'balcony'
@@ -72,7 +83,11 @@ export const UnitsPage: React.FC<UnitsPageProps> = ({
         !query ||
         u.name.toLowerCase().includes(query) ||
         u.property.toLowerCase().includes(query) ||
-        u.description.toLowerCase().includes(query);
+        u.description.toLowerCase().includes(query) ||
+        (u.bedrooms || '').toLowerCase().includes(query) ||
+        (u.variant || '').toLowerCase().includes(query) ||
+        String(u.monthlyRent || '').includes(query) ||
+        String(u.sizeSqm || '').includes(query);
       return matchesType && matchesQuery;
     })
     .sort((a, b) => {
@@ -169,10 +184,19 @@ export const UnitsPage: React.FC<UnitsPageProps> = ({
           <input
             type="text"
             value={localSearch}
-            onChange={(e) => setLocalSearch(e.target.value)}
-            placeholder="Search unit type, property, etc."
-            className="w-full pl-9 pr-4 py-2 rounded-xl bg-[#F4F8F6] text-[12.5px] text-[#17231E] placeholder-[#88948F] focus:outline-none focus:ring-2 focus:ring-[#D5F267]"
+            onChange={(e) => handleSearchChange(e.target.value)}
+            placeholder="Search unit type, property, bedrooms, rent..."
+            className="w-full pl-9 pr-8 py-2 rounded-xl bg-[#F4F8F6] text-[12.5px] text-[#17231E] placeholder-[#88948F] focus:outline-none focus:ring-2 focus:ring-[#D5F267]"
           />
+          {localSearch && (
+            <button
+              type="button"
+              onClick={() => handleSearchChange('')}
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#88948F] hover:text-[#17231E] cursor-pointer"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
 
         <div className="flex flex-wrap items-center gap-2.5">

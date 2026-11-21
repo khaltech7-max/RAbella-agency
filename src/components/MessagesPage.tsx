@@ -156,6 +156,8 @@ interface MessagesPageProps {
       }
     | undefined
   >;
+  globalSearch?: string;
+  onGlobalSearchChange?: (val: string) => void;
 }
 
 type SummaryFilterType = 'all' | 'upcoming' | 'sent' | 'overdue';
@@ -178,11 +180,22 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
   onSendBulkSms,
   onUpdateSmsSettings,
   onRunAutomatedSmsChecks,
+  globalSearch = '',
+  onGlobalSearchChange,
 }) => {
   // 1. Filter and search state
   const [activeSummaryFilter, setActiveSummaryFilter] = useState<SummaryFilterType>('all');
-  const [searchQuery, setSearchQuery] = useState('');
+  const [searchQuery, setSearchQuery] = useState(globalSearch || '');
   const [selectedTenantRefs, setSelectedTenantRefs] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    setSearchQuery(globalSearch || '');
+  }, [globalSearch]);
+
+  const handleSearchChange = (val: string) => {
+    setSearchQuery(val);
+    onGlobalSearchChange?.(val);
+  };
 
   // 2. Expand/collapse state for prefix groups (default: all expanded)
   const [collapsedPrefixes, setCollapsedPrefixes] = useState<Record<string, boolean>>({});
@@ -615,7 +628,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
   // 1. Search Query
   // 2. Active Clickable Summary Box Filter (All, Upcoming, Sent, Overdue)
   const filteredPrefixGroups = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
+    const q = (searchQuery || globalSearch).trim().toLowerCase();
 
     return prefixGroups
       .map((grp) => {
@@ -639,7 +652,10 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
               t.tenantRef.toLowerCase().includes(q) ||
               t.unitNumber.toLowerCase().includes(q) ||
               t.property.toLowerCase().includes(q) ||
-              t.phone.toLowerCase().includes(q);
+              t.phone.toLowerCase().includes(q) ||
+              (t.email || '').toLowerCase().includes(q) ||
+              (t.status || '').toLowerCase().includes(q) ||
+              (t.dueDate || '').toLowerCase().includes(q);
             if (!matches) return false;
           }
 
@@ -651,8 +667,8 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
           filteredTenants: matchingTenants,
         };
       })
-      .filter((grp) => grp.filteredTenants.length > 0 || !searchQuery);
-  }, [prefixGroups, activeSummaryFilter, searchQuery]);
+      .filter((grp) => grp.filteredTenants.length > 0 || !q);
+  }, [prefixGroups, activeSummaryFilter, searchQuery, globalSearch]);
 
   // Group selection helpers
   const toggleSelectTenant = (tenantRef: string) => {
@@ -1041,25 +1057,27 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
   };
 
   const filteredEmailLogs = useMemo(() => {
+    const activeQ = (searchQuery || globalSearch).trim().toLowerCase();
     return emailList.filter((em) => {
       const st = String(em.status || em.deliveryStatus || '').toLowerCase();
       const isFailed = st.includes('fail');
       if (emailStatusFilter === 'failed' && !isFailed) return false;
       if (emailStatusFilter === 'sent' && isFailed) return false;
-      if (searchQuery.trim()) {
-        const q = searchQuery.toLowerCase();
+      if (activeQ) {
         const match =
-          (em.recipientName || '').toLowerCase().includes(q) ||
-          (em.recipientEmail || '').toLowerCase().includes(q) ||
-          (em.tenantRef || '').toLowerCase().includes(q) ||
-          (em.propertyName || '').toLowerCase().includes(q) ||
-          (em.subject || '').toLowerCase().includes(q) ||
-          (em.templateType || '').toLowerCase().includes(q);
+          (em.recipientName || '').toLowerCase().includes(activeQ) ||
+          (em.recipientEmail || '').toLowerCase().includes(activeQ) ||
+          (em.tenantRef || '').toLowerCase().includes(activeQ) ||
+          (em.propertyName || '').toLowerCase().includes(activeQ) ||
+          (em.unitNumber || '').toLowerCase().includes(activeQ) ||
+          (em.subject || '').toLowerCase().includes(activeQ) ||
+          (em.templateType || '').toLowerCase().includes(activeQ) ||
+          st.includes(activeQ);
         if (!match) return false;
       }
       return true;
     });
-  }, [emailList, emailStatusFilter, searchQuery]);
+  }, [emailList, emailStatusFilter, searchQuery, globalSearch]);
 
   const emailMetrics = useMemo(() => {
     const total = emailList.length;
@@ -1347,14 +1365,14 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
           <input
             type="text"
             value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search tenant name, unit number, property, or phone..."
+            onChange={(e) => handleSearchChange(e.target.value)}
+            placeholder="Search tenant name, ref (A-001), unit, email, property, or phone..."
             className="w-full pl-9.5 pr-8 py-2.5 bg-[#F6F8F7] border border-[#DFE5E1] rounded-xl text-[13px] text-[#17231E] placeholder-[#8C9C93] focus:outline-none focus:border-[#145338] transition-colors"
           />
           {searchQuery && (
             <button
-              onClick={() => setSearchQuery('')}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-[#8C9C93] hover:text-[#17231E]"
+              onClick={() => handleSearchChange('')}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-[#8C9C93] hover:text-[#17231E] cursor-pointer"
             >
               <X className="w-3.5 h-3.5" />
             </button>
@@ -1463,7 +1481,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
             <button
               onClick={() => {
                 setActiveSummaryFilter('all');
-                setSearchQuery('');
+                handleSearchChange('');
               }}
               className="px-4 py-2 bg-[#17231E] text-white rounded-xl text-[12.5px] font-bold cursor-pointer"
             >

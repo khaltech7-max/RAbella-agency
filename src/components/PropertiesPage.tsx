@@ -46,6 +46,7 @@ interface PropertiesPageProps {
   onDeleteProperty: (id: string) => Promise<void>;
   onNavigate: (page: NavPageId) => void;
   globalSearch?: string;
+  onGlobalSearchChange?: (val: string) => void;
 }
 
 interface StagedImageItem {
@@ -69,9 +70,10 @@ export const PropertiesPage: React.FC<PropertiesPageProps> = ({
   onDeleteProperty,
   onNavigate,
   globalSearch = '',
+  onGlobalSearchChange,
 }) => {
   // Search & Filter state
-  const [searchTerm, setSearchTerm] = useState(globalSearch);
+  const [searchTerm, setSearchTerm] = useState(globalSearch || '');
   const [selectedPrefixFilter, setSelectedPrefixFilter] = useState<string>('ALL');
   const [selectedStatusFilter, setSelectedStatusFilter] = useState<string>('ALL');
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
@@ -108,10 +110,13 @@ export const PropertiesPage: React.FC<PropertiesPageProps> = ({
 
   // Sync globalSearch prop when changed externally
   useEffect(() => {
-    if (globalSearch) {
-      setSearchTerm(globalSearch);
-    }
+    setSearchTerm(globalSearch || '');
   }, [globalSearch]);
+
+  const handleSearchChange = (val: string) => {
+    setSearchTerm(val);
+    onGlobalSearchChange?.(val);
+  };
 
   // Keyboard navigation for Lightbox
   useEffect(() => {
@@ -165,14 +170,40 @@ export const PropertiesPage: React.FC<PropertiesPageProps> = ({
 
     // Filter by search and status first
     const filtered = properties.filter((p) => {
-      const term = searchTerm.trim().toLowerCase();
+      const term = (searchTerm || globalSearch).trim().toLowerCase();
+      const propNameLower = p.name.trim().toLowerCase();
+      const matchesTenantInProp =
+        Boolean(term) &&
+        tenants.some(
+          (t) =>
+            (t.propertyId === p.id || (t.property || '').trim().toLowerCase() === propNameLower) &&
+            (t.name.toLowerCase().includes(term) ||
+              t.tenantRef.toLowerCase().includes(term) ||
+              t.unitNumber.toLowerCase().includes(term) ||
+              (t.email || '').toLowerCase().includes(term) ||
+              (t.phone || '').toLowerCase().includes(term))
+        );
+      const matchesUnitInProp =
+        Boolean(term) &&
+        unitTypes.some(
+          (u) =>
+            (u.property || '').trim().toLowerCase() === propNameLower &&
+            (u.name.toLowerCase().includes(term) ||
+              (u.bedrooms || '').toLowerCase().includes(term) ||
+              (u.description || '').toLowerCase().includes(term))
+        );
+
       const matchesSearch =
         !term ||
         p.name.toLowerCase().includes(term) ||
         (p.propertyCode && p.propertyCode.toLowerCase().includes(term)) ||
         p.codePrefix.toLowerCase().includes(term) ||
         p.address.toLowerCase().includes(term) ||
-        p.manager.toLowerCase().includes(term);
+        p.manager.toLowerCase().includes(term) ||
+        (p.description || '').toLowerCase().includes(term) ||
+        (p.refRange || '').toLowerCase().includes(term) ||
+        matchesTenantInProp ||
+        matchesUnitInProp;
 
       const matchesStatus =
         selectedStatusFilter === 'ALL' ||
@@ -217,7 +248,7 @@ export const PropertiesPage: React.FC<PropertiesPageProps> = ({
       title: key === 'OTHER' ? 'Other Properties' : `${key} — Properties`,
       properties: groups[key],
     }));
-  }, [properties, searchTerm, selectedPrefixFilter, selectedStatusFilter]);
+  }, [properties, tenants, unitTypes, searchTerm, globalSearch, selectedPrefixFilter, selectedStatusFilter]);
 
   const toggleGroupCollapse = (prefix: string) => {
     setCollapsedGroups((prev) => ({
@@ -611,14 +642,14 @@ export const PropertiesPage: React.FC<PropertiesPageProps> = ({
             <input
               type="text"
               value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              placeholder="Search property by name, prefix, code, location or manager..."
-              className="w-full pl-9.5 pr-4 py-2.5 bg-[#F6F8F7] border border-[#DFE5E1] rounded-xl text-[13px] text-[#17231E] placeholder-[#8C9C93] focus:outline-none focus:border-[#145338] transition-colors"
+              onChange={(e) => handleSearchChange(e.target.value)}
+              placeholder="Search property, prefix, code, tenant (A-001), or manager..."
+              className="w-full pl-9.5 pr-8 py-2.5 bg-[#F6F8F7] border border-[#DFE5E1] rounded-xl text-[13px] text-[#17231E] placeholder-[#8C9C93] focus:outline-none focus:border-[#145338] transition-colors"
             />
             {searchTerm && (
               <button
-                onClick={() => setSearchTerm('')}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-[#8C9C93] hover:text-[#17231E]"
+                onClick={() => handleSearchChange('')}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-[#8C9C93] hover:text-[#17231E] cursor-pointer"
               >
                 <X className="w-3.5 h-3.5" />
               </button>

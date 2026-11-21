@@ -670,15 +670,25 @@ export const LayoutShell: React.FC<LayoutShellProps> = ({
 
           {/* Right Header Cluster: Search Bar + Chat + Bell + User Profile */}
           <div className="flex items-center gap-2.5 sm:gap-3.5 ml-auto shrink-0">
-            {/* Search Pill with Magnifying Glass on the Right */}
-            <div className="relative w-36 sm:w-56 md:w-64 lg:w-72">
+            {/* Search Pill with Magnifying Glass & Clear Button */}
+            <div className="relative w-40 sm:w-60 md:w-72 lg:w-80">
               <input
                 type="text"
                 value={globalSearch}
                 onChange={(e) => onGlobalSearchChange(e.target.value)}
-                placeholder="Search placeholder"
-                className="w-full pl-4 pr-9 py-2 sm:py-2.5 rounded-full bg-[#EBF0ED] border border-[#DEE6E0] text-[13px] text-[#17231E] placeholder-[#88968F] focus:outline-none focus:ring-1 focus:ring-[#D6F45A] focus:bg-white transition-all shadow-2xs"
+                placeholder="Search tenant, ref (A-001), unit, property..."
+                className="w-full pl-4 pr-14 py-2 sm:py-2.5 rounded-full bg-[#EBF0ED] border border-[#DEE6E0] text-[13px] text-[#17231E] placeholder-[#88968F] focus:outline-none focus:ring-1 focus:ring-[#D6F45A] focus:bg-white transition-all shadow-2xs"
               />
+              {globalSearch && (
+                <button
+                  type="button"
+                  onClick={() => onGlobalSearchChange('')}
+                  title="Clear global search"
+                  className="absolute right-8.5 top-1/2 -translate-y-1/2 p-1 rounded-full text-[#7A8881] hover:text-[#17231E] hover:bg-[#DDE5E0] transition-colors cursor-pointer"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
               <Search className="w-4 h-4 text-[#7A8881] absolute right-3.5 top-1/2 -translate-y-1/2 pointer-events-none stroke-[2]" />
             </div>
 

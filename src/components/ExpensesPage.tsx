@@ -43,6 +43,7 @@ interface ExpensesPageProps {
   onAddTransaction: (tx: Partial<ExpenseTransaction>) => Promise<void>;
   onDeleteTransaction: (id: string) => Promise<void>;
   globalSearch: string;
+  onGlobalSearchChange?: (val: string) => void;
 }
 
 export const ExpensesPage: React.FC<ExpensesPageProps> = ({
@@ -52,10 +53,20 @@ export const ExpensesPage: React.FC<ExpensesPageProps> = ({
   onAddTransaction,
   onDeleteTransaction,
   globalSearch,
+  onGlobalSearchChange,
 }) => {
   const prefersReducedMotion = useReducedMotion();
   const [breakdownTab, setBreakdownTab] = useState<'Income' | 'Expense'>('Expense');
-  const [search, setSearch] = useState('');
+  const [search, setSearch] = useState(globalSearch || '');
+
+  useEffect(() => {
+    setSearch(globalSearch || '');
+  }, [globalSearch]);
+
+  const handleSearchChange = (val: string) => {
+    setSearch(val);
+    onGlobalSearchChange?.(val);
+  };
   const [categoryFilter, setCategoryFilter] = useState('All');
   const [statusFilter, setStatusFilter] = useState('All');
   const [previewTx, setPreviewTx] = useState<ExpenseTransaction | null>(null);
@@ -86,7 +97,11 @@ export const ExpensesPage: React.FC<ExpensesPageProps> = ({
       !query ||
       t.expense.toLowerCase().includes(query) ||
       t.category.toLowerCase().includes(query) ||
-      t.property.toLowerCase().includes(query);
+      t.property.toLowerCase().includes(query) ||
+      (t.status || '').toLowerCase().includes(query) ||
+      (t.date || '').toLowerCase().includes(query) ||
+      (t.id || '').toLowerCase().includes(query) ||
+      String(t.amount || '').includes(query);
     return matchesCat && matchesStatus && matchesQuery;
   });
 
@@ -471,10 +486,19 @@ export const ExpensesPage: React.FC<ExpensesPageProps> = ({
               <input
                 type="text"
                 value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search expense"
-                className="pl-8 pr-3 py-2 rounded-xl bg-[#F4F8F6] text-[12px] text-[#17231E] placeholder-[#88948F] focus:outline-none w-52"
+                onChange={(e) => handleSearchChange(e.target.value)}
+                placeholder="Search expense, category, property..."
+                className="pl-8 pr-7 py-2 rounded-xl bg-[#F4F8F6] text-[12px] text-[#17231E] placeholder-[#88948F] focus:outline-none w-56"
               />
+              {search && (
+                <button
+                  type="button"
+                  onClick={() => handleSearchChange('')}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#88948F] hover:text-[#17231E] cursor-pointer"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
             </div>
 
             <div className="relative">

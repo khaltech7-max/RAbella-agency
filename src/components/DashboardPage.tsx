@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence, useReducedMotion } from 'motion/react';
 import {
   AnimatedCounter,
@@ -25,6 +25,7 @@ import {
   Trash2,
   Building2,
   MessageSquare,
+  X,
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -72,6 +73,7 @@ interface DashboardPageProps {
     comment?: string;
   }) => Promise<void>;
   globalSearch: string;
+  onGlobalSearchChange?: (val: string) => void;
   onSelectTenantRef: (tenantRef: string) => void;
   onNavigate: (page: NavPageId) => void;
 }
@@ -88,16 +90,26 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
   onDeleteTask,
   onAddReview,
   globalSearch,
+  onGlobalSearchChange,
   onSelectTenantRef,
   onNavigate,
 }) => {
   const prefersReducedMotion = useReducedMotion();
   const [revenueRange, setRevenueRange] = useState<'6m' | '12m'>('6m');
   const [collectionRange, setCollectionRange] = useState<'7d' | '14d'>('7d');
-  const [tableSearch, setTableSearch] = useState('');
+  const [tableSearch, setTableSearch] = useState(globalSearch || '');
   const [statusFilter, setStatusFilter] = useState<
     'All' | 'Paid' | 'Pending' | 'Overdue'
   >('All');
+
+  useEffect(() => {
+    setTableSearch(globalSearch || '');
+  }, [globalSearch]);
+
+  const handleSearchChange = (val: string) => {
+    setTableSearch(val);
+    onGlobalSearchChange?.(val);
+  };
 
   // Task Modal
   const [newTaskModalOpen, setNewTaskModalOpen] = useState(false);
@@ -127,17 +139,40 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
     revenueRange === '6m' ? analytics.revenueChart6M : analytics.revenueChart12M;
 
   const combinedSearch = (tableSearch || globalSearch).trim().toLowerCase();
-  const filteredPayments = payments.slice(0, 10).filter((item) => {
-    const matchesStatus = statusFilter === 'All' || item.status === statusFilter;
-    const matchesQuery =
+  const filteredPayments = payments
+    .filter((item) => {
+      const matchesStatus = statusFilter === 'All' || item.status === statusFilter;
+      const matchesQuery =
+        !combinedSearch ||
+        item.tenantName.toLowerCase().includes(combinedSearch) ||
+        item.tenantRef.toLowerCase().includes(combinedSearch) ||
+        item.paymentId.toLowerCase().includes(combinedSearch) ||
+        item.unitNumber.toLowerCase().includes(combinedSearch) ||
+        item.unitType.toLowerCase().includes(combinedSearch) ||
+        (item.property || '').toLowerCase().includes(combinedSearch) ||
+        (item.status || '').toLowerCase().includes(combinedSearch) ||
+        (item.dueDate || '').toLowerCase().includes(combinedSearch) ||
+        String(item.amount || '').includes(combinedSearch);
+      return matchesStatus && matchesQuery;
+    })
+    .slice(0, combinedSearch ? 50 : 10);
+
+  const filteredTasks = tasks.filter(
+    (tk) =>
       !combinedSearch ||
-      item.tenantName.toLowerCase().includes(combinedSearch) ||
-      item.tenantRef.toLowerCase().includes(combinedSearch) ||
-      item.paymentId.toLowerCase().includes(combinedSearch) ||
-      item.unitNumber.toLowerCase().includes(combinedSearch) ||
-      item.unitType.toLowerCase().includes(combinedSearch);
-    return matchesStatus && matchesQuery;
-  });
+      tk.title.toLowerCase().includes(combinedSearch) ||
+      tk.date.toLowerCase().includes(combinedSearch)
+  );
+
+  const filteredActivities = activities
+    .filter(
+      (act) =>
+        !combinedSearch ||
+        act.title.toLowerCase().includes(combinedSearch) ||
+        act.description.toLowerCase().includes(combinedSearch) ||
+        (act.tenantRef || '').toLowerCase().includes(combinedSearch)
+    )
+    .slice(0, combinedSearch ? 15 : 6);
 
   const handleAddTask = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -789,10 +824,19 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                 <input
                   type="text"
                   value={tableSearch}
-                  onChange={(e) => setTableSearch(e.target.value)}
+                  onChange={(e) => handleSearchChange(e.target.value)}
                   placeholder="Search tenant, ref (A-001), status, etc"
-                  className="pl-8 pr-3 py-1.5 rounded-xl bg-[#F4F8F6] text-[12px] text-[#17231E] placeholder-[#88948F] focus:outline-none focus:ring-2 focus:ring-[#D5F267] w-56"
+                  className="pl-8 pr-7 py-1.5 rounded-xl bg-[#F4F8F6] text-[12px] text-[#17231E] placeholder-[#88948F] focus:outline-none focus:ring-2 focus:ring-[#D5F267] w-56"
                 />
+                {tableSearch && (
+                  <button
+                    type="button"
+                    onClick={() => handleSearchChange('')}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#88948F] hover:text-[#17231E] cursor-pointer"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
               </div>
 
               <div className="relative">
@@ -1020,10 +1064,12 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
             </button>
           </div>
 
-          {tasks.length === 0 ? (
+          {filteredTasks.length === 0 ? (
             <div className="py-6 text-center">
               <p className="text-[11.5px] text-[#7A8681] mb-2">
-                No property tasks scheduled yet.
+                {tasks.length === 0
+                  ? 'No property tasks scheduled yet.'
+                  : 'No tasks match your search.'}
               </p>
               <button
                 onClick={() => setNewTaskModalOpen(true)}
@@ -1034,7 +1080,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
             </div>
           ) : (
             <div className="space-y-2.5">
-              {tasks.map((task) => (
+              {filteredTasks.map((task) => (
                 <div
                   key={task.id}
                   onClick={() => onToggleTask(task.id)}
@@ -1091,13 +1137,15 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
             </button>
           </div>
 
-          {activities.length === 0 ? (
+          {filteredActivities.length === 0 ? (
             <p className="py-6 text-center text-[11.5px] text-[#7A8681]">
-              Real-time database events (new leases, payments, work orders, expenses) will appear here automatically.
+              {activities.length === 0
+                ? 'Real-time database events (new leases, payments, work orders, expenses) will appear here automatically.'
+                : 'No recent activities match your search.'}
             </p>
           ) : (
             <div className="space-y-3.5">
-              {activities.slice(0, 6).map((act) => {
+              {filteredActivities.map((act) => {
                 const Icon = getActivityIcon(act.activityType);
                 const bg =
                   act.tone === 'lime' ? 'bg-[#DDF576]' : 'bg-[#D8F3E5]';

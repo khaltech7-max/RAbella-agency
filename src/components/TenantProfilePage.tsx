@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { AnimatedCounter } from './AnimatedMetrics';
 import {
   Search,
@@ -66,6 +66,8 @@ interface TenantProfilePageProps {
   onRecordTenantPayment: (tenantRef: string) => Promise<void>;
   onUpdateProperty?: (id: string, data: Partial<PropertyRecord>) => Promise<void>;
   onNavigate: (page: NavPageId) => void;
+  globalSearch?: string;
+  onGlobalSearchChange?: (val: string) => void;
 }
 
 export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
@@ -80,12 +82,23 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
   onRecordTenantPayment,
   onUpdateProperty,
   onNavigate,
+  globalSearch = '',
+  onGlobalSearchChange,
 }) => {
   // Global search & filter states
-  const [searchQuery, setSearchQuery] = useState('');
+  const [searchQuery, setSearchQuery] = useState(globalSearch || '');
   const [statusFilter, setStatusFilter] = useState<
     'all' | 'cleared' | 'due' | 'overdue'
   >('all');
+
+  useEffect(() => {
+    setSearchQuery(globalSearch || '');
+  }, [globalSearch]);
+
+  const handleSearchChange = (val: string) => {
+    setSearchQuery(val);
+    onGlobalSearchChange?.(val);
+  };
 
   // Expanded apartment sections state (default: all expanded)
   const [expandedApartments, setExpandedApartments] = useState<
@@ -278,56 +291,91 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
     return { groups, unassignedTenants };
   }, [properties, tenants]);
 
+  const activeSearchQuery = (searchQuery || globalSearch).trim().toLowerCase();
+
   // Filter and search logic across apartment groups
   const filteredApartmentGroups = useMemo(() => {
-    const query = searchQuery.trim().toLowerCase();
+    const query = activeSearchQuery;
 
-    return apartmentGroups.groups.map((group) => {
-      const filteredTenants = group.tenants.filter((tenant) => {
-        // Status filter
-        if (statusFilter === 'cleared') {
-          if (tenant.status !== 'Paid' || (tenant.rentBalance ?? 0) > 0) {
-            return false;
+    return apartmentGroups.groups
+      .map((group) => {
+        const propertyMatchesQuery =
+          Boolean(query) &&
+          (group.property.name.toLowerCase().includes(query) ||
+            group.prefix.toLowerCase() === query ||
+            `prefix ${group.prefix.toLowerCase()}`.includes(query) ||
+            (group.property.address || '').toLowerCase().includes(query) ||
+            (group.property.manager || '').toLowerCase().includes(query));
+
+        const filteredTenants = group.tenants.filter((tenant) => {
+          // Status filter
+          if (statusFilter === 'cleared') {
+            if (tenant.status !== 'Paid' || (tenant.rentBalance ?? 0) > 0) {
+              return false;
+            }
+          } else if (statusFilter === 'due') {
+            const isDue =
+              tenant.status === 'Pending' ||
+              ((tenant.rentBalance ?? 0) > 0 && tenant.status !== 'Overdue');
+            if (!isDue) return false;
+          } else if (statusFilter === 'overdue') {
+            const isOverdue =
+              tenant.status === 'Overdue' ||
+              ((tenant.rentBalance ?? 0) > 0 && tenant.status !== 'Paid');
+            if (!isOverdue) return false;
           }
-        } else if (statusFilter === 'due') {
-          const isDue =
-            tenant.status === 'Pending' ||
-            ((tenant.rentBalance ?? 0) > 0 && tenant.status !== 'Overdue');
-          if (!isDue) return false;
-        } else if (statusFilter === 'overdue') {
-          const isOverdue =
-            tenant.status === 'Overdue' ||
-            ((tenant.rentBalance ?? 0) > 0 && tenant.status !== 'Paid');
-          if (!isOverdue) return false;
-        }
 
-        // Search query
-        if (!query) return true;
+          // Search query
+          if (!query || propertyMatchesQuery) return true;
 
-        const nameMatch = tenant.name.toLowerCase().includes(query);
-        const refMatch = tenant.tenantRef.toLowerCase().includes(query);
-        const unitMatch = tenant.unitNumber.toLowerCase().includes(query);
-        const propMatch = tenant.property.toLowerCase().includes(query);
-        const phoneMatch = (tenant.phone || '').toLowerCase().includes(query);
-        const emailMatch = (tenant.email || '').toLowerCase().includes(query);
+          const nameMatch = tenant.name.toLowerCase().includes(query);
+          const refMatch = tenant.tenantRef.toLowerCase().includes(query);
+          const unitMatch = tenant.unitNumber.toLowerCase().includes(query);
+          const unitTypeMatch = (tenant.unitType || '').toLowerCase().includes(query);
+          const propMatch = tenant.property.toLowerCase().includes(query);
+          const phoneMatch = (tenant.phone || '').toLowerCase().includes(query);
+          const emailMatch = (tenant.email || '').toLowerCase().includes(query);
+          const statusMatch = (tenant.status || '').toLowerCase().includes(query);
+          const dueMatch = (tenant.dueDate || '').toLowerCase().includes(query);
+          const rentMatch = String(tenant.monthlyRent || '').includes(query);
 
-        return (
-          nameMatch ||
-          refMatch ||
-          unitMatch ||
-          propMatch ||
-          phoneMatch ||
-          emailMatch
-        );
-      });
+          return (
+            nameMatch ||
+            refMatch ||
+            unitMatch ||
+            unitTypeMatch ||
+            propMatch ||
+            phoneMatch ||
+            emailMatch ||
+            statusMatch ||
+            dueMatch ||
+            rentMatch
+          );
+        });
 
-      return {
-        ...group,
-        filteredTenants,
-        hasMatches: filteredTenants.length > 0 || !query,
-      };
+        return {
+          ...group,
+          filteredTenants,
+          hasMatches: filteredTenants.length > 0 || propertyMatchesQuery || !query,
+        };
+      })
+      .filter((group) => group.hasMatches);
+  }, [apartmentGroups, activeSearchQuery, statusFilter]);
+
+  const filteredUnassignedTenants = useMemo(() => {
+    const query = activeSearchQuery;
+    return apartmentGroups.unassignedTenants.filter((tenant) => {
+      if (!query) return true;
+      return (
+        tenant.name.toLowerCase().includes(query) ||
+        tenant.tenantRef.toLowerCase().includes(query) ||
+        tenant.unitNumber.toLowerCase().includes(query) ||
+        (tenant.property || '').toLowerCase().includes(query) ||
+        (tenant.phone || '').toLowerCase().includes(query) ||
+        (tenant.email || '').toLowerCase().includes(query)
+      );
     });
-  }, [apartmentGroups, searchQuery, statusFilter]);
+  }, [apartmentGroups.unassignedTenants, activeSearchQuery]);
 
   // Overall database totals
   const totalTenantsCount = tenants.length;
@@ -623,10 +671,19 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
           <input
             type="text"
             value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
+            onChange={(e) => handleSearchChange(e.target.value)}
             placeholder="Search tenant name, unit number, reference (A-001, B-002)..."
-            className="w-full pl-9 pr-3 py-2 rounded-xl bg-[#F5F7F6] border border-[#E7ECE9] text-xs text-[#172B25] placeholder-[#7B8983] focus:outline-none focus:ring-1 focus:ring-[#BFEF43]"
+            className="w-full pl-9 pr-8 py-2 rounded-xl bg-[#F5F7F6] border border-[#E7ECE9] text-xs text-[#172B25] placeholder-[#7B8983] focus:outline-none focus:ring-1 focus:ring-[#BFEF43]"
           />
+          {searchQuery && (
+            <button
+              type="button"
+              onClick={() => handleSearchChange('')}
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#7B8983] hover:text-[#172B25] cursor-pointer"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
 
         {/* Filters for All Tenants, Cleared, Rent Due, and Overdue */}
@@ -977,8 +1034,28 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
           );
         })}
 
+        {filteredApartmentGroups.length === 0 && filteredUnassignedTenants.length === 0 && (
+          <div className="bg-white rounded-2xl border border-[#E7ECE9] p-10 text-center space-y-2">
+            <p className="text-sm font-bold text-[#172B25]">
+              No tenants or apartments match &ldquo;{searchQuery || globalSearch}&rdquo;
+            </p>
+            <p className="text-xs text-[#7B8983]">
+              Try searching by tenant name, reference code (e.g. A-001), email, phone number, unit number, or apartment name.
+            </p>
+            {(searchQuery || globalSearch) && (
+              <button
+                type="button"
+                onClick={() => handleSearchChange('')}
+                className="mt-2 inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-[#BFEF43] text-[#172B25] text-xs font-bold cursor-pointer"
+              >
+                Clear Search
+              </button>
+            )}
+          </div>
+        )}
+
         {/* Unassigned / Historical Tenants (if any) */}
-        {apartmentGroups.unassignedTenants.length > 0 && (
+        {filteredUnassignedTenants.length > 0 && (
           <div className="bg-white rounded-2xl border border-[#E7ECE9] shadow-xs overflow-hidden">
             <div
               className="p-4 flex items-center justify-between cursor-pointer hover:bg-[#F5F7F6]"
@@ -998,7 +1075,7 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
                 </div>
               </div>
               <span className="text-xs font-bold text-[#172B25] tabular-nums">
-                {apartmentGroups.unassignedTenants.length} Tenant(s)
+                {filteredUnassignedTenants.length} Tenant(s)
               </span>
             </div>
           </div>

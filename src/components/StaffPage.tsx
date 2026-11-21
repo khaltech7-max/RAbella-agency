@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect } from 'react';
 import { AnimatedCounter } from './AnimatedMetrics';
 import {
   UserPlus,
@@ -26,12 +26,6 @@ import {
   Eye,
   AlertTriangle,
   ShieldAlert,
-  Database,
-  HardDrive,
-  Archive,
-  Download,
-  ChevronDown,
-  ChevronUp,
 } from 'lucide-react';
 import {
   UserSession,
@@ -42,13 +36,10 @@ import {
   SecurityAuditLogRecord,
   BrandedEmailRecord,
   ActivityLogRecord,
-  DatabaseCleanupLogRecord,
-  DatabaseHealthSummary,
   getRoleDisplayLabel,
   getRolePermissionsSummary,
   getAllowedPagesForRole,
 } from '../data/rentalData';
-import { rentalApi } from '../lib/apiClient';
 import { AvatarBadge } from './UnitIllustration';
 
 interface StaffPageProps {
@@ -138,6 +129,7 @@ interface StaffPageProps {
   onDeleteStaff: (id: string) => Promise<void>;
   onSwitchUserSession?: (role: UserRole, userId?: string) => Promise<void>;
   globalSearch?: string;
+  onGlobalSearchChange?: (val: string) => void;
 }
 
 const STAFF_ROLES: { value: UserRole; label: string; desc: string; defaultTitle: string }[] = [
@@ -282,8 +274,7 @@ type AccessCentreTab =
   | 'invitations'
   | 'permissions'
   | 'audit'
-  | 'emails'
-  | 'maintenance';
+  | 'emails';
 
 export const StaffPage: React.FC<StaffPageProps> = ({
   users,
@@ -301,14 +292,24 @@ export const StaffPage: React.FC<StaffPageProps> = ({
   onDeleteStaff,
   onSwitchUserSession,
   globalSearch = '',
+  onGlobalSearchChange,
 }) => {
   const [activeTab, setActiveTab] = useState<AccessCentreTab>('users');
-  const [searchQuery, setSearchQuery] = useState('');
+  const [searchQuery, setSearchQuery] = useState(globalSearch || '');
   const [roleFilter, setRoleFilter] = useState<string>('ALL');
   const [statusFilter, setStatusFilter] = useState<string>('ALL');
   const [invitationFilter, setInvitationFilter] = useState<
     'ALL' | 'Pending' | 'Accepted' | 'Expired' | 'Failed'
   >('ALL');
+
+  useEffect(() => {
+    setSearchQuery(globalSearch || '');
+  }, [globalSearch]);
+
+  const handleSearchChange = (val: string) => {
+    setSearchQuery(val);
+    onGlobalSearchChange?.(val);
+  };
 
   // Create Management Account Modal State
   const [inviteModalOpen, setInviteModalOpen] = useState(false);
@@ -345,18 +346,6 @@ export const StaffPage: React.FC<StaffPageProps> = ({
   // Branded Email Preview Modal State
   const [previewEmail, setPreviewEmail] = useState<BrandedEmailRecord | null>(null);
 
-  // Database Maintenance State
-  const [dbCleanupLogs, setDbCleanupLogs] = useState<DatabaseCleanupLogRecord[]>([]);
-  const [dbHealth, setDbHealth] = useState<DatabaseHealthSummary | null>(null);
-  const [dbLoading, setDbLoading] = useState(false);
-  const [dbRunningCleanup, setDbRunningCleanup] = useState(false);
-  const [dbActionFilter, setDbActionFilter] = useState<'ALL' | 'Removed' | 'Archived' | 'Trimmed'>('ALL');
-  const [dbTriggerFilter, setDbTriggerFilter] = useState<string>('ALL');
-  const [dbSearchQuery, setDbSearchQuery] = useState('');
-  const [expandedLogIds, setExpandedLogIds] = useState<Record<string, boolean>>({
-    'db-maint-001': true,
-  });
-
   // Action Notification Banner State
   const [actionNotice, setActionNotice] = useState<{
     title: string;
@@ -366,113 +355,6 @@ export const StaffPage: React.FC<StaffPageProps> = ({
     email?: string;
   } | null>(null);
   const [copiedToken, setCopiedToken] = useState(false);
-
-  const loadDatabaseMaintenanceData = useCallback(async () => {
-    setDbLoading(true);
-    try {
-      const res = await rentalApi.getDatabaseMaintenance();
-      if (Array.isArray(res?.logs)) {
-        setDbCleanupLogs(res.logs);
-      }
-      if (res?.health) {
-        setDbHealth(res.health);
-      }
-    } catch {
-      // ignore background error
-    } finally {
-      setDbLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void loadDatabaseMaintenanceData();
-  }, [loadDatabaseMaintenanceData]);
-
-  const handleRunManualCleanup = async () => {
-    setDbRunningCleanup(true);
-    try {
-      const res = await rentalApi.runDatabaseMaintenance({
-        triggerType: 'Manual Admin Cleanup',
-        retentionLimitLogs: dbHealth?.retentionLimitLogs || 50,
-        retentionLimitEmails: dbHealth?.retentionLimitEmails || 100,
-      });
-      if (Array.isArray(res?.logs)) {
-        setDbCleanupLogs(res.logs);
-      } else if (res?.log) {
-        setDbCleanupLogs((prev) => [res.log, ...prev]);
-      }
-      if (res?.health) {
-        setDbHealth(res.health);
-      }
-      if (res?.log?.id) {
-        setExpandedLogIds((prev) => ({ ...prev, [res.log.id]: true }));
-      }
-      setActionNotice({
-        title: 'Database Maintenance Cleanup Executed',
-        message:
-          res?.message ||
-          'Safe database cleanup completed. Core tenant, property, lease, and payment tables remain 100% intact.',
-      });
-    } finally {
-      setDbRunningCleanup(false);
-    }
-  };
-
-  const handleToggleAutoCleanup = async (nextEnabled: boolean) => {
-    try {
-      const res = await rentalApi.updateDatabaseMaintenanceSettings({
-        autoCleanupEnabled: nextEnabled,
-      });
-      if (res?.health) {
-        setDbHealth(res.health);
-      }
-      setActionNotice({
-        title: nextEnabled
-          ? 'Automated High-Usage Egress Guard Enabled'
-          : 'Automated High-Usage Egress Guard Paused',
-        message:
-          res?.message ||
-          `Automated cleanup is now ${nextEnabled ? 'enabled' : 'paused'}.`,
-      });
-    } catch {
-      // ignore
-    }
-  };
-
-  const handleExportCleanupLogsCsv = () => {
-    const headers = [
-      'Timestamp',
-      'Trigger Type',
-      'Executed By',
-      'Status',
-      'Total Rows Removed/Archived',
-      'Estimated Egress Saved (KB)',
-      'Tables & Actions Breakdown',
-      'Summary',
-    ];
-    const rows = dbCleanupLogs.map((log) => [
-      formatTimestamp(log.createdAt),
-      log.triggerType,
-      log.executedBy,
-      log.status,
-      String(log.totalRowsAffected),
-      `${log.estimatedEgressSavedKb} KB`,
-      log.tablesCleaned
-        .map((t) => `${t.table} (${t.action}: ${t.rowsAffected} rows, ${t.egressSavedKb} KB)`)
-        .join(' | '),
-      log.summary,
-    ]);
-    const csv = [headers, ...rows]
-      .map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(','))
-      .join('\n');
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `supabase-database-maintenance-logs-${new Date().toISOString().slice(0, 10)}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
 
   const combinedSearch = (searchQuery || globalSearch).trim().toLowerCase();
 
@@ -534,8 +416,54 @@ export const StaffPage: React.FC<StaffPageProps> = ({
   ).length;
 
   const filteredInvitations = allInvitedUsers.filter((u) => {
-    if (invitationFilter === 'ALL') return true;
-    return getInvitationStatus(u) === invitationFilter;
+    const matchesFilter =
+      invitationFilter === 'ALL' || getInvitationStatus(u) === invitationFilter;
+    const matchesSearch =
+      !combinedSearch ||
+      u.fullName.toLowerCase().includes(combinedSearch) ||
+      u.email.toLowerCase().includes(combinedSearch) ||
+      (u.assignedPropertyName || '').toLowerCase().includes(combinedSearch) ||
+      getRoleDisplayLabel(u.role, u.tenantRef).toLowerCase().includes(combinedSearch) ||
+      getInvitationStatus(u).toLowerCase().includes(combinedSearch);
+    return matchesFilter && matchesSearch;
+  });
+
+  const filteredRoles = STAFF_ROLES.filter((roleDef) => {
+    if (!combinedSearch) return true;
+    const perms = getRolePermissionsSummary(roleDef.value);
+    const allowedModules = getAllowedPagesForRole(roleDef.value);
+    return (
+      roleDef.label.toLowerCase().includes(combinedSearch) ||
+      roleDef.desc.toLowerCase().includes(combinedSearch) ||
+      roleDef.defaultTitle.toLowerCase().includes(combinedSearch) ||
+      perms.some((p) => p.toLowerCase().includes(combinedSearch)) ||
+      allowedModules.some((m) => m.toLowerCase().includes(combinedSearch))
+    );
+  });
+
+  const filteredSecurityLogs = securityLogs.filter((log) => {
+    if (!combinedSearch) return true;
+    return (
+      (log.eventType || '').toLowerCase().includes(combinedSearch) ||
+      (log.actorName || '').toLowerCase().includes(combinedSearch) ||
+      (log.actorRole || '').toLowerCase().includes(combinedSearch) ||
+      (log.targetEmail || '').toLowerCase().includes(combinedSearch) ||
+      (log.actorEmail || '').toLowerCase().includes(combinedSearch) ||
+      (log.portal || '').toLowerCase().includes(combinedSearch) ||
+      (log.status || '').toLowerCase().includes(combinedSearch) ||
+      (log.details || '').toLowerCase().includes(combinedSearch)
+    );
+  });
+
+  const filteredBrandedEmails = brandedEmails.filter((em) => {
+    if (!combinedSearch) return true;
+    return (
+      (em.recipientName || '').toLowerCase().includes(combinedSearch) ||
+      (em.recipientEmail || '').toLowerCase().includes(combinedSearch) ||
+      (em.subject || '').toLowerCase().includes(combinedSearch) ||
+      (em.templateType || '').toLowerCase().includes(combinedSearch) ||
+      (em.status || '').toLowerCase().includes(combinedSearch)
+    );
   });
 
   const pendingInviteUsers = allInvitedUsers;
@@ -846,18 +774,6 @@ export const StaffPage: React.FC<StaffPageProps> = ({
             <Mail className="w-3.5 h-3.5" />
             <span>Branded ARabella agency Emails ({brandedEmails.length})</span>
           </button>
-
-          <button
-            onClick={() => setActiveTab('maintenance')}
-            className={`px-3.5 py-2 rounded-xl text-[12px] font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
-              activeTab === 'maintenance'
-                ? 'bg-[#D5F267] text-[#17231E]'
-                : 'text-[#5A6762] hover:bg-[#F4F8F6] hover:text-[#17231E]'
-            }`}
-          >
-            <Database className="w-3.5 h-3.5" />
-            <span>Database Maintenance ({dbCleanupLogs.length})</span>
-          </button>
         </div>
 
         <button
@@ -936,10 +852,20 @@ export const StaffPage: React.FC<StaffPageProps> = ({
                 <input
                   type="text"
                   value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onChange={(e) => handleSearchChange(e.target.value)}
                   placeholder="Search name, title, email, property..."
-                  className="pl-8 pr-3 py-2 rounded-xl bg-[#F4F8F6] text-[12px] text-[#17231E] placeholder-[#88948F] focus:outline-none focus:ring-2 focus:ring-[#D5F267] w-56"
+                  className="pl-8 pr-7 py-2 rounded-xl bg-[#F4F8F6] text-[12px] text-[#17231E] placeholder-[#88948F] focus:outline-none focus:ring-2 focus:ring-[#D5F267] w-56"
                 />
+                {searchQuery && (
+                  <button
+                    type="button"
+                    onClick={() => handleSearchChange('')}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#88948F] hover:text-[#17231E] cursor-pointer"
+                    title="Clear search"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
               </div>
 
               {/* Role Filter */}
@@ -1628,7 +1554,7 @@ export const StaffPage: React.FC<StaffPageProps> = ({
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-            {STAFF_ROLES.map((roleDef) => {
+            {filteredRoles.map((roleDef) => {
               const allowedModules = getAllowedPagesForRole(roleDef.value);
               const perms = getRolePermissionsSummary(roleDef.value);
               return (
@@ -1701,17 +1627,19 @@ export const StaffPage: React.FC<StaffPageProps> = ({
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#EEF3F0] text-[12px]">
-                {securityLogs.length === 0 ? (
+                {filteredSecurityLogs.length === 0 ? (
                   <tr>
                     <td
                       colSpan={7}
                       className="py-10 text-center text-[#7A8681] text-[13px]"
                     >
-                      No security audit events recorded yet.
+                      {combinedSearch
+                        ? `No security audit events match "${searchQuery || globalSearch}".`
+                        : 'No security audit events recorded yet.'}
                     </td>
                   </tr>
                 ) : (
-                  securityLogs.map((log) => (
+                  filteredSecurityLogs.map((log) => (
                     <tr key={log.id} className="hover:bg-[#F9FBFA]">
                       <td className="py-3 px-3 text-[11px] text-[#6E7A75] whitespace-nowrap">
                         {formatTimestamp(log.createdAt)}
@@ -1785,17 +1713,19 @@ export const StaffPage: React.FC<StaffPageProps> = ({
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#EEF3F0] text-[12px]">
-                {brandedEmails.length === 0 ? (
+                {filteredBrandedEmails.length === 0 ? (
                   <tr>
                     <td
                       colSpan={6}
                       className="py-10 text-center text-[#7A8681] text-[13px]"
                     >
-                      No branded transactional emails dispatched yet. Create or invite a management account to preview the ARabella agency email template.
+                      {combinedSearch
+                        ? `No branded transactional emails match "${searchQuery || globalSearch}".`
+                        : 'No branded transactional emails dispatched yet. Create or invite a management account to preview the ARabella agency email template.'}
                     </td>
                   </tr>
                 ) : (
-                  brandedEmails.map((em) => (
+                  filteredBrandedEmails.map((em) => (
                     <tr key={em.id} className="hover:bg-[#F9FBFA]">
                       <td className="py-3 px-3 text-[11px] text-[#6E7A75] whitespace-nowrap">
                         {formatTimestamp(em.createdAt)}
@@ -1831,518 +1761,6 @@ export const StaffPage: React.FC<StaffPageProps> = ({
                 )}
               </tbody>
             </table>
-          </div>
-        </div>
-      )}
-
-      {/* TAB 6: DATABASE MAINTENANCE & AUTOMATED EGRESS CLEANUP LOGS */}
-      {activeTab === 'maintenance' && (
-        <div className="space-y-4">
-          {/* Header & Controls Card */}
-          <div className="bg-white rounded-2xl p-5 border border-[#E4ECE8] flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-            <div className="space-y-1">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="w-8 h-8 rounded-xl bg-[#D8F3E5] text-[#156943] flex items-center justify-center">
-                  <Database className="w-4 h-4" />
-                </span>
-                <h2 className="text-[16px] font-bold text-[#17231E]">
-                  Database Maintenance &amp; Automated Cleanup Activity Logs
-                </h2>
-                <span
-                  className={`px-2.5 py-0.5 rounded-lg text-[10.5px] font-bold border ${
-                    dbHealth?.autoCleanupEnabled !== false
-                      ? 'bg-[#D8F3E5] text-[#156943] border-[#B6E6CE]'
-                      : 'bg-[#FEF3C7] text-[#92400E] border-[#FDE68A]'
-                  }`}
-                >
-                  {dbHealth?.autoCleanupEnabled !== false
-                    ? 'Automated Egress Guard Active'
-                    : 'Automated Cleanup Paused'}
-                </span>
-              </div>
-              <p className="text-[11.5px] text-[#6E7A75]">
-                Tracks rows removed, trimmed, or archived during high-usage periods to keep Supabase egress low while{' '}
-                <strong className="text-[#156943]">
-                  100% preserving all Tenants, Properties, Units, Leases, and Rent Payments
-                </strong>
-                .
-              </p>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-2.5 shrink-0">
-              {/* Toggle Automated Egress Guard */}
-              <label className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-[#F4F8F6] border border-[#E4ECE8] text-[11.5px] font-bold text-[#17231E] cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={dbHealth?.autoCleanupEnabled !== false}
-                  onChange={(e) => handleToggleAutoCleanup(e.target.checked)}
-                  className="w-3.5 h-3.5 accent-[#156943] cursor-pointer"
-                />
-                <span>Auto High-Usage Cleanup</span>
-              </label>
-
-              <button
-                onClick={handleExportCleanupLogsCsv}
-                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-[#F4F8F6] hover:bg-[#E4ECE8] text-[#17231E] text-[11.5px] font-bold transition-colors cursor-pointer"
-              >
-                <Download className="w-3.5 h-3.5" />
-                Export Logs CSV
-              </button>
-
-              <button
-                onClick={handleRunManualCleanup}
-                disabled={dbRunningCleanup}
-                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#D5F267] hover:bg-[#c8e757] text-[#17231E] text-[12px] font-bold transition-colors cursor-pointer disabled:opacity-60"
-              >
-                <RefreshCw
-                  className={`w-3.5 h-3.5 ${dbRunningCleanup ? 'animate-spin' : ''}`}
-                />
-                {dbRunningCleanup ? 'Running Safe Cleanup...' : 'Run Safe Cleanup Now'}
-              </button>
-            </div>
-          </div>
-
-          {/* 4 Database Maintenance KPI Summary Cards */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-            <div className="rounded-2xl bg-[#D8F3E5] p-4 flex flex-col justify-between">
-              <div className="flex items-center justify-between">
-                <span className="text-[12px] font-semibold text-[#3C5A4B]">
-                  Rows Removed / Archived
-                </span>
-                <span className="w-8 h-8 rounded-xl bg-white/80 flex items-center justify-center text-[#156943]">
-                  <Archive className="w-4 h-4" />
-                </span>
-              </div>
-              <div className="mt-3 flex items-baseline justify-between">
-                <span className="text-[24px] font-extrabold text-[#17231E] font-mono-num">
-                  <AnimatedCounter
-                    value={
-                      dbHealth?.totalRowsCleanedAllTime ??
-                      dbCleanupLogs.reduce((s, l) => s + l.totalRowsAffected, 0)
-                    }
-                  />
-                </span>
-                <span className="text-[11px] font-bold text-[#156943]">
-                  Across {dbCleanupLogs.length} Cleanup Runs
-                </span>
-              </div>
-            </div>
-
-            <div className="rounded-2xl bg-white p-4 border border-[#E4ECE8] flex flex-col justify-between">
-              <div className="flex items-center justify-between">
-                <span className="text-[12px] font-semibold text-[#6E7A75]">
-                  Estimated Egress Saved
-                </span>
-                <span className="w-8 h-8 rounded-xl bg-[#F4F8F6] flex items-center justify-center text-[#156943]">
-                  <HardDrive className="w-4 h-4" />
-                </span>
-              </div>
-              <div className="mt-3 flex items-baseline justify-between">
-                <span className="text-[24px] font-extrabold text-[#17231E] font-mono-num">
-                  {(() => {
-                    const totalKb =
-                      dbHealth?.totalEgressSavedKbAllTime ??
-                      dbCleanupLogs.reduce((s, l) => s + l.estimatedEgressSavedKb, 0);
-                    return totalKb >= 1024
-                      ? `${(totalKb / 1024).toFixed(2)} MB`
-                      : `${totalKb} KB`;
-                  })()}
-                </span>
-                <span className="text-[11px] font-medium text-[#156943]">
-                  HTML, JSON &amp; Base64 Bloat
-                </span>
-              </div>
-            </div>
-
-            <div className="rounded-2xl bg-white p-4 border border-[#E4ECE8] flex flex-col justify-between">
-              <div className="flex items-center justify-between">
-                <span className="text-[12px] font-semibold text-[#6E7A75]">
-                  Core Business Records
-                </span>
-                <span className="w-8 h-8 rounded-xl bg-[#EAF7F0] flex items-center justify-center text-[#156943]">
-                  <Shield className="w-4 h-4" />
-                </span>
-              </div>
-              <div className="mt-3 flex items-baseline justify-between">
-                <span className="text-[22px] font-extrabold text-[#156943]">
-                  100% Protected
-                </span>
-                <span className="text-[11px] font-semibold text-[#5A6762]">
-                  Zero Tenant/Payment Loss
-                </span>
-              </div>
-            </div>
-
-            <div className="rounded-2xl bg-white p-4 border border-[#E4ECE8] flex flex-col justify-between">
-              <div className="flex items-center justify-between">
-                <span className="text-[12px] font-semibold text-[#6E7A75]">
-                  Last Automated Cleanup
-                </span>
-                <span className="w-8 h-8 rounded-xl bg-[#FEF3C7] flex items-center justify-center text-[#92400E]">
-                  <Clock className="w-4 h-4" />
-                </span>
-              </div>
-              <div className="mt-3 flex items-baseline justify-between gap-2">
-                <span className="text-[13px] font-extrabold text-[#17231E]">
-                  {formatTimestamp(dbHealth?.lastRunAt || dbCleanupLogs[0]?.createdAt)}
-                </span>
-                <span className="text-[10.5px] font-semibold text-[#156943] whitespace-nowrap">
-                  EAT Schedule
-                </span>
-              </div>
-            </div>
-          </div>
-
-          {/* Monitored Log Tables vs Protected Business Tables Grid */}
-          {dbHealth && (
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-              {/* Monitored Log Tables & Retention Policy */}
-              <div className="lg:col-span-7 bg-white rounded-2xl p-4 border border-[#E4ECE8]">
-                <div className="flex items-center justify-between mb-3">
-                  <div>
-                    <h3 className="text-[13.5px] font-bold text-[#17231E]">
-                      Monitored Log Tables &amp; High-Usage Retention Policy
-                    </h3>
-                    <p className="text-[11px] text-[#7A8681]">
-                      Only non-business telemetry, raw HTML email bodies, and skipped SMS logs are trimmed or archived.
-                    </p>
-                  </div>
-                  <span className="px-2.5 py-0.5 rounded-lg bg-[#F4F8F6] text-[#17231E] text-[10.5px] font-bold">
-                    Retention Guard
-                  </span>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                  {dbHealth.monitoredLogTables.map((tbl) => (
-                    <div
-                      key={tbl.table}
-                      className="p-3 rounded-xl bg-[#F8FAF9] border border-[#E4ECE8] flex flex-col justify-between gap-1.5"
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="font-mono-num text-[11.5px] font-bold text-[#17231E]">
-                          {tbl.table}
-                        </span>
-                        <span
-                          className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                            tbl.status === 'Healthy'
-                              ? 'bg-[#D8F3E5] text-[#156943]'
-                              : 'bg-[#FEF3C7] text-[#92400E]'
-                          }`}
-                        >
-                          {tbl.status}
-                        </span>
-                      </div>
-                      <p className="text-[11px] text-[#5A6762] font-medium">{tbl.label}</p>
-                      <div className="flex items-center justify-between pt-1 border-t border-[#E6ECE9] text-[10.5px]">
-                        <span className="text-[#6E7A75]">
-                          Policy: <strong className="text-[#17231E]">{tbl.actionPolicy}</strong>
-                        </span>
-                        <span className="font-mono-num font-bold text-[#156943]">
-                          {tbl.currentRows} / {tbl.retentionLimit} rows
-                        </span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* Protected Core Business Tables */}
-              <div className="lg:col-span-5 bg-white rounded-2xl p-4 border border-[#E4ECE8]">
-                <div className="flex items-center justify-between mb-3">
-                  <div>
-                    <h3 className="text-[13.5px] font-bold text-[#17231E]">
-                      Protected Core Business Tables (Never Deleted)
-                    </h3>
-                    <p className="text-[11px] text-[#7A8681]">
-                      Excluded from all automated cleanup jobs to guarantee zero data loss.
-                    </p>
-                  </div>
-                  <span className="px-2.5 py-0.5 rounded-lg bg-[#D8F3E5] text-[#156943] text-[10.5px] font-bold">
-                    Read-Only Guard
-                  </span>
-                </div>
-
-                <div className="grid grid-cols-2 gap-2">
-                  {dbHealth.protectedTables.map((pt) => (
-                    <div
-                      key={pt.table}
-                      className="p-2.5 rounded-xl bg-[#F4F8F6] border border-[#E4ECE8] flex items-center justify-between gap-2"
-                    >
-                      <div className="min-w-0">
-                        <p className="text-[11px] font-bold text-[#17231E] truncate">
-                          {pt.label}
-                        </p>
-                        <p className="font-mono-num text-[10px] text-[#6E7A75] truncate">
-                          {pt.table}
-                        </p>
-                      </div>
-                      <div className="text-right shrink-0">
-                        <span className="block font-mono-num text-[12px] font-extrabold text-[#156943]">
-                          {pt.count}
-                        </span>
-                        <span className="text-[9.5px] font-bold text-[#156943]">
-                          Intact
-                        </span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Automated Cleanup Activity Logs Table */}
-          <div className="bg-white rounded-2xl p-5 border border-[#E4ECE8] space-y-4">
-            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
-              <div>
-                <h3 className="text-[15px] font-bold text-[#17231E]">
-                  Recent Automated Cleanup Activity Logs
-                </h3>
-                <p className="text-[11.5px] text-[#7A8681]">
-                  Inspect exact rows removed, archived, or trimmed across each database table during high-usage periods.
-                </p>
-              </div>
-
-              <div className="flex flex-wrap items-center gap-2">
-                {/* Search logs */}
-                <div className="relative">
-                  <Search className="w-3.5 h-3.5 text-[#88948F] absolute left-3 top-1/2 -translate-y-1/2" />
-                  <input
-                    type="text"
-                    value={dbSearchQuery}
-                    onChange={(e) => setDbSearchQuery(e.target.value)}
-                    placeholder="Filter table, trigger, details..."
-                    className="pl-8 pr-3 py-1.5 rounded-xl bg-[#F4F8F6] text-[12px] text-[#17231E] placeholder-[#88948F] focus:outline-none focus:ring-2 focus:ring-[#D5F267] w-52"
-                  />
-                </div>
-
-                {/* Action Type Filter */}
-                <select
-                  value={dbActionFilter}
-                  onChange={(e) =>
-                    setDbActionFilter(
-                      e.target.value as 'ALL' | 'Removed' | 'Archived' | 'Trimmed'
-                    )
-                  }
-                  className="px-3 py-1.5 rounded-xl bg-[#F4F8F6] text-[12px] font-semibold text-[#17231E] cursor-pointer"
-                >
-                  <option value="ALL">All Actions (Removed / Archived / Trimmed)</option>
-                  <option value="Removed">Removed Rows Only</option>
-                  <option value="Archived">Archived Payloads Only</option>
-                  <option value="Trimmed">Trimmed Logs Only</option>
-                </select>
-
-                {/* Trigger Filter */}
-                <select
-                  value={dbTriggerFilter}
-                  onChange={(e) => setDbTriggerFilter(e.target.value)}
-                  className="px-3 py-1.5 rounded-xl bg-[#F4F8F6] text-[12px] font-semibold text-[#17231E] cursor-pointer"
-                >
-                  <option value="ALL">All Triggers</option>
-                  <option value="Automated Egress Guard">Automated Egress Guard</option>
-                  <option value="Scheduled Maintenance">Scheduled Maintenance</option>
-                  <option value="Manual Admin Cleanup">Manual Admin Cleanup</option>
-                </select>
-              </div>
-            </div>
-
-            {(() => {
-              const q = (dbSearchQuery || globalSearch).trim().toLowerCase();
-              const filteredLogs = dbCleanupLogs.filter((log) => {
-                const matchesTrigger =
-                  dbTriggerFilter === 'ALL' || log.triggerType === dbTriggerFilter;
-                const matchesAction =
-                  dbActionFilter === 'ALL' ||
-                  log.tablesCleaned.some((t) => t.action === dbActionFilter);
-                const matchesQuery =
-                  !q ||
-                  log.summary.toLowerCase().includes(q) ||
-                  log.triggerType.toLowerCase().includes(q) ||
-                  log.executedBy.toLowerCase().includes(q) ||
-                  log.tablesCleaned.some(
-                    (t) =>
-                      t.table.toLowerCase().includes(q) ||
-                      t.details.toLowerCase().includes(q) ||
-                      t.action.toLowerCase().includes(q)
-                  );
-                return matchesTrigger && matchesAction && matchesQuery;
-              });
-
-              if (dbLoading && filteredLogs.length === 0) {
-                return (
-                  <div className="py-10 text-center text-[13px] text-[#7A8681]">
-                    Loading automated database maintenance logs...
-                  </div>
-                );
-              }
-
-              if (filteredLogs.length === 0) {
-                return (
-                  <div className="py-10 text-center text-[13px] text-[#7A8681]">
-                    No database cleanup activity logs match the selected filter criteria.
-                  </div>
-                );
-              }
-
-              return (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left border-collapse">
-                    <thead>
-                      <tr className="border-b border-[#E6ECE9] text-[11px] font-bold text-[#7A8681] uppercase tracking-wider">
-                        <th className="py-3 px-3">Timestamp (EAT)</th>
-                        <th className="py-3 px-3">Cleanup Trigger &amp; Actor</th>
-                        <th className="py-3 px-3">Tables &amp; Rows Removed / Archived</th>
-                        <th className="py-3 px-3">Total Rows</th>
-                        <th className="py-3 px-3">Egress Saved</th>
-                        <th className="py-3 px-3">Status</th>
-                        <th className="py-3 px-3 text-right">Breakdown</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-[#EEF3F0] text-[12px]">
-                      {filteredLogs.map((log) => {
-                        const isExpanded = Boolean(expandedLogIds[log.id]);
-                        return (
-                          <React.Fragment key={log.id}>
-                            <tr className="hover:bg-[#F9FBFA] transition-colors">
-                              <td className="py-3.5 px-3 text-[11.5px] text-[#5A6762] whitespace-nowrap font-medium">
-                                {formatTimestamp(log.createdAt)}
-                              </td>
-                              <td className="py-3.5 px-3">
-                                <span
-                                  className={`inline-block px-2.5 py-0.5 rounded-lg text-[10.5px] font-bold ${
-                                    log.triggerType === 'Automated Egress Guard'
-                                      ? 'bg-[#D8F3E5] text-[#156943]'
-                                      : log.triggerType === 'Scheduled Maintenance'
-                                      ? 'bg-[#E1F3B8] text-[#124E0E]'
-                                      : 'bg-[#FEF3C7] text-[#92400E]'
-                                  }`}
-                                >
-                                  {log.triggerType}
-                                </span>
-                                <p className="text-[11px] text-[#6E7A75] mt-0.5">
-                                  By {log.executedBy}
-                                </p>
-                              </td>
-                              <td className="py-3.5 px-3">
-                                <div className="flex flex-wrap items-center gap-1.5">
-                                  {log.tablesCleaned.map((tbl, idx) => (
-                                    <span
-                                      key={`${log.id}-${tbl.table}-${idx}`}
-                                      className={`px-2 py-0.5 rounded-md border text-[10.5px] font-bold font-mono-num ${
-                                        tbl.action === 'Removed'
-                                          ? 'bg-[#FEE2E2] text-[#B91C1C] border-[#FECACA]'
-                                          : tbl.action === 'Archived'
-                                          ? 'bg-[#FEF3C7] text-[#92400E] border-[#FDE68A]'
-                                          : 'bg-[#D8F3E5] text-[#156943] border-[#B6E6CE]'
-                                      }`}
-                                    >
-                                      {tbl.table.replace('public.', '')}: {tbl.rowsAffected}{' '}
-                                      {tbl.action}
-                                    </span>
-                                  ))}
-                                </div>
-                                <p className="text-[11px] text-[#5A6762] mt-1 max-w-xl">
-                                  {log.summary}
-                                </p>
-                              </td>
-                              <td className="py-3.5 px-3 font-mono-num font-extrabold text-[#17231E]">
-                                {log.totalRowsAffected} rows
-                              </td>
-                              <td className="py-3.5 px-3 font-mono-num font-bold text-[#156943]">
-                                {log.estimatedEgressSavedKb >= 1024
-                                  ? `${(log.estimatedEgressSavedKb / 1024).toFixed(2)} MB`
-                                  : `${log.estimatedEgressSavedKb} KB`}
-                              </td>
-                              <td className="py-3.5 px-3">
-                                <span
-                                  className={`px-2.5 py-0.5 rounded-lg text-[10.5px] font-bold ${
-                                    log.status === 'Completed'
-                                      ? 'bg-[#D8F3E5] text-[#156943]'
-                                      : 'bg-[#F3F4F6] text-[#4B5563]'
-                                  }`}
-                                >
-                                  {log.status}
-                                </span>
-                              </td>
-                              <td className="py-3.5 px-3 text-right">
-                                <button
-                                  onClick={() =>
-                                    setExpandedLogIds((prev) => ({
-                                      ...prev,
-                                      [log.id]: !prev[log.id],
-                                    }))
-                                  }
-                                  className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl bg-[#F4F8F6] hover:bg-[#D5F267] text-[#17231E] text-[11px] font-bold cursor-pointer transition-colors"
-                                >
-                                  {isExpanded ? (
-                                    <>
-                                      <ChevronUp className="w-3.5 h-3.5" />
-                                      Hide Rows
-                                    </>
-                                  ) : (
-                                    <>
-                                      <ChevronDown className="w-3.5 h-3.5" />
-                                      Inspect Rows
-                                    </>
-                                  )}
-                                </button>
-                              </td>
-                            </tr>
-                            {isExpanded && (
-                              <tr className="bg-[#F8FAF9]">
-                                <td colSpan={7} className="p-4">
-                                  <div className="rounded-xl bg-white border border-[#E4ECE8] p-3.5 space-y-2.5">
-                                    <div className="flex items-center justify-between">
-                                      <span className="text-[11.5px] font-bold text-[#17231E]">
-                                        Per-Table Cleanup &amp; Archival Breakdown
-                                      </span>
-                                      <span className="text-[11px] text-[#156943] font-semibold">
-                                        ✓ Core Tenants, Properties, Leases &amp; Payments Untouched
-                                      </span>
-                                    </div>
-                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5">
-                                      {log.tablesCleaned.map((t, i) => (
-                                        <div
-                                          key={`${log.id}-detail-${i}`}
-                                          className="p-3 rounded-xl bg-[#F4F8F6] border border-[#E4ECE8] space-y-1"
-                                        >
-                                          <div className="flex items-center justify-between gap-2">
-                                            <span className="font-mono-num text-[11.5px] font-bold text-[#17231E]">
-                                              {t.table}
-                                            </span>
-                                            <span
-                                              className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                                                t.action === 'Removed'
-                                                  ? 'bg-[#FEE2E2] text-[#B91C1C]'
-                                                  : t.action === 'Archived'
-                                                  ? 'bg-[#FEF3C7] text-[#92400E]'
-                                                  : 'bg-[#D8F3E5] text-[#156943]'
-                                              }`}
-                                            >
-                                              {t.action} ({t.rowsAffected} rows)
-                                            </span>
-                                          </div>
-                                          <p className="text-[11px] text-[#46544E] leading-relaxed">
-                                            {t.details}
-                                          </p>
-                                          <p className="text-[10.5px] font-mono-num font-bold text-[#156943] pt-1">
-                                            Egress Reduction: ~{t.egressSavedKb} KB
-                                          </p>
-                                        </div>
-                                      ))}
-                                    </div>
-                                  </div>
-                                </td>
-                              </tr>
-                            )}
-                          </React.Fragment>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              );
-            })()}
           </div>
         </div>
       )}

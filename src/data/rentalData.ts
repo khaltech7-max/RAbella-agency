@@ -279,53 +279,6 @@ export interface ActivityLogRecord {
   tenantRef?: string;
 }
 
-export interface DatabaseCleanupTableAction {
-  table: string;
-  action: 'Removed' | 'Archived' | 'Trimmed';
-  rowsAffected: number;
-  egressSavedKb: number;
-  details: string;
-}
-
-export interface DatabaseCleanupLogRecord {
-  id: string;
-  triggerType:
-    | 'Automated Egress Guard'
-    | 'Scheduled Maintenance'
-    | 'Manual Admin Cleanup';
-  status: 'Completed' | 'No Bloat Found' | 'Warning';
-  totalRowsAffected: number;
-  estimatedEgressSavedKb: number;
-  tablesCleaned: DatabaseCleanupTableAction[];
-  summary: string;
-  executedBy: string;
-  createdAt: string;
-}
-
-export interface DatabaseHealthSummary {
-  autoCleanupEnabled: boolean;
-  retentionLimitLogs: number;
-  retentionLimitEmails: number;
-  lastRunAt: string;
-  nextScheduledRun: string;
-  protectedTables: {
-    table: string;
-    label: string;
-    count: number;
-    status: '100% Protected';
-  }[];
-  monitoredLogTables: {
-    table: string;
-    label: string;
-    currentRows: number;
-    retentionLimit: number;
-    actionPolicy: 'Remove Expired / Excess' | 'Archive Heavy HTML / JSON';
-    status: 'Healthy' | 'Near Limit' | 'Trimmed';
-  }[];
-  totalRowsCleanedAllTime: number;
-  totalEgressSavedKbAllTime: number;
-}
-
 export interface SecurityAuditLogRecord {
   id: string;
   eventType:
