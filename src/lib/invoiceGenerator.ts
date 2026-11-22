@@ -3,6 +3,8 @@ import {
   TenantProfile,
   SystemSettingsRecord,
   UserAppearancePreferences,
+  PayHeroPaybillMapping,
+  PayHeroTransactionRecord,
 } from '../data/rentalData';
 import { buildDesignedInvoicePdfBytes } from './pdfInvoiceBuilder';
 import {
@@ -139,6 +141,53 @@ export function getSystemBrandingForInvoices(): SystemInvoiceBranding {
   return cachedBranding;
 }
 
+const PAYHERO_CONTEXT_CACHE_KEY = 'rms_payhero_invoice_context_v1';
+let cachedPayHeroPaybills: PayHeroPaybillMapping[] = [];
+let cachedPayHeroTransactions: PayHeroTransactionRecord[] = [];
+
+export function setPayHeroInvoiceContext(
+  paybills?: PayHeroPaybillMapping[] | null,
+  transactions?: PayHeroTransactionRecord[] | null
+): void {
+  if (Array.isArray(paybills)) {
+    cachedPayHeroPaybills = paybills;
+  }
+  if (Array.isArray(transactions)) {
+    cachedPayHeroTransactions = transactions;
+  }
+  if (typeof window !== 'undefined') {
+    try {
+      window.localStorage.setItem(
+        PAYHERO_CONTEXT_CACHE_KEY,
+        JSON.stringify({
+          paybills: cachedPayHeroPaybills,
+          transactions: cachedPayHeroTransactions.slice(0, 100),
+        })
+      );
+    } catch {}
+  }
+}
+
+function getCachedPayHeroContext(): {
+  paybills: PayHeroPaybillMapping[];
+  transactions: PayHeroTransactionRecord[];
+} {
+  if (cachedPayHeroPaybills.length === 0 && cachedPayHeroTransactions.length === 0 && typeof window !== 'undefined') {
+    try {
+      const raw = window.localStorage.getItem(PAYHERO_CONTEXT_CACHE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed?.paybills)) cachedPayHeroPaybills = parsed.paybills;
+        if (Array.isArray(parsed?.transactions)) cachedPayHeroTransactions = parsed.transactions;
+      }
+    } catch {}
+  }
+  return {
+    paybills: cachedPayHeroPaybills,
+    transactions: cachedPayHeroTransactions,
+  };
+}
+
 export interface InvoiceDocumentData {
   invoiceNumber: string;
   issueDate: string;
@@ -273,9 +322,26 @@ export function buildInvoiceDataFromPayment(
   const amountPaid = financials.amountPaid;
   const grandTotal = financials.outstandingBalance;
 
+  const payheroCtx = getCachedPayHeroContext();
+  const propNameLower = String(inv.property || tenantProfile?.property || '').trim().toLowerCase();
+  const matchedPaybill =
+    payheroCtx.paybills.find(
+      (pb) =>
+        pb.status !== 'Inactive' &&
+        ((tenantProfile?.propertyId && pb.propertyId === tenantProfile.propertyId) ||
+          (propNameLower && String(pb.propertyName || '').trim().toLowerCase() === propNameLower))
+    ) ||
+    payheroCtx.paybills.find((pb) => pb.status !== 'Inactive' && pb.isDefault) ||
+    payheroCtx.paybills.find((pb) => pb.status !== 'Inactive');
+
+  const resolvedPaybillNumber = matchedPaybill?.paybillNumber || brand.paybillNumber;
+  const resolvedBankName = matchedPaybill?.paybillName
+    ? `${matchedPaybill.paybillName} (${brand.companyName})`
+    : brand.bankName;
+
   const defaultNotes =
     brand.footerNote ||
-    `Billing period: ${billingPeriodStartLabel} to ${billingPeriodEndLabel}. Payment is due on your monthly move-in anniversary (${dueDateLabel}). Kindly quote Account Ref ${cleanRef} on all M-Pesa PayBill (${brand.paybillNumber}) or Bank payments.`;
+    `Billing period: ${billingPeriodStartLabel} to ${billingPeriodEndLabel}. Payment is due on your monthly move-in anniversary (${dueDateLabel}). Kindly quote Account Ref ${cleanRef} on all M-Pesa PayBill (${resolvedPaybillNumber}) or Bank payments.`;
 
   return {
     invoiceNumber,
@@ -297,9 +363,9 @@ export function buildInvoiceDataFromPayment(
     companySubtitle: brand.companySubtitle,
     companyLogoUrl: brand.companyLogoUrl,
     showCompanyLogo: brand.showCompanyLogo,
-    bankName: brand.bankName,
-    bankAccount: `M-Pesa PayBill ${brand.paybillNumber} • Account: ${cleanRef}`,
-    paybillNumber: brand.paybillNumber,
+    bankName: resolvedBankName,
+    bankAccount: `M-Pesa PayBill ${resolvedPaybillNumber} • Account: ${cleanRef}`,
+    paybillNumber: resolvedPaybillNumber,
     website: brand.website,
     supportPhone: brand.supportPhone,
     supportEmail: brand.supportEmail,

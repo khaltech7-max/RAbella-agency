@@ -2,7 +2,7 @@
   "version": 2,
   "functions": {
     "api/index.ts": {
-      "includeFiles": "{server.ts,src/data/rentalData.ts,src/lib/smsService.ts,supabase/migrations/**}"
+      "includeFiles": "{server.ts,src/data/rentalData.ts,src/lib/smsService.ts,src/lib/anniversaryBilling.ts,src/lib/pdfInvoiceBuilder.ts,supabase/migrations/**}"
     }
   },
   "crons": [
