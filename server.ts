@@ -4663,12 +4663,23 @@ async function createApp() {
       ).catch(() => {});
 
       try {
-        await supabaseAdmin.from("staff_invitations").update({
+        await supabaseAdmin.from("staff_invitations").insert({
+          staff_id: createdProf.id,
+          email: cleanEmail,
+          role: staffRole,
+          job_title: cleanJobTitle,
+          assigned_property_id: resolvedPropId || null,
+          assigned_property_name: resolvedPropName,
+          token_hash: inviteToken,
+          status: inviteStatus,
+          expires_at: expiresIso,
+          invited_by: req.currentUser?.fullName || "Super Administrator",
           resend_id: resendId,
           delivery_status: deliveryStatus,
           delivered_at: nowIso,
           error_message: emailRes.resendResult?.error || null,
-        }).eq("staff_id", createdProf.id);
+          invite_url: effectiveInviteLink,
+        });
       } catch {}
 
       await logSecurityAudit("invite_sent", req.currentUser?.email || "super_admin", cleanEmail, getRoleLabel(staffRole), "management", getClientIp(req), `Created ${getRoleLabel(staffRole)} account for ${cleanName} (${cleanEmail}) assigned to ${resolvedPropName}. Resend delivery status: ${deliveryStatus} (ID: ${resendId || "none"}).`, isFailed ? "warning" : "info");
