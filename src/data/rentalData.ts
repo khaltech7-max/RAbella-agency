@@ -9,7 +9,8 @@ export type NavPageId =
   | 'expenses'
   | 'invoices'
   | 'reports'
-  | 'staff';
+  | 'staff'
+  | 'settings';
 
 export type UserRole =
   | 'super_admin'
@@ -449,6 +450,279 @@ export interface SmsNotificationSettings {
   updatedAt?: string;
 }
 
+export interface GeneralSystemSettings {
+  companyName: string;
+  companyTagline: string;
+  companyLogoUrl: string;
+  faviconUrl: string;
+  businessEmail: string;
+  businessPhone: string;
+  businessAddress: string;
+  city: string;
+  county: string;
+  country: string;
+  defaultCurrency: string;
+  currencySymbol: string;
+  timezone: string;
+  dateFormat: string;
+  timeFormat: '12h' | '24h';
+  language: string;
+  fiscalYearStart: string;
+}
+
+export interface AppearanceDefaultSettings {
+  defaultTheme: 'light' | 'dark' | 'system';
+  primaryColor: string;
+  accentColor: string;
+  secondaryAccentColor: string;
+  sidebarDefaultExpanded: boolean;
+  layoutDensity: 'comfortable' | 'compact';
+  fontFamily: string;
+  showDashboardRatings: boolean;
+  showDashboardTasks: boolean;
+  enableAnimations: boolean;
+}
+
+export interface PropertyConfigSettings {
+  autoGenerateCodePrefix: boolean;
+  unitNumberingFormat: string;
+  defaultUnitVariant: 'standard' | 'deluxe' | 'suite' | 'family' | 'single';
+  defaultMonthlyRent: number;
+  defaultUtilityPackage: number;
+  defaultMaintenanceFee: number;
+  defaultParkingFee: number;
+  propertyCategories: string[];
+  autoSyncOccupancy: boolean;
+  requireManagerAssignment: boolean;
+}
+
+export interface TenantConfigSettings {
+  autoReferenceFormat: string;
+  requireNationalId: boolean;
+  requireEmail: boolean;
+  requirePhone: boolean;
+  requireEmergencyContact: boolean;
+  requireVehicleInfo: boolean;
+  enableTenantPortal: boolean;
+  allowTenantMaintenanceRequests: boolean;
+  allowTenantReceiptDownload: boolean;
+  autoWelcomeSms: boolean;
+  autoWelcomeEmail: boolean;
+  defaultTenantTier: 'Platinum Tenant' | 'Verified Tenant' | 'New Resident';
+}
+
+export interface PayHeroPaymentSettings {
+  provider: 'PayHero';
+  environment: 'sandbox' | 'production';
+  accountId: string;
+  channelId: string;
+  defaultPaybillNumber: string;
+  accountReferenceFormat: 'TENANT_REF' | 'UNIT_NUMBER' | 'PROPERTY_CODE_UNIT';
+  accountReferencePrefix: string;
+  callbackUrl: string;
+  enableManualC2bNotification: boolean;
+  autoReconcileExactReference: boolean;
+  autoConfirmOnCallback: boolean;
+  allowPartialPayments: boolean;
+  autoReceiptOnConfirm: boolean;
+  failedPaymentRetryNotify: boolean;
+  gracePeriodDays: number;
+  lateFeePercentage: number;
+  apiCredentialsConfigured?: boolean;
+  maskedApiUsername?: string;
+}
+
+export interface PayHeroPaybillMapping {
+  id: string;
+  paybillNumber: string;
+  paybillName: string;
+  channelId: string;
+  accountType: 'PayBill' | 'Till Number' | 'Bank PayBill';
+  propertyId: string;
+  propertyName: string;
+  codePrefix: string;
+  accountReferenceFormat: 'TENANT_REF' | 'UNIT_NUMBER' | 'PROPERTY_CODE_UNIT';
+  isDefault: boolean;
+  status: 'Active' | 'Inactive';
+  notes: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface PayHeroTransactionRecord {
+  id: string;
+  transactionReference: string;
+  mpesaReceiptNumber: string;
+  paybillNumber: string;
+  channelId: string;
+  accountReference: string;
+  tenantRef: string;
+  tenantName: string;
+  propertyName: string;
+  unitNumber: string;
+  payerPhone: string;
+  payerName: string;
+  amount: number;
+  status: 'Completed' | 'Pending' | 'Failed';
+  reconciliationStatus: 'Reconciled' | 'Unmatched Account' | 'Partial Payment' | 'Duplicate';
+  source: 'C2B Callback' | 'Manual C2B Entry' | 'STK Push';
+  paymentId?: string;
+  notes?: string;
+  processedBy: string;
+  createdAt: string;
+}
+
+export interface NotificationMasterSettings {
+  enableEmailNotifications: boolean;
+  enableSmsNotifications: boolean;
+  rentUpcomingDaysBefore: number;
+  sendOnDueDate: boolean;
+  overdueReminderFrequencyDays: number;
+  sendPaymentConfirmation: boolean;
+  leaseExpiryNoticeDays: number[];
+  notifyManagerOnMaintenance: boolean;
+  notifyTenantOnMaintenanceUpdate: boolean;
+  preferredSendHourEat: string;
+  quietHoursStart: string;
+  quietHoursEnd: string;
+}
+
+export interface LeaseAgreementSettings {
+  defaultLeaseDurationMonths: number;
+  autoRenewalEnabled: boolean;
+  renewalNoticeDays: number;
+  defaultSecurityDepositMonths: number;
+  vacateNoticePeriodDays: number;
+  agreementNumberPrefix: string;
+  defaultPaymentMethod: string;
+  standardLeaseTerms: string;
+}
+
+export interface InvoiceReceiptSettings {
+  invoicePrefix: string;
+  receiptPrefix: string;
+  defaultDueDayOfMonth: number;
+  enableVat: boolean;
+  vatRatePercentage: number;
+  taxPinNumber: string;
+  receiptFooterNote: string;
+  showCompanyLogoOnReceipt: boolean;
+  showVerificationQrBadge: boolean;
+  autoGenerateMonthlyInvoices: boolean;
+}
+
+export interface MaintenanceServiceProvider {
+  name: string;
+  specialty: string;
+  phone: string;
+}
+
+export interface MaintenanceWorkflowSettings {
+  categories: string[];
+  defaultPriority: 'Low' | 'Medium' | 'High';
+  autoApproveThresholdKes: number;
+  requireManagerApprovalAboveThreshold: boolean;
+  notifyAssignedTechnician: boolean;
+  notifyTenantOnCompletion: boolean;
+  serviceProviders: MaintenanceServiceProvider[];
+}
+
+export interface SecurityPolicySettings {
+  minPasswordLength: number;
+  requireUppercase: boolean;
+  requireNumbers: boolean;
+  requireSpecialChars: boolean;
+  sessionTimeoutMinutes: number;
+  maxFailedLoginAttempts: number;
+  lockoutDurationMinutes: number;
+  enforce2faForAdmins: boolean;
+  logAllLoginAttempts: boolean;
+  logAllSettingsChanges: boolean;
+  securityAlertEmail: string;
+}
+
+export interface BackupConfigSettings {
+  autoBackupSchedule: 'daily' | 'weekly' | 'manual';
+  backupRetentionDays: number;
+  includeAuditLogs: boolean;
+  includePaymentHistory: boolean;
+  lastBackupAt?: string | null;
+  lastBackupBy?: string | null;
+}
+
+export interface SystemSettingsRecord {
+  id: string;
+  general: GeneralSystemSettings;
+  appearanceDefaults: AppearanceDefaultSettings;
+  property: PropertyConfigSettings;
+  tenant: TenantConfigSettings;
+  payment: PayHeroPaymentSettings;
+  notifications: NotificationMasterSettings;
+  lease: LeaseAgreementSettings;
+  invoice: InvoiceReceiptSettings;
+  maintenance: MaintenanceWorkflowSettings;
+  security: SecurityPolicySettings;
+  backup: BackupConfigSettings;
+  updatedBy: string;
+  updatedAt: string;
+}
+
+export interface UserAppearancePreferences {
+  userId: string;
+  userEmail?: string;
+  themeMode: 'light' | 'dark' | 'system';
+  accentTheme: 'lime' | 'emerald' | 'teal' | 'amber';
+  primaryColor: string;
+  accentColor: string;
+  layoutDensity: 'comfortable' | 'compact';
+  sidebarMode: 'collapsed' | 'expanded';
+  fontScale: 'small' | 'normal' | 'large';
+  fontFamily: 'Plus Jakarta Sans' | 'DM Sans' | 'Manrope' | 'Outfit';
+  compactTables: boolean;
+  reducedMotion: boolean;
+  dashboardLayout: {
+    showRatings: boolean;
+    showTasks: boolean;
+    showActivities: boolean;
+    defaultChartRange: '6M' | '12M';
+  };
+  updatedAt?: string;
+}
+
+export interface IntegrationStatusSummary {
+  payhero: {
+    configured: boolean;
+    environment: 'sandbox' | 'production';
+    accountId: string;
+    defaultPaybill: string;
+    mappedPaybillsCount: number;
+    callbackUrl: string;
+    transactionsCount: number;
+  };
+  resend: {
+    configured: boolean;
+    fromEmail: string;
+    senderName: string;
+    masterEnabled: boolean;
+    dispatchedCount: number;
+  };
+  sms: {
+    configured: boolean;
+    provider: string;
+    senderId: string;
+    environment: 'sandbox' | 'production';
+    masterEnabled: boolean;
+    dispatchedCount: number;
+  };
+  database: {
+    engine: string;
+    liveSupabase: boolean;
+    rlsEnabled: boolean;
+    tablesCount: number;
+    status: 'Healthy' | 'Degraded';
+  };
+}
+
 export interface PropertyReviewRecord {
   id: string;
   propertyName: string;
@@ -544,6 +818,7 @@ export function getAllowedPagesForRole(role: UserRole): NavPageId[] {
         'expenses',
         'reports',
         'staff',
+        'settings',
       ];
     case 'property_manager':
       return [
@@ -557,16 +832,17 @@ export function getAllowedPagesForRole(role: UserRole): NavPageId[] {
         'invoices',
         'expenses',
         'reports',
+        'settings',
       ];
     case 'accountant':
-      return ['dashboard', 'payments', 'invoices', 'expenses', 'reports'];
+      return ['dashboard', 'payments', 'invoices', 'expenses', 'reports', 'settings'];
     case 'caretaker':
-      return ['dashboard', 'properties', 'units', 'maintenance'];
+      return ['dashboard', 'properties', 'units', 'maintenance', 'settings'];
     case 'maintenance_staff':
-      return ['dashboard', 'maintenance'];
+      return ['dashboard', 'maintenance', 'settings'];
     case 'tenant':
     default:
-      return ['dashboard', 'payments', 'tenants', 'maintenance', 'messages', 'invoices'];
+      return ['dashboard', 'payments', 'tenants', 'maintenance', 'messages', 'invoices', 'settings'];
   }
 }
 

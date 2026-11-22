@@ -882,7 +882,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
   // Open single tenant reminder modal
   const openSingleReminderModal = (tenant: any) => {
     setSingleReminderTenant(tenant);
-    setSingleReminderChannel('both');
+    setSingleReminderChannel(tenant?.email && String(tenant.email).includes('@') ? 'email' : 'both');
     setSingleEmailTriggerType(tenant.status === 'Overdue' ? 'rent_overdue' : 'rent_upcoming_3d');
     const amt =
       tenant.rentBalance > 0
@@ -905,55 +905,85 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
       const sendSmsNow = singleReminderChannel === 'sms' || singleReminderChannel === 'both';
       const sendEmailNow = singleReminderChannel === 'email' || singleReminderChannel === 'both';
 
-      if (sendSmsNow && onSendSms) {
-        const res: any = await onSendSms({
-          tenantId: singleReminderTenant.id,
-          tenantRef: singleReminderTenant.tenantRef,
-          tenantName: singleReminderTenant.tenantName,
-          recipientPhone: singleReminderTenant.phone,
-          propertyName: singleReminderTenant.property,
-          unitNumber: singleReminderTenant.unitNumber,
-          triggerType: singleReminderTenant.status === 'Overdue' ? 'rent_overdue' : 'rent_due_soon',
-          messageBody: singleMessageText.trim(),
-          forceSend: true,
-        });
+      let smsSucceeded = false;
+      let smsErrorMsg = '';
+      let emailSucceeded = false;
+      let emailErrorMsg = '';
 
-        if (res && res.success === false && !sendEmailNow) {
-          throw new Error(res.message || res.log?.errorMessage || 'SMS delivery failed');
+      if (sendSmsNow && onSendSms) {
+        try {
+          const res: any = await onSendSms({
+            tenantId: singleReminderTenant.id,
+            tenantRef: singleReminderTenant.tenantRef,
+            tenantName: singleReminderTenant.tenantName,
+            recipientPhone: singleReminderTenant.phone,
+            propertyName: singleReminderTenant.property,
+            unitNumber: singleReminderTenant.unitNumber,
+            triggerType: singleReminderTenant.status === 'Overdue' ? 'rent_overdue' : 'rent_due_soon',
+            messageBody: singleMessageText.trim(),
+            forceSend: true,
+          });
+          if (res && res.success === false) {
+            smsErrorMsg = res.message || res.log?.errorMessage || 'SMS delivery failed';
+          } else {
+            smsSucceeded = true;
+          }
+        } catch (smsErr: any) {
+          smsErrorMsg = smsErr?.message || 'SMS request failed';
         }
       }
 
       if (sendEmailNow) {
-        const emailRes = await emailApi.sendEmailReminder({
-          tenantId: singleReminderTenant.id,
-          tenantRef: singleReminderTenant.tenantRef,
-          tenantName: singleReminderTenant.tenantName,
-          recipientEmail: singleReminderTenant.email,
-          propertyName: singleReminderTenant.property,
-          unitNumber: singleReminderTenant.unitNumber,
-          triggerType: singleEmailTriggerType,
-          amountDue:
-            singleReminderTenant.rentBalance > 0
-              ? singleReminderTenant.rentBalance
-              : singleReminderTenant.monthlyRent,
-          dueDate: singleReminderTenant.dueDate || '5th of this month',
-          customBody: singleMessageText.trim(),
-          forceSend: true,
-        });
-        if (emailRes?.log) {
-          setEmailList((prev) => [emailRes.log!, ...prev.filter((e) => e.id !== emailRes.log!.id)]);
-          if (onBrandedEmailsChange) {
-            onBrandedEmailsChange((prev) => [emailRes.log!, ...prev.filter((e) => e.id !== emailRes.log!.id)]);
+        try {
+          const emailRes = await emailApi.sendEmailReminder({
+            tenantId: singleReminderTenant.id,
+            tenantRef: singleReminderTenant.tenantRef,
+            tenantName: singleReminderTenant.tenantName,
+            recipientEmail: singleReminderTenant.email,
+            propertyName: singleReminderTenant.property,
+            unitNumber: singleReminderTenant.unitNumber,
+            triggerType: singleEmailTriggerType,
+            amountDue:
+              singleReminderTenant.rentBalance > 0
+                ? singleReminderTenant.rentBalance
+                : singleReminderTenant.monthlyRent,
+            dueDate: singleReminderTenant.dueDate || '5th of this month',
+            customBody: singleMessageText.trim(),
+            forceSend: true,
+          });
+          if (emailRes?.log) {
+            setEmailList((prev) => [emailRes.log!, ...prev.filter((e) => e.id !== emailRes.log!.id)]);
+            if (onBrandedEmailsChange) {
+              onBrandedEmailsChange((prev) => [emailRes.log!, ...prev.filter((e) => e.id !== emailRes.log!.id)]);
+            }
           }
+          if (emailRes?.success) {
+            emailSucceeded = true;
+          } else {
+            emailErrorMsg = emailRes?.message || 'Email delivery failed';
+          }
+        } catch (emailErr: any) {
+          emailErrorMsg = emailErr?.message || 'Email request failed';
         }
-        if (!emailRes.success && !sendSmsNow) {
-          throw new Error(emailRes.message || 'Email delivery failed');
-        }
+      }
+
+      if (sendEmailNow && !sendSmsNow && !emailSucceeded) {
+        throw new Error(emailErrorMsg || 'Email delivery failed');
+      }
+      if (sendSmsNow && !sendEmailNow && !smsSucceeded) {
+        throw new Error(smsErrorMsg || 'SMS delivery failed');
+      }
+      if (sendSmsNow && sendEmailNow && !smsSucceeded && !emailSucceeded) {
+        throw new Error(emailErrorMsg || smsErrorMsg || 'Reminder delivery failed');
       }
 
       setToastMessage(
         singleReminderChannel === 'both'
-          ? `SMS & Resend Email reminder dispatched to ${singleReminderTenant.tenantName}`
+          ? emailSucceeded && smsSucceeded
+            ? `SMS & Resend Email reminder dispatched to ${singleReminderTenant.tenantName}`
+            : emailSucceeded
+            ? `Resend Email reminder dispatched to ${singleReminderTenant.tenantName} (${singleReminderTenant.email})`
+            : `SMS reminder sent to ${singleReminderTenant.tenantName} (${singleReminderTenant.phone})`
           : singleReminderChannel === 'email'
           ? `Resend Email reminder dispatched to ${singleReminderTenant.tenantName} (${singleReminderTenant.email})`
           : `SMS reminder sent to ${singleReminderTenant.tenantName} (${singleReminderTenant.phone})`

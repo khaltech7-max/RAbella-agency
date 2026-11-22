@@ -1,15 +1,249 @@
 @import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
 
 @layer base {
   :root {
-    font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+    --rms-font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+    --rms-accent: #D5F267;
+    --rms-primary: #17231E;
+    --rms-bg: #EEF3F0;
+    --rms-card: #FFFFFF;
+    --rms-surface: #F4F8F6;
+    --rms-border: #E4ECE8;
+    --rms-text: #17231E;
+    --rms-muted: #6E7A75;
+    color-scheme: light;
+    font-family: var(--rms-font-family);
+  }
+
+  html.dark {
+    --rms-bg: #0B1411;
+    --rms-card: #121F1A;
+    --rms-surface: #182922;
+    --rms-border: #233830;
+    --rms-text: #ECF4F0;
+    --rms-muted: #98ADA3;
+    color-scheme: dark;
   }
 
   body {
-    background-color: #EEF3F0;
-    color: #17231E;
+    background-color: var(--rms-bg);
+    color: var(--rms-text);
+    font-family: var(--rms-font-family);
     font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    transition: background-color 180ms ease-out, color 180ms ease-out;
   }
+}
+
+/* ============================================================================
+   UNLAYERED GLOBAL APPEARANCE RULES (Overrides Tailwind @layer utilities)
+   ============================================================================ */
+
+html[data-font-scale="small"] {
+  font-size: 14.5px !important;
+}
+html[data-font-scale="normal"] {
+  font-size: 16px !important;
+}
+html[data-font-scale="large"] {
+  font-size: 17.25px !important;
+}
+
+/* Compact layout density refinements */
+html[data-density="compact"] table td,
+html[data-density="compact"] table th {
+  padding-top: 0.42rem !important;
+  padding-bottom: 0.42rem !important;
+}
+
+/* ============================================================================
+   DARK MODE THEME ENGINE (html.dark)
+   Applies consistently across LayoutShell, Dashboard, Properties, Units,
+   Tenants, Payments, Reminders, Maintenance, Invoices, Expenses, Staff & Settings
+   ============================================================================ */
+
+/* 1. App Canvas & Page Backgrounds */
+html.dark,
+html.dark body,
+html.dark .bg-\[\#EEF3F0\] {
+  background-color: #0B1411 !important;
+  color: #ECF4F0 !important;
+}
+
+/* 2. Primary Cards, Modals, Sidebar & Panels */
+html.dark .bg-white,
+html.dark .bg-white\/80,
+html.dark .bg-white\/90,
+html.dark .bg-white\/95 {
+  background-color: #121F1A !important;
+}
+
+/* 3. Secondary Surfaces, Inputs, Table Headers & Hover States */
+html.dark .bg-\[\#F4F8F6\],
+html.dark .bg-\[\#F5F7F6\],
+html.dark .bg-\[\#F8FAF9\],
+html.dark .bg-\[\#F0F4F2\],
+html.dark .bg-\[\#FAFBFB\],
+html.dark .bg-\[\#F9FBFA\],
+html.dark .bg-\[\#F6F8F7\],
+html.dark .bg-\[\#FAFCFB\],
+html.dark .bg-\[\#EBF0ED\],
+html.dark .bg-\[\#EAF0EC\],
+html.dark .bg-\[\#F4FAF6\],
+html.dark .bg-\[\#EAF4EE\],
+html.dark .bg-\[\#EAF2ED\],
+html.dark .bg-\[\#E7ECE9\],
+html.dark .bg-\[\#E4ECE8\] {
+  background-color: #182922 !important;
+}
+
+html.dark .hover\:bg-\[\#F4F8F6\]:hover,
+html.dark .hover\:bg-\[\#F9FBFA\]:hover,
+html.dark .hover\:bg-\[\#EAF4EE\]:hover,
+html.dark .hover\:bg-\[\#EAF2ED\]:hover,
+html.dark .hover\:bg-\[\#EEF3F0\]:hover,
+html.dark .hover\:bg-\[\#E4ECE8\]:hover,
+html.dark .hover\:bg-\[\#DEE7E1\]:hover {
+  background-color: #1F352C !important;
+}
+
+/* 4. Borders, Dividers & Rings */
+html.dark .border-\[\#E4ECE8\],
+html.dark .border-\[\#E7ECE9\],
+html.dark .border-\[\#E6ECE9\],
+html.dark .border-\[\#DFE5E1\],
+html.dark .border-\[\#EEF3F0\],
+html.dark .border-\[\#EAEFEA\],
+html.dark .border-\[\#D8DFDB\],
+html.dark .border-\[\#E5EAE7\],
+html.dark .border-\[\#DEE6E0\],
+html.dark .border-\[\#CDEEE0\],
+html.dark .border-\[\#B6E6CE\] {
+  border-color: #233830 !important;
+}
+
+html.dark .divide-\[\#EEF3F0\] > :not([hidden]) ~ :not([hidden]),
+html.dark .divide-\[\#E7ECE9\] > :not([hidden]) ~ :not([hidden]),
+html.dark .divide-\[\#E4ECE8\] > :not([hidden]) ~ :not([hidden]) {
+  border-color: #1F332B !important;
+}
+
+/* 5. Primary Headings & Body Text */
+html.dark .text-\[\#17231E\],
+html.dark .text-\[\#172B25\],
+html.dark .text-\[\#172B23\],
+html.dark .text-\[\#111C21\],
+html.dark .text-\[\#2C4438\],
+html.dark .text-\[\#2C3E35\] {
+  color: #ECF4F0 !important;
+}
+
+/* 6. Secondary & Muted Text */
+html.dark .text-\[\#5A6762\],
+html.dark .text-\[\#7B8983\],
+html.dark .text-\[\#7A8681\],
+html.dark .text-\[\#6E7A75\],
+html.dark .text-\[\#88948F\],
+html.dark .text-\[\#4A5D52\],
+html.dark .text-\[\#46544E\],
+html.dark .text-\[\#3B4D43\],
+html.dark .text-\[\#76827D\],
+html.dark .text-\[\#697B71\],
+html.dark .text-\[\#55695E\],
+html.dark .text-\[\#8C9C93\],
+html.dark .text-\[\#84918B\],
+html.dark .text-\[\#7A8881\],
+html.dark .text-\[\#5B6B63\] {
+  color: #9BB0A5 !important;
+}
+
+/* 7. Brighten Forest Emerald Accent Text on Dark Surfaces */
+html.dark .text-\[\#145338\],
+html.dark .text-\[\#156943\] {
+  color: #4ADE80 !important;
+}
+
+/* 8. Form Controls (Inputs, Selects, Textareas) */
+html.dark input:not([type="checkbox"]):not([type="radio"]),
+html.dark select,
+html.dark textarea {
+  background-color: #172721 !important;
+  border-color: #263D34 !important;
+  color: #ECF4F0 !important;
+}
+
+html.dark input::placeholder,
+html.dark textarea::placeholder {
+  color: #6E857A !important;
+}
+
+/* 9. Preserve High-Contrast Dark Ink Inside Bright Accent Buttons & Pastel Badges */
+html.dark .bg-\[\#D5F267\],
+html.dark .bg-\[\#D6F45A\],
+html.dark .bg-\[\#BFEF43\],
+html.dark .bg-\[\#c8e755\] {
+  background-color: var(--rms-accent) !important;
+  color: #111C17 !important;
+}
+
+html.dark .bg-\[\#D5F267\] *,
+html.dark .bg-\[\#D6F45A\] *,
+html.dark .bg-\[\#BFEF43\] * {
+  color: #111C17 !important;
+}
+
+/* Emerald / Mint Status Badges in Dark Mode */
+html.dark .bg-\[\#D8F3E5\],
+html.dark .bg-\[\#E9F8EF\] {
+  background-color: rgba(21, 105, 67, 0.28) !important;
+  color: #6EE7B7 !important;
+  border-color: rgba(110, 231, 183, 0.25) !important;
+}
+
+/* Crimson / Error Status Badges in Dark Mode */
+html.dark .bg-\[\#FDE6E6\],
+html.dark .bg-\[\#FEE2E2\] {
+  background-color: rgba(185, 28, 28, 0.25) !important;
+  color: #FCA5A5 !important;
+  border-color: rgba(252, 165, 165, 0.25) !important;
+}
+html.dark .text-\[\#B91C1C\] {
+  color: #F87171 !important;
+}
+
+/* Amber / Pending Status Badges in Dark Mode */
+html.dark .bg-\[\#FEF3C7\] {
+  background-color: rgba(217, 119, 6, 0.24) !important;
+  color: #FCD34D !important;
+}
+html.dark .text-\[\#92400E\] {
+  color: #FBBF24 !important;
+}
+
+/* Dark Charcoal Buttons (bg-[#17231E]) in Dark Mode */
+html.dark button.bg-\[\#17231E\],
+html.dark a.bg-\[\#17231E\] {
+  background-color: #1F352C !important;
+  border: 1px solid #2E4B3F !important;
+  color: #D5F267 !important;
+}
+
+/* ============================================================================
+   CUSTOM BRAND ACCENT THEME OVERRIDES (Lime, Emerald, Teal, Amber)
+   ============================================================================ */
+html[data-accent-theme="emerald"] .bg-\[\#D5F267\],
+html[data-accent-theme="emerald"] .bg-\[\#D6F45A\] {
+  background-color: #6EE7B7 !important;
+}
+
+html[data-accent-theme="teal"] .bg-\[\#D5F267\],
+html[data-accent-theme="teal"] .bg-\[\#D6F45A\] {
+  background-color: #5EEAD4 !important;
+}
+
+html[data-accent-theme="amber"] .bg-\[\#D5F267\],
+html[data-accent-theme="amber"] .bg-\[\#D6F45A\] {
+  background-color: #FCD34D !important;
 }
 
 .tabular-nums {
@@ -21,7 +255,7 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* Subtle custom scrollbars matching the pale sage theme */
+/* Subtle custom scrollbars matching the active theme */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -32,6 +266,9 @@
 ::-webkit-scrollbar-thumb {
   background: #CBD8D1;
   border-radius: 9999px;
+}
+html.dark ::-webkit-scrollbar-thumb {
+  background: #284037;
 }
 ::-webkit-scrollbar-thumb:hover {
   background: #A8BDB2;
@@ -114,4 +351,3 @@ div.fixed.inset-0.z-50 > form {
     transform: none !important;
   }
 }
-

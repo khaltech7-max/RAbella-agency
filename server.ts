@@ -103,6 +103,7 @@ const RLS_ALIGNMENT_SQL_PATH = path.resolve(process.cwd(), "supabase", "migratio
 const EMAIL_REMINDER_SQL_PATH = path.resolve(process.cwd(), "supabase", "migrations", "009_email_reminder_automation.sql");
 const SMS_DELIVERY_TRACKING_SQL_PATH = path.resolve(process.cwd(), "supabase", "migrations", "010_sms_settings_and_delivery_tracking.sql");
 const TENANT_EDIT_SYNC_SQL_PATH = path.resolve(process.cwd(), "supabase", "migrations", "012_tenant_due_date_and_edit_sync.sql");
+const COMPLETE_SETTINGS_SQL_PATH = path.resolve(process.cwd(), "supabase", "migrations", "014_complete_settings_and_payhero.sql");
 const UPLOADS_DIR = isServerless ? path.resolve('/tmp', 'uploads', 'property-images') : path.resolve(process.cwd(), "public", "uploads", "property-images");
 try {
   fs.mkdirSync(UPLOADS_DIR, { recursive: true });
@@ -126,7 +127,12 @@ const supabaseUrl = pickValidServerEnv(process.env.SUPABASE_URL, process.env.VIT
 const supabaseServiceKey = pickValidServerEnv(process.env.SUPABASE_SERVICE_ROLE_KEY, process.env.VITE_SUPABASE_ANON_KEY, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY, process.env.SUPABASE_ANON_KEY);
 const isSupabaseLive = Boolean(supabaseUrl && supabaseServiceKey && supabaseUrl.startsWith("http"));
 const supabaseAdmin = isSupabaseLive ? createClient(supabaseUrl, supabaseServiceKey, { auth: { persistSession: false, autoRefreshToken: false } }) : null;
-let pg;
+let pg: any = {
+  isStub: true,
+  waitReady: Promise.resolve(),
+  query: async () => ({ rows: [], rowCount: 0 }),
+  exec: async () => [],
+};
 
 let supabaseQuotaRestrictedUntil = 0;
 const SUPABASE_QUOTA_BACKOFF_MS = 5 * 60 * 1e3;
@@ -777,6 +783,9 @@ async function initPostgresDatabase() {
     const tenantEditSyncSql = safeReadSqlFile(TENANT_EDIT_SYNC_SQL_PATH);
     if (tenantEditSyncSql) await executeMigrationSql(tenantEditSyncSql);
 
+    const completeSettingsSql = safeReadSqlFile(COMPLETE_SETTINGS_SQL_PATH);
+    if (completeSettingsSql) await executeMigrationSql(completeSettingsSql);
+
     await pg.exec(`
       INSERT INTO public.profiles (id, email, password_hash, full_name, role, job_title, assigned_property_name, account_status, avatar_bg)
       VALUES
@@ -793,6 +802,12 @@ async function initPostgresDatabase() {
         ('100726ca-a767-47b5-b4e3-c8039d3ecb44', 'A', 'POTRO', 'Nairobi, Kenya', 10, 2, 70000, 'Peterson Ochieng', 5.00, 'deluxe'),
         ('0c463757-bf3f-44a6-b901-e1aa23659a82', 'B', 'KIAMBU APARTMENT', 'Kiambu, Kenya', 10, 1, 35000, 'Peterson Ochieng', 5.00, 'deluxe')
       ON CONFLICT (name) DO NOTHING;
+
+      INSERT INTO public.payhero_paybills (id, paybill_number, paybill_name, channel_id, account_type, property_id, property_name, code_prefix, account_reference_format, is_default, status, notes)
+      VALUES
+        ('pb-potro-default', '4098871', 'PayHero M-Pesa PayBill — POTRO', 'CH-101', 'PayBill', '100726ca-a767-47b5-b4e3-c8039d3ecb44', 'POTRO', 'A', 'TENANT_REF', TRUE, 'Active', 'Primary PayBill for POTRO apartments (Account Ref: A-001, A-002...)'),
+        ('pb-kiambu-02', '4098872', 'PayHero M-Pesa PayBill — KIAMBU APARTMENT', 'CH-102', 'PayBill', '0c463757-bf3f-44a6-b901-e1aa23659a82', 'KIAMBU APARTMENT', 'B', 'TENANT_REF', FALSE, 'Active', 'Dedicated PayBill for KIAMBU APARTMENT (Account Ref: B-001, B-002...)')
+      ON CONFLICT (id) DO NOTHING;
 
       INSERT INTO public.unit_types (id, property_id, property_name, name, variant, size_sqm, bedrooms, max_tenants, monthly_rent, occupied_count, total_count, status, description, long_description, features, amenities)
       VALUES
@@ -6979,6 +6994,1317 @@ async function createApp() {
       console.warn("[SMS Webhook Notice]", err?.message);
       return res.status(200).json({ received: false, error: err?.message });
     }
+  });
+
+  // ============================================================================
+  // COMPLETE SYSTEM SETTINGS, USER PREFERENCES & PAYHERO MULTI-PAYBILL MODULE
+  // ============================================================================
+  const DEFAULT_SYSTEM_SETTINGS = {
+    id: "default",
+    general: {
+      companyName: "ARabella agency",
+      companyTagline: "Rental Management System",
+      companyLogoUrl: "",
+      faviconUrl: "",
+      businessEmail: "ochiengpeterson507@gmail.com",
+      businessPhone: "+254 700 000 000",
+      businessAddress: "Westlands Commercial Center, Nairobi, Kenya",
+      city: "Nairobi",
+      county: "Nairobi County",
+      country: "Kenya",
+      defaultCurrency: "KES",
+      currencySymbol: "KSh",
+      timezone: "Africa/Nairobi",
+      dateFormat: "MMM DD, YYYY",
+      timeFormat: "12h",
+      language: "en-KE",
+      fiscalYearStart: "January"
+    },
+    appearanceDefaults: {
+      defaultTheme: "light",
+      primaryColor: "#17231E",
+      accentColor: "#D5F267",
+      secondaryAccentColor: "#156943",
+      sidebarDefaultExpanded: false,
+      layoutDensity: "comfortable",
+      fontFamily: "Plus Jakarta Sans",
+      showDashboardRatings: true,
+      showDashboardTasks: true,
+      enableAnimations: true
+    },
+    property: {
+      autoGenerateCodePrefix: true,
+      unitNumberingFormat: "Unit 101",
+      defaultUnitVariant: "deluxe",
+      defaultMonthlyRent: 35000,
+      defaultUtilityPackage: 2500,
+      defaultMaintenanceFee: 1500,
+      defaultParkingFee: 1000,
+      propertyCategories: [
+        "Residential Apartments",
+        "Gated Community",
+        "Commercial & Mixed-Use",
+        "Executive Suites",
+        "Student Housing"
+      ],
+      autoSyncOccupancy: true,
+      requireManagerAssignment: true
+    },
+    tenant: {
+      autoReferenceFormat: "PREFIX-001",
+      requireNationalId: true,
+      requireEmail: true,
+      requirePhone: true,
+      requireEmergencyContact: false,
+      requireVehicleInfo: false,
+      enableTenantPortal: true,
+      allowTenantMaintenanceRequests: true,
+      allowTenantReceiptDownload: true,
+      autoWelcomeSms: true,
+      autoWelcomeEmail: true,
+      defaultTenantTier: "Verified Tenant"
+    },
+    payment: {
+      provider: "PayHero",
+      environment: "production",
+      accountId: process.env.PAYHERO_ACCOUNT_ID || "PH-KE-88412",
+      channelId: process.env.PAYHERO_DEFAULT_CHANNEL_ID || "CH-101",
+      defaultPaybillNumber: "4098871",
+      accountReferenceFormat: "TENANT_REF",
+      accountReferencePrefix: "",
+      callbackUrl: `${process.env.APP_URL && !process.env.APP_URL.includes("MY_APP_URL") ? process.env.APP_URL : ""}/api/webhooks/payhero`,
+      enableManualC2bNotification: true,
+      autoReconcileExactReference: true,
+      autoConfirmOnCallback: true,
+      allowPartialPayments: true,
+      autoReceiptOnConfirm: true,
+      failedPaymentRetryNotify: true,
+      gracePeriodDays: 5,
+      lateFeePercentage: 0,
+      apiCredentialsConfigured: Boolean(
+        (process.env.PAYHERO_API_USERNAME && !process.env.PAYHERO_API_USERNAME.includes("your_payhero")) ||
+        (process.env.PAYHERO_BASIC_AUTH_TOKEN && !process.env.PAYHERO_BASIC_AUTH_TOKEN.includes("your_payhero"))
+      ),
+      maskedApiUsername: process.env.PAYHERO_API_USERNAME && !process.env.PAYHERO_API_USERNAME.includes("your_payhero")
+        ? `${process.env.PAYHERO_API_USERNAME.slice(0, 4)}••••`
+        : "Server-Managed API Key"
+    },
+    notifications: {
+      enableEmailNotifications: true,
+      enableSmsNotifications: true,
+      rentUpcomingDaysBefore: 3,
+      sendOnDueDate: true,
+      overdueReminderFrequencyDays: 3,
+      sendPaymentConfirmation: true,
+      leaseExpiryNoticeDays: [30, 7],
+      notifyManagerOnMaintenance: true,
+      notifyTenantOnMaintenanceUpdate: true,
+      preferredSendHourEat: "08:00",
+      quietHoursStart: "21:00",
+      quietHoursEnd: "06:30"
+    },
+    lease: {
+      defaultLeaseDurationMonths: 12,
+      autoRenewalEnabled: false,
+      renewalNoticeDays: 30,
+      defaultSecurityDepositMonths: 1,
+      vacateNoticePeriodDays: 30,
+      agreementNumberPrefix: "LS-",
+      defaultPaymentMethod: "M-Pesa Paybill / Bank Transfer",
+      standardLeaseTerms: "Rent is payable monthly in advance on or before the agreed due date quoting the assigned Tenant Reference Code (e.g., A-001)."
+    },
+    invoice: {
+      invoicePrefix: "INV-",
+      receiptPrefix: "PAY-",
+      defaultDueDayOfMonth: 5,
+      enableVat: false,
+      vatRatePercentage: 16,
+      taxPinNumber: "P051889234K",
+      receiptFooterNote: "Thank you for choosing ARabella agency. This is an officially verified digital rent receipt.",
+      showCompanyLogoOnReceipt: true,
+      showVerificationQrBadge: true,
+      autoGenerateMonthlyInvoices: true
+    },
+    maintenance: {
+      categories: [
+        "Plumbing & Water",
+        "Electrical & Power",
+        "HVAC & Ventilation",
+        "Structural & Carpentry",
+        "Appliances",
+        "Painting & Masonry",
+        "Security & Locks",
+        "General Inspection"
+      ],
+      defaultPriority: "Medium",
+      autoApproveThresholdKes: 5000,
+      requireManagerApprovalAboveThreshold: true,
+      notifyAssignedTechnician: true,
+      notifyTenantOnCompletion: true,
+      serviceProviders: [
+        { name: "In-House Facilities Team", specialty: "General & Plumbing", phone: "+254 711 000 111" },
+        { name: "Metro Electrical Services", specialty: "Electrical & Backup Power", phone: "+254 722 000 222" }
+      ]
+    },
+    security: {
+      minPasswordLength: 8,
+      requireUppercase: true,
+      requireNumbers: true,
+      requireSpecialChars: false,
+      sessionTimeoutMinutes: 480,
+      maxFailedLoginAttempts: 5,
+      lockoutDurationMinutes: 15,
+      enforce2faForAdmins: true,
+      logAllLoginAttempts: true,
+      logAllSettingsChanges: true,
+      securityAlertEmail: "ochiengpeterson507@gmail.com"
+    },
+    backup: {
+      autoBackupSchedule: "daily",
+      backupRetentionDays: 30,
+      includeAuditLogs: true,
+      includePaymentHistory: true,
+      lastBackupAt: null,
+      lastBackupBy: null
+    },
+    updatedBy: "System Default",
+    updatedAt: new Date().toISOString()
+  };
+
+  let inMemoryPayHeroCredentials = {
+    apiUsername: process.env.PAYHERO_API_USERNAME || "",
+    apiPassword: process.env.PAYHERO_API_PASSWORD || "",
+    basicAuthToken: process.env.PAYHERO_BASIC_AUTH_TOKEN || "",
+    webhookSecret: process.env.PAYHERO_WEBHOOK_SECRET || ""
+  };
+
+  function hasValidPayHeroSecret(): boolean {
+    const u = String(inMemoryPayHeroCredentials.apiUsername || "").trim();
+    const b = String(inMemoryPayHeroCredentials.basicAuthToken || "").trim();
+    return Boolean(
+      (u && !u.includes("your_payhero")) ||
+      (b && !b.includes("your_payhero"))
+    );
+  }
+
+  function mapDbSystemSettingsRow(row: any) {
+    if (!row) return { ...DEFAULT_SYSTEM_SETTINGS };
+    const paymentMerged = {
+      ...DEFAULT_SYSTEM_SETTINGS.payment,
+      ...(row.payment_json || {}),
+      apiCredentialsConfigured: hasValidPayHeroSecret() || Boolean(row.payment_json?.apiCredentialsConfigured),
+      maskedApiUsername: hasValidPayHeroSecret()
+        ? `${String(inMemoryPayHeroCredentials.apiUsername || "PHKey").slice(0, 4)}••••`
+        : row.payment_json?.maskedApiUsername || "Configured on Server"
+    };
+    return {
+      id: row.id || "default",
+      general: { ...DEFAULT_SYSTEM_SETTINGS.general, ...(row.general_json || {}) },
+      appearanceDefaults: { ...DEFAULT_SYSTEM_SETTINGS.appearanceDefaults, ...(row.appearance_defaults_json || {}) },
+      property: { ...DEFAULT_SYSTEM_SETTINGS.property, ...(row.property_json || {}) },
+      tenant: { ...DEFAULT_SYSTEM_SETTINGS.tenant, ...(row.tenant_json || {}) },
+      payment: paymentMerged,
+      notifications: { ...DEFAULT_SYSTEM_SETTINGS.notifications, ...(row.notifications_json || {}) },
+      lease: { ...DEFAULT_SYSTEM_SETTINGS.lease, ...(row.lease_json || {}) },
+      invoice: { ...DEFAULT_SYSTEM_SETTINGS.invoice, ...(row.invoice_json || {}) },
+      maintenance: { ...DEFAULT_SYSTEM_SETTINGS.maintenance, ...(row.maintenance_json || {}) },
+      security: { ...DEFAULT_SYSTEM_SETTINGS.security, ...(row.security_json || {}) },
+      backup: { ...DEFAULT_SYSTEM_SETTINGS.backup, ...(row.backup_json || {}) },
+      updatedBy: row.updated_by || "System Default",
+      updatedAt: row.updated_at || new Date().toISOString()
+    };
+  }
+
+  let inMemorySystemSettingsStore: any = { ...DEFAULT_SYSTEM_SETTINGS };
+  const inMemoryUserPreferencesStore = new Map<string, any>();
+
+  async function getSystemSettingsRecord() {
+    if (supabaseAdmin && !isSupabaseQuotaRestricted()) {
+      try {
+        const { data, error } = await supabaseAdmin.from("system_settings").select("*").eq("id", "default").maybeSingle();
+        if (!error && data) {
+          inMemorySystemSettingsStore = mapDbSystemSettingsRow(data);
+          return inMemorySystemSettingsStore;
+        }
+      } catch {}
+    }
+    if (pg) {
+      try {
+        const res = await pg.query(`SELECT * FROM public.system_settings WHERE id = 'default' LIMIT 1;`);
+        if (res.rows?.[0]) {
+          inMemorySystemSettingsStore = mapDbSystemSettingsRow(res.rows[0]);
+          return inMemorySystemSettingsStore;
+        }
+      } catch {}
+    }
+    return { ...inMemorySystemSettingsStore };
+  }
+
+  async function updateSystemSettingsSection(sectionKey: string, payload: any, actorName: string) {
+    const current = await getSystemSettingsRecord();
+    if (sectionKey === "payment" && payload) {
+      if (payload.apiUsername && String(payload.apiUsername).trim() && !String(payload.apiUsername).includes("••••")) {
+        inMemoryPayHeroCredentials.apiUsername = String(payload.apiUsername).trim();
+      }
+      if (payload.apiPassword && String(payload.apiPassword).trim() && !String(payload.apiPassword).includes("••••")) {
+        inMemoryPayHeroCredentials.apiPassword = String(payload.apiPassword).trim();
+      }
+      if (payload.basicAuthToken && String(payload.basicAuthToken).trim() && !String(payload.basicAuthToken).includes("••••")) {
+        inMemoryPayHeroCredentials.basicAuthToken = String(payload.basicAuthToken).trim();
+      }
+      if (payload.webhookSecret && String(payload.webhookSecret).trim() && !String(payload.webhookSecret).includes("••••")) {
+        inMemoryPayHeroCredentials.webhookSecret = String(payload.webhookSecret).trim();
+      }
+    }
+
+    // Never persist raw API passwords or basic auth tokens in JSON columns returned to browsers
+    const sanitizedPayload = { ...(payload || {}) };
+    delete sanitizedPayload.apiPassword;
+    delete sanitizedPayload.basicAuthToken;
+    delete sanitizedPayload.webhookSecret;
+    if (sanitizedPayload.apiUsername) {
+      sanitizedPayload.maskedApiUsername = `${String(sanitizedPayload.apiUsername).slice(0, 4)}••••`;
+      sanitizedPayload.apiCredentialsConfigured = true;
+      delete sanitizedPayload.apiUsername;
+    }
+
+    const next = {
+      ...current,
+      [sectionKey]: {
+        ...(current[sectionKey] || {}),
+        ...sanitizedPayload
+      },
+      updatedBy: actorName,
+      updatedAt: new Date().toISOString()
+    };
+
+    inMemorySystemSettingsStore = next;
+
+    const dbRecord = {
+      id: "default",
+      general_json: next.general,
+      appearance_defaults_json: next.appearanceDefaults,
+      property_json: next.property,
+      tenant_json: next.tenant,
+      payment_json: next.payment,
+      notifications_json: next.notifications,
+      lease_json: next.lease,
+      invoice_json: next.invoice,
+      maintenance_json: next.maintenance,
+      security_json: next.security,
+      backup_json: next.backup,
+      updated_by: actorName,
+      updated_at: next.updatedAt
+    };
+
+    if (supabaseAdmin && !isSupabaseQuotaRestricted()) {
+      try {
+        await supabaseAdmin.from("system_settings").upsert(dbRecord);
+      } catch {}
+    }
+    if (pg) {
+      try {
+        await pg.query(
+          `INSERT INTO public.system_settings (
+            id, general_json, appearance_defaults_json, property_json, tenant_json,
+            payment_json, notifications_json, lease_json, invoice_json,
+            maintenance_json, security_json, backup_json, updated_by, updated_at
+          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+          ON CONFLICT (id) DO UPDATE SET
+            general_json = EXCLUDED.general_json,
+            appearance_defaults_json = EXCLUDED.appearance_defaults_json,
+            property_json = EXCLUDED.property_json,
+            tenant_json = EXCLUDED.tenant_json,
+            payment_json = EXCLUDED.payment_json,
+            notifications_json = EXCLUDED.notifications_json,
+            lease_json = EXCLUDED.lease_json,
+            invoice_json = EXCLUDED.invoice_json,
+            maintenance_json = EXCLUDED.maintenance_json,
+            security_json = EXCLUDED.security_json,
+            backup_json = EXCLUDED.backup_json,
+            updated_by = EXCLUDED.updated_by,
+            updated_at = EXCLUDED.updated_at;`,
+          [
+            "default",
+            JSON.stringify(dbRecord.general_json),
+            JSON.stringify(dbRecord.appearance_defaults_json),
+            JSON.stringify(dbRecord.property_json),
+            JSON.stringify(dbRecord.tenant_json),
+            JSON.stringify(dbRecord.payment_json),
+            JSON.stringify(dbRecord.notifications_json),
+            JSON.stringify(dbRecord.lease_json),
+            JSON.stringify(dbRecord.invoice_json),
+            JSON.stringify(dbRecord.maintenance_json),
+            JSON.stringify(dbRecord.security_json),
+            JSON.stringify(dbRecord.backup_json),
+            actorName,
+            next.updatedAt
+          ]
+        );
+      } catch {}
+    }
+
+    // Also keep email_notification_settings and sms_notification_settings synchronized when notifications section changes
+    if (sectionKey === "notifications" && sanitizedPayload) {
+      if (sanitizedPayload.enableEmailNotifications !== undefined) {
+        await updateEmailNotificationSettings({ masterEnabled: Boolean(sanitizedPayload.enableEmailNotifications) }, actorName).catch(() => {});
+      }
+      if (sanitizedPayload.enableSmsNotifications !== undefined) {
+        await updateSmsNotificationSettings({ masterEnabled: Boolean(sanitizedPayload.enableSmsNotifications) }, actorName).catch(() => {});
+      }
+    }
+
+    return next;
+  }
+
+  async function getUserPreferencesForUser(userId: string, userEmail?: string) {
+    const cacheKey = String(userId || userEmail || "anonymous").toLowerCase();
+    const defaultPref = {
+      userId: userId || "anonymous",
+      userEmail: userEmail || "",
+      themeMode: "light",
+      accentTheme: "lime",
+      primaryColor: "#17231E",
+      accentColor: "#D5F267",
+      layoutDensity: "comfortable",
+      sidebarMode: "collapsed",
+      fontScale: "normal",
+      fontFamily: "Plus Jakarta Sans",
+      compactTables: false,
+      reducedMotion: false,
+      dashboardLayout: {
+        showRatings: true,
+        showTasks: true,
+        showActivities: true,
+        defaultChartRange: "6M"
+      },
+      updatedAt: new Date().toISOString()
+    };
+
+    const mapRow = (r: any) => ({
+      userId: r.user_id || userId,
+      userEmail: r.user_email || userEmail || "",
+      themeMode: r.theme_mode || "light",
+      accentTheme: r.accent_theme || "lime",
+      primaryColor: r.primary_color || "#17231E",
+      accentColor: r.accent_color || "#D5F267",
+      layoutDensity: r.layout_density || "comfortable",
+      sidebarMode: r.sidebar_mode || "collapsed",
+      fontScale: r.font_scale || "normal",
+      fontFamily: r.font_family || "Plus Jakarta Sans",
+      compactTables: Boolean(r.compact_tables),
+      reducedMotion: Boolean(r.reduced_motion),
+      dashboardLayout: {
+        ...defaultPref.dashboardLayout,
+        ...(r.dashboard_layout || {})
+      },
+      updatedAt: r.updated_at || new Date().toISOString()
+    });
+
+    if (supabaseAdmin && !isSupabaseQuotaRestricted() && userId) {
+      try {
+        const { data, error } = await supabaseAdmin.from("user_preferences").select("*").eq("user_id", userId).maybeSingle();
+        if (!error && data) {
+          const mapped = mapRow(data);
+          inMemoryUserPreferencesStore.set(cacheKey, mapped);
+          return mapped;
+        }
+      } catch {}
+    }
+    if (pg && userId) {
+      try {
+        const res = await pg.query(`SELECT * FROM public.user_preferences WHERE user_id = $1 OR LOWER(user_email) = LOWER($2) LIMIT 1;`, [userId, userEmail || ""]);
+        if (res.rows?.[0]) {
+          const mapped = mapRow(res.rows[0]);
+          inMemoryUserPreferencesStore.set(cacheKey, mapped);
+          return mapped;
+        }
+      } catch {}
+    }
+    if (inMemoryUserPreferencesStore.has(cacheKey)) {
+      return inMemoryUserPreferencesStore.get(cacheKey);
+    }
+    return defaultPref;
+  }
+
+  async function saveUserPreferencesForUser(userId: string, userEmail: string, prefs: any) {
+    const cacheKey = String(userId || userEmail || "anonymous").toLowerCase();
+    const current = await getUserPreferencesForUser(userId, userEmail);
+    const merged = {
+      ...current,
+      ...prefs,
+      userId,
+      userEmail,
+      dashboardLayout: {
+        ...current.dashboardLayout,
+        ...(prefs?.dashboardLayout || {})
+      },
+      updatedAt: new Date().toISOString()
+    };
+
+    inMemoryUserPreferencesStore.set(cacheKey, merged);
+
+    const dbRow = {
+      user_id: userId,
+      user_email: userEmail,
+      theme_mode: merged.themeMode,
+      accent_theme: merged.accentTheme,
+      primary_color: merged.primaryColor,
+      accent_color: merged.accentColor,
+      layout_density: merged.layoutDensity,
+      sidebar_mode: merged.sidebarMode,
+      font_scale: merged.fontScale,
+      font_family: merged.fontFamily,
+      compact_tables: Boolean(merged.compactTables),
+      reduced_motion: Boolean(merged.reducedMotion),
+      dashboard_layout: merged.dashboardLayout,
+      updated_at: merged.updatedAt
+    };
+
+    if (supabaseAdmin && !isSupabaseQuotaRestricted()) {
+      try {
+        await supabaseAdmin.from("user_preferences").upsert(dbRow);
+      } catch {}
+    }
+    if (pg) {
+      try {
+        await pg.query(
+          `INSERT INTO public.user_preferences (
+            user_id, user_email, theme_mode, accent_theme, primary_color, accent_color,
+            layout_density, sidebar_mode, font_scale, font_family, compact_tables,
+            reduced_motion, dashboard_layout, updated_at
+          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+          ON CONFLICT (user_id) DO UPDATE SET
+            user_email = EXCLUDED.user_email,
+            theme_mode = EXCLUDED.theme_mode,
+            accent_theme = EXCLUDED.accent_theme,
+            primary_color = EXCLUDED.primary_color,
+            accent_color = EXCLUDED.accent_color,
+            layout_density = EXCLUDED.layout_density,
+            sidebar_mode = EXCLUDED.sidebar_mode,
+            font_scale = EXCLUDED.font_scale,
+            font_family = EXCLUDED.font_family,
+            compact_tables = EXCLUDED.compact_tables,
+            reduced_motion = EXCLUDED.reduced_motion,
+            dashboard_layout = EXCLUDED.dashboard_layout,
+            updated_at = EXCLUDED.updated_at;`,
+          [
+            dbRow.user_id,
+            dbRow.user_email,
+            dbRow.theme_mode,
+            dbRow.accent_theme,
+            dbRow.primary_color,
+            dbRow.accent_color,
+            dbRow.layout_density,
+            dbRow.sidebar_mode,
+            dbRow.font_scale,
+            dbRow.font_family,
+            dbRow.compact_tables,
+            dbRow.reduced_motion,
+            JSON.stringify(dbRow.dashboard_layout),
+            dbRow.updated_at
+          ]
+        );
+      } catch {}
+    }
+    return merged;
+  }
+
+  async function listPayHeroPaybills() {
+    const mapRow = (r: any) => ({
+      id: r.id,
+      paybillNumber: r.paybill_number,
+      paybillName: r.paybill_name,
+      channelId: r.channel_id || "",
+      accountType: r.account_type || "PayBill",
+      propertyId: r.property_id || "",
+      propertyName: r.property_name || "All Properties",
+      codePrefix: r.code_prefix || "",
+      accountReferenceFormat: r.account_reference_format || "TENANT_REF",
+      isDefault: Boolean(r.is_default),
+      status: r.status || "Active",
+      notes: r.notes || "",
+      createdAt: r.created_at,
+      updatedAt: r.updated_at
+    });
+
+    if (supabaseAdmin && !isSupabaseQuotaRestricted()) {
+      try {
+        const { data, error } = await supabaseAdmin.from("payhero_paybills").select("*").order("created_at", { ascending: true });
+        if (!error && Array.isArray(data) && data.length > 0) {
+          return data.map(mapRow);
+        }
+      } catch {}
+    }
+    if (pg) {
+      try {
+        const res = await pg.query(`SELECT * FROM public.payhero_paybills ORDER BY is_default DESC, created_at ASC;`);
+        if (Array.isArray(res.rows)) {
+          return res.rows.map(mapRow);
+        }
+      } catch {}
+    }
+    return [];
+  }
+
+  async function listPayHeroTransactions() {
+    const mapRow = (r: any) => ({
+      id: r.id,
+      transactionReference: r.transaction_reference,
+      mpesaReceiptNumber: r.mpesa_receipt_number || r.transaction_reference,
+      paybillNumber: r.paybill_number,
+      channelId: r.channel_id || "",
+      accountReference: r.account_reference,
+      tenantRef: r.tenant_ref || "",
+      tenantName: r.tenant_name || "",
+      propertyName: r.property_name || "",
+      unitNumber: r.unit_number || "",
+      payerPhone: r.payer_phone || "",
+      payerName: r.payer_name || "",
+      amount: Number(r.amount || 0),
+      status: r.status || "Completed",
+      reconciliationStatus: r.reconciliation_status || "Reconciled",
+      source: r.source || "C2B Callback",
+      paymentId: r.payment_id || undefined,
+      notes: r.notes || "",
+      processedBy: r.processed_by || "PayHero Webhook Engine",
+      createdAt: r.created_at || new Date().toISOString()
+    });
+
+    if (supabaseAdmin && !isSupabaseQuotaRestricted()) {
+      try {
+        const { data, error } = await supabaseAdmin.from("payhero_transactions").select("*").order("created_at", { ascending: false }).limit(50);
+        if (!error && Array.isArray(data)) {
+          return data.map(mapRow);
+        }
+      } catch {}
+    }
+    if (pg) {
+      try {
+        const res = await pg.query(`SELECT * FROM public.payhero_transactions ORDER BY created_at DESC LIMIT 50;`);
+        if (Array.isArray(res.rows)) {
+          return res.rows.map(mapRow);
+        }
+      } catch {}
+    }
+    return [];
+  }
+
+  async function reconcileAndRecordPayHeroC2B(input: {
+    paybillNumber: string;
+    channelId?: string;
+    accountReference: string;
+    amount: number;
+    mpesaReceiptNumber?: string;
+    payerPhone?: string;
+    payerName?: string;
+    source: "C2B Callback" | "Manual C2B Entry" | "STK Push";
+    notes?: string;
+    processedBy: string;
+    rawPayload?: any;
+  }) {
+    const state = await fetchFullDatabaseState();
+    const sys = await getSystemSettingsRecord();
+    const paybills = await listPayHeroPaybills();
+
+    const cleanAccRef = String(input.accountReference || "").trim().toUpperCase();
+    const cleanPaybill = String(input.paybillNumber || sys.payment.defaultPaybillNumber || "4098871").trim();
+    const amt = Math.max(0, Number(input.amount || 0));
+    const receiptNo = String(
+      input.mpesaReceiptNumber ||
+      `PH${Date.now().toString().slice(-8).toUpperCase()}`
+    ).trim().toUpperCase();
+
+    // 1. Resolve Property mapping from PayBill if configured
+    const matchedPaybill = paybills.find((pb) => pb.paybillNumber === cleanPaybill && pb.status === "Active");
+
+    // 2. Match Tenant by Account Reference (A-001, Unit number, or Prefix+Unit)
+    let matchedTenant = state.tenants.find(
+      (t: any) => String(t.tenantRef || "").trim().toUpperCase() === cleanAccRef
+    );
+
+    if (!matchedTenant) {
+      // Try matching without hyphen e.g. A001 -> A-001
+      const normalizedRef = cleanAccRef.replace(/^([A-Z])(\d+)$/, "$1-$2");
+      matchedTenant = state.tenants.find(
+        (t: any) => String(t.tenantRef || "").trim().toUpperCase() === normalizedRef
+      );
+    }
+
+    if (!matchedTenant && matchedPaybill?.propertyName && matchedPaybill.propertyName !== "All Properties") {
+      // Try matching by unit number inside the PayBill's mapped property
+      matchedTenant = state.tenants.find(
+        (t: any) =>
+          t.property.trim().toLowerCase() === matchedPaybill.propertyName.trim().toLowerCase() &&
+          (t.unitNumber.trim().toUpperCase() === cleanAccRef ||
+           t.unitNumber.replace(/[^0-9]/g, "") === cleanAccRef.replace(/[^0-9]/g, ""))
+      );
+    }
+
+    let reconciliationStatus: "Reconciled" | "Unmatched Account" | "Partial Payment" | "Duplicate" = "Unmatched Account";
+    let createdOrUpdatedPaymentId: string | null = null;
+    const todayStr = formatShortDate(new Date());
+
+    if (matchedTenant && amt > 0) {
+      const expectedAmt = matchedTenant.rentBalance > 0 ? matchedTenant.rentBalance : matchedTenant.monthlyRent;
+      reconciliationStatus = amt >= expectedAmt ? "Reconciled" : "Partial Payment";
+
+      if (sys.payment.autoConfirmOnCallback || input.source === "Manual C2B Entry") {
+        // Check if there is an unpaid rent_payment row for this tenant
+        const existingPending = state.payments.find(
+          (p: any) =>
+            String(p.tenantRef || "").toUpperCase() === matchedTenant.tenantRef.toUpperCase() &&
+            p.status !== "Paid"
+        );
+
+        const paymentCode = `${sys.invoice.receiptPrefix || "PAY-"}${matchedTenant.tenantRef.replace("-", "")}-${receiptNo.slice(-4)}`;
+
+        if (supabaseAdmin && !isSupabaseQuotaRestricted()) {
+          try {
+            if (existingPending && amt >= Number(existingPending.amount || 0)) {
+              const { data: upd } = await supabaseAdmin
+                .from("rent_payments")
+                .update({
+                  status: "Paid",
+                  paid_date: todayStr,
+                  amount_paid: amt,
+                  payment_note: `PayHero M-Pesa (${cleanPaybill}) • Receipt ${receiptNo}`,
+                  confirmed_at: new Date().toISOString()
+                })
+                .eq("id", existingPending.id)
+                .select("*")
+                .maybeSingle();
+              if (upd?.id) createdOrUpdatedPaymentId = upd.id;
+            } else {
+              const { data: ins } = await supabaseAdmin
+                .from("rent_payments")
+                .insert({
+                  payment_code: paymentCode,
+                  tenant_id: matchedTenant.id,
+                  tenant_ref: matchedTenant.tenantRef,
+                  tenant_name: matchedTenant.name,
+                  avatar_bg: matchedTenant.avatarBg || "#D8F3E5",
+                  property_name: matchedTenant.property,
+                  unit_type: matchedTenant.unitType || "Deluxe",
+                  unit_number: matchedTenant.unitNumber,
+                  payment_note: `PayHero M-Pesa (${cleanPaybill}) • Receipt ${receiptNo}`,
+                  lease_term: matchedTenant.leaseDuration || "12 Months",
+                  due_date: matchedTenant.dueDate || todayStr,
+                  paid_date: todayStr,
+                  amount: amt,
+                  amount_due: amt,
+                  amount_paid: amt,
+                  status: "Paid",
+                  confirmed_at: new Date().toISOString()
+                })
+                .select("*")
+                .maybeSingle();
+              if (ins?.id) createdOrUpdatedPaymentId = ins.id;
+            }
+          } catch {}
+        }
+
+        if (pg && !createdOrUpdatedPaymentId) {
+          try {
+            if (existingPending && amt >= Number(existingPending.amount || 0)) {
+              const uRes = await pg.query(
+                `UPDATE public.rent_payments
+                 SET status = 'Paid', paid_date = $1, amount_paid = $2,
+                     payment_note = $3, confirmed_at = $4, confirmed_by = $5
+                 WHERE id = $6 RETURNING id;`,
+                [
+                  todayStr,
+                  amt,
+                  `PayHero M-Pesa (${cleanPaybill}) • Receipt ${receiptNo}`,
+                  new Date().toISOString(),
+                  input.processedBy,
+                  existingPending.id
+                ]
+              );
+              createdOrUpdatedPaymentId = uRes.rows?.[0]?.id || existingPending.id;
+            } else {
+              const iRes = await pg.query(
+                `INSERT INTO public.rent_payments
+                  (payment_code, tenant_id, tenant_ref, tenant_name, avatar_bg, property_name, unit_type, unit_number, payment_note, lease_term, due_date, paid_date, amount, amount_due, amount_paid, status, confirmed_by, confirmed_at)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$13,$13,'Paid',$14,$15)
+                 RETURNING id;`,
+                [
+                  paymentCode,
+                  matchedTenant.id,
+                  matchedTenant.tenantRef,
+                  matchedTenant.name,
+                  matchedTenant.avatarBg || "#D8F3E5",
+                  matchedTenant.property,
+                  matchedTenant.unitType || "Deluxe",
+                  matchedTenant.unitNumber,
+                  `PayHero M-Pesa (${cleanPaybill}) • Receipt ${receiptNo}`,
+                  matchedTenant.leaseDuration || "12 Months",
+                  matchedTenant.dueDate || todayStr,
+                  todayStr,
+                  amt,
+                  input.processedBy,
+                  new Date().toISOString()
+                ]
+              );
+              createdOrUpdatedPaymentId = iRes.rows?.[0]?.id || null;
+            }
+          } catch {}
+        }
+
+        // Dispatch automatic SMS & Email Receipt if enabled
+        if (sys.payment.autoReceiptOnConfirm) {
+          void dispatchSmsNotification({
+            tenantId: matchedTenant.id,
+            tenantRef: matchedTenant.tenantRef,
+            tenantName: matchedTenant.name,
+            recipientPhone: matchedTenant.phone || input.payerPhone || "On file",
+            propertyName: matchedTenant.property,
+            unitNumber: matchedTenant.unitNumber,
+            triggerType: "payment_confirmed",
+            paymentId: createdOrUpdatedPaymentId || receiptNo,
+            paymentVerified: true,
+            messageBody: `Dear ${matchedTenant.name}, your M-Pesa PayBill (${cleanPaybill}) rent payment of KSh ${amt.toLocaleString()} (Receipt: ${receiptNo}, Account: ${matchedTenant.tenantRef}) for ${matchedTenant.property} (${matchedTenant.unitNumber}) has been received and confirmed.`,
+            sentBy: input.processedBy
+          });
+          void dispatchTenantEmailNotification({
+            tenantId: matchedTenant.id,
+            tenantRef: matchedTenant.tenantRef,
+            tenantName: matchedTenant.name,
+            recipientEmail: matchedTenant.email,
+            propertyName: matchedTenant.property,
+            unitNumber: matchedTenant.unitNumber,
+            triggerType: "payment_confirmed",
+            amountDue: amt,
+            dueDate: todayStr,
+            receiptNo,
+            paymentId: createdOrUpdatedPaymentId || receiptNo,
+            paymentVerified: true,
+            sentBy: input.processedBy
+          });
+        }
+      }
+    }
+
+    const txId = crypto.randomUUID();
+    const txRow = {
+      id: txId,
+      transaction_reference: receiptNo,
+      mpesa_receipt_number: receiptNo,
+      paybill_number: cleanPaybill,
+      channel_id: input.channelId || matchedPaybill?.channelId || sys.payment.channelId || "CH-101",
+      account_reference: cleanAccRef,
+      tenant_ref: matchedTenant?.tenantRef || "",
+      tenant_name: matchedTenant?.name || input.payerName || "Unmatched Payer",
+      property_name: matchedTenant?.property || matchedPaybill?.propertyName || "Unassigned Property",
+      unit_number: matchedTenant?.unitNumber || "",
+      payer_phone: input.payerPhone || matchedTenant?.phone || "",
+      payer_name: input.payerName || matchedTenant?.name || "",
+      amount: amt,
+      status: "Completed",
+      reconciliation_status: reconciliationStatus,
+      source: input.source,
+      payment_id: createdOrUpdatedPaymentId,
+      raw_payload: input.rawPayload || {},
+      notes: input.notes || (matchedTenant ? `Matched to ${matchedTenant.name} (${matchedTenant.tenantRef})` : `No tenant matched account reference "${cleanAccRef}"`),
+      processed_by: input.processedBy,
+      created_at: new Date().toISOString()
+    };
+
+    if (supabaseAdmin && !isSupabaseQuotaRestricted()) {
+      try {
+        await supabaseAdmin.from("payhero_transactions").insert(txRow);
+      } catch {}
+    }
+    if (pg) {
+      try {
+        await pg.query(
+          `INSERT INTO public.payhero_transactions (
+            id, transaction_reference, mpesa_receipt_number, paybill_number, channel_id,
+            account_reference, tenant_ref, tenant_name, property_name, unit_number,
+            payer_phone, payer_name, amount, status, reconciliation_status, source,
+            payment_id, raw_payload, notes, processed_by, created_at
+          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21);`,
+          [
+            txRow.id,
+            txRow.transaction_reference,
+            txRow.mpesa_receipt_number,
+            txRow.paybill_number,
+            txRow.channel_id,
+            txRow.account_reference,
+            txRow.tenant_ref,
+            txRow.tenant_name,
+            txRow.property_name,
+            txRow.unit_number,
+            txRow.payer_phone,
+            txRow.payer_name,
+            txRow.amount,
+            txRow.status,
+            txRow.reconciliation_status,
+            txRow.source,
+            txRow.payment_id,
+            JSON.stringify(txRow.raw_payload),
+            txRow.notes,
+            txRow.processed_by,
+            txRow.created_at
+          ]
+        );
+      } catch {}
+    }
+
+    void logActivity(
+      "payment",
+      `PayHero C2B ${reconciliationStatus} (${cleanAccRef})`,
+      `KSh ${amt.toLocaleString()} via PayBill ${cleanPaybill} • Receipt ${receiptNo} (${txRow.tenant_name})`,
+      input.processedBy,
+      matchedTenant?.tenantRef || cleanAccRef,
+      reconciliationStatus === "Reconciled" ? "mint" : "lime"
+    );
+
+    return {
+      transaction: {
+        id: txRow.id,
+        transactionReference: txRow.transaction_reference,
+        mpesaReceiptNumber: txRow.mpesa_receipt_number,
+        paybillNumber: txRow.paybill_number,
+        channelId: txRow.channel_id,
+        accountReference: txRow.account_reference,
+        tenantRef: txRow.tenant_ref,
+        tenantName: txRow.tenant_name,
+        propertyName: txRow.property_name,
+        unitNumber: txRow.unit_number,
+        payerPhone: txRow.payer_phone,
+        payerName: txRow.payer_name,
+        amount: txRow.amount,
+        status: txRow.status,
+        reconciliationStatus: txRow.reconciliation_status,
+        source: txRow.source,
+        paymentId: txRow.payment_id || undefined,
+        notes: txRow.notes,
+        processedBy: txRow.processed_by,
+        createdAt: txRow.created_at
+      },
+      matchedTenant,
+      paymentId: createdOrUpdatedPaymentId
+    };
+  }
+
+  // GET /api/settings/all — Fetch complete system settings, user preferences, PayHero PayBills, transactions & integrations summary
+  app.get("/api/settings/all", async (req, res) => {
+    const userId = req.currentUser?.id || "anonymous";
+    const userEmail = req.currentUser?.email || "";
+    const [systemSettings, userPreferences, paybills, transactions, emailSettings, smsSettings, emailLogs, smsLogs] = await Promise.all([
+      getSystemSettingsRecord(),
+      getUserPreferencesForUser(userId, userEmail),
+      listPayHeroPaybills(),
+      listPayHeroTransactions(),
+      getEmailNotificationSettings(true),
+      getSmsNotificationSettings(),
+      getEmailLogsHistory(true),
+      getSmsLogsHistory()
+    ]);
+
+    const integrations = {
+      payhero: {
+        configured: Boolean(systemSettings.payment?.apiCredentialsConfigured || paybills.length > 0),
+        environment: systemSettings.payment?.environment || "production",
+        accountId: systemSettings.payment?.accountId || "PH-KE-88412",
+        defaultPaybill: systemSettings.payment?.defaultPaybillNumber || "4098871",
+        mappedPaybillsCount: paybills.length,
+        callbackUrl: systemSettings.payment?.callbackUrl || "/api/webhooks/payhero",
+        transactionsCount: transactions.length
+      },
+      resend: {
+        configured: Boolean(emailSettings.apiKeyConfigured),
+        fromEmail: emailSettings.fromEmail,
+        senderName: emailSettings.senderName,
+        masterEnabled: Boolean(emailSettings.masterEnabled),
+        dispatchedCount: emailLogs.length
+      },
+      sms: {
+        configured: Boolean(smsSettings.apiKeyConfigured),
+        provider: smsSettings.provider || "Sozuri SMS Gateway",
+        senderId: smsSettings.senderId || "ARABELLA",
+        environment: smsSettings.environment || "sandbox",
+        masterEnabled: Boolean(smsSettings.masterEnabled),
+        dispatchedCount: smsLogs.length
+      },
+      database: {
+        engine: isSupabaseLive ? "Supabase PostgreSQL (Cloud)" : "PostgreSQL (Local PGlite Engine)",
+        liveSupabase: isSupabaseLive && !isSupabaseQuotaRestricted(),
+        rlsEnabled: true,
+        tablesCount: 19,
+        status: "Healthy"
+      }
+    };
+
+    return res.json({
+      systemSettings,
+      userPreferences,
+      paybills,
+      transactions,
+      emailSettings,
+      smsSettings,
+      integrations
+    });
+  });
+
+  // PUT /api/settings/system/:section — Save any global settings section (Admin / Property Manager / Accountant for finance)
+  app.put("/api/settings/system/:section", requireRole(["super_admin", "owner", "administrator", "property_manager", "accountant"]), async (req, res) => {
+    const section = String(req.params.section || "").trim();
+    const allowedSections = new Set([
+      "general",
+      "appearanceDefaults",
+      "property",
+      "tenant",
+      "payment",
+      "notifications",
+      "lease",
+      "invoice",
+      "maintenance",
+      "security",
+      "backup"
+    ]);
+    if (!allowedSections.has(section)) {
+      return res.status(400).json({ error: `Invalid settings section: ${section}` });
+    }
+
+    // Enforce admin-only access for security, payment credentials, and backup sections
+    const adminOnlySections = new Set(["security", "backup"]);
+    const userRole = req.currentUser?.role || "owner";
+    if (adminOnlySections.has(section) && !["super_admin", "owner", "administrator"].includes(userRole)) {
+      return res.status(403).json({ error: "Only Super Administrators and Administrators can modify security or backup policies." });
+    }
+
+    const actorName = req.currentUser?.fullName || "Administrator";
+    const updated = await updateSystemSettingsSection(section, req.body || {}, actorName);
+
+    void logActivity(
+      "system",
+      `System Settings Updated (${section})`,
+      `Configuration section "${section}" was updated and saved by ${actorName}.`,
+      actorName,
+      void 0,
+      "mint"
+    );
+
+    return res.json({
+      systemSettings: updated,
+      message: `${section.replace(/([A-Z])/g, " $1").replace(/^./, (s) => s.toUpperCase())} settings saved.`
+    });
+  });
+
+  // PUT /api/settings/preferences — Save personal user appearance preferences (Available to ALL authenticated users)
+  app.put("/api/settings/preferences", async (req, res) => {
+    const userId = req.currentUser?.id || req.body?.userId || "anonymous";
+    const userEmail = req.currentUser?.email || req.body?.userEmail || "";
+    const saved = await saveUserPreferencesForUser(userId, userEmail, req.body || {});
+    return res.json({
+      userPreferences: saved,
+      message: "Your personal appearance & interface preferences have been saved."
+    });
+  });
+
+  // POST /api/settings/payhero/paybills — Add or update a PayBill-to-Property mapping under the single PayHero API account
+  app.post("/api/settings/payhero/paybills", requireRole(["super_admin", "owner", "administrator", "property_manager", "accountant"]), async (req, res) => {
+    const {
+      id,
+      paybillNumber,
+      paybillName,
+      channelId,
+      accountType,
+      propertyId,
+      propertyName,
+      codePrefix,
+      accountReferenceFormat,
+      isDefault,
+      status,
+      notes
+    } = req.body || {};
+
+    if (!paybillNumber || !String(paybillNumber).trim()) {
+      return res.status(400).json({ error: "PayBill or Till number is required." });
+    }
+
+    const rowId = id || `pb-${Date.now().toString(36)}`;
+    const nowIso = new Date().toISOString();
+    const record = {
+      id: rowId,
+      paybill_number: String(paybillNumber).trim(),
+      paybill_name: String(paybillName || `PayHero PayBill ${paybillNumber}`).trim(),
+      channel_id: String(channelId || "").trim(),
+      account_type: accountType || "PayBill",
+      property_id: propertyId || null,
+      property_name: propertyName || "All Properties",
+      code_prefix: String(codePrefix || "").trim().toUpperCase(),
+      account_reference_format: accountReferenceFormat || "TENANT_REF",
+      is_default: Boolean(isDefault),
+      status: status || "Active",
+      notes: String(notes || "").trim(),
+      created_at: nowIso,
+      updated_at: nowIso
+    };
+
+    if (supabaseAdmin && !isSupabaseQuotaRestricted()) {
+      try {
+        await supabaseAdmin.from("payhero_paybills").upsert(record);
+      } catch {}
+    }
+    if (pg) {
+      try {
+        if (record.is_default) {
+          await pg.query(`UPDATE public.payhero_paybills SET is_default = FALSE;`);
+        }
+        await pg.query(
+          `INSERT INTO public.payhero_paybills (
+            id, paybill_number, paybill_name, channel_id, account_type,
+            property_id, property_name, code_prefix, account_reference_format,
+            is_default, status, notes, created_at, updated_at
+          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+          ON CONFLICT (id) DO UPDATE SET
+            paybill_number = EXCLUDED.paybill_number,
+            paybill_name = EXCLUDED.paybill_name,
+            channel_id = EXCLUDED.channel_id,
+            account_type = EXCLUDED.account_type,
+            property_id = EXCLUDED.property_id,
+            property_name = EXCLUDED.property_name,
+            code_prefix = EXCLUDED.code_prefix,
+            account_reference_format = EXCLUDED.account_reference_format,
+            is_default = EXCLUDED.is_default,
+            status = EXCLUDED.status,
+            notes = EXCLUDED.notes,
+            updated_at = EXCLUDED.updated_at;`,
+          [
+            record.id,
+            record.paybill_number,
+            record.paybill_name,
+            record.channel_id,
+            record.account_type,
+            record.property_id,
+            record.property_name,
+            record.code_prefix,
+            record.account_reference_format,
+            record.is_default,
+            record.status,
+            record.notes,
+            record.created_at,
+            record.updated_at
+          ]
+        );
+      } catch {}
+    }
+
+    const paybills = await listPayHeroPaybills();
+    void logActivity(
+      "payment",
+      `PayHero PayBill Mapped (${record.paybill_number})`,
+      `PayBill ${record.paybill_number} mapped to ${record.property_name} (Channel: ${record.channel_id || "Default"}).`,
+      req.currentUser?.fullName || "Administrator",
+      void 0,
+      "mint"
+    );
+
+    return res.json({
+      paybills,
+      message: `PayBill ${record.paybill_number} mapped to ${record.property_name}.`
+    });
+  });
+
+  // DELETE /api/settings/payhero/paybills/:id — Remove a PayBill mapping
+  app.delete("/api/settings/payhero/paybills/:id", requireRole(["super_admin", "owner", "administrator"]), async (req, res) => {
+    const id = req.params.id;
+    if (supabaseAdmin && !isSupabaseQuotaRestricted()) {
+      try {
+        await supabaseAdmin.from("payhero_paybills").delete().eq("id", id);
+      } catch {}
+    }
+    if (pg) {
+      try {
+        await pg.query(`DELETE FROM public.payhero_paybills WHERE id = $1;`, [id]);
+      } catch {}
+    }
+    const paybills = await listPayHeroPaybills();
+    return res.json({ paybills, message: "PayBill mapping removed." });
+  });
+
+  // POST /api/settings/payhero/manual-c2b — Record or simulate a Manual C2B PayHero notification & reconcile against tenant account
+  app.post("/api/settings/payhero/manual-c2b", requireRole(["super_admin", "owner", "administrator", "property_manager", "accountant"]), async (req, res) => {
+    const {
+      paybillNumber,
+      channelId,
+      accountReference,
+      amount,
+      mpesaReceiptNumber,
+      payerPhone,
+      payerName,
+      notes
+    } = req.body || {};
+
+    if (!accountReference || !amount || Number(amount) <= 0) {
+      return res.status(400).json({ error: "Account reference (e.g., A-001) and a positive payment amount are required." });
+    }
+
+    const result = await reconcileAndRecordPayHeroC2B({
+      paybillNumber: String(paybillNumber || "4098871").trim(),
+      channelId: String(channelId || "").trim(),
+      accountReference: String(accountReference).trim(),
+      amount: Number(amount),
+      mpesaReceiptNumber: mpesaReceiptNumber ? String(mpesaReceiptNumber).trim() : undefined,
+      payerPhone: payerPhone ? String(payerPhone).trim() : undefined,
+      payerName: payerName ? String(payerName).trim() : undefined,
+      source: "Manual C2B Entry",
+      notes: notes ? String(notes).trim() : undefined,
+      processedBy: req.currentUser?.fullName || "Administrator"
+    });
+
+    const transactions = await listPayHeroTransactions();
+    return res.json({
+      success: true,
+      transaction: result.transaction,
+      transactions,
+      matchedTenant: result.matchedTenant
+        ? {
+            id: result.matchedTenant.id,
+            tenantRef: result.matchedTenant.tenantRef,
+            name: result.matchedTenant.name,
+            property: result.matchedTenant.property,
+            unitNumber: result.matchedTenant.unitNumber
+          }
+        : null,
+      message: result.matchedTenant
+        ? `C2B Payment of KSh ${Number(amount).toLocaleString()} reconciled to ${result.matchedTenant.name} (${result.matchedTenant.tenantRef}) and confirmed.`
+        : `C2B Payment of KSh ${Number(amount).toLocaleString()} logged under Unmatched Account Reference "${accountReference}".`
+    });
+  });
+
+  // POST /api/webhooks/payhero — Public PayHero C2B / STK Callback Webhook Endpoint
+  app.post("/api/webhooks/payhero", async (req, res) => {
+    try {
+      const body = req.body || {};
+      const responseData = body.response || body.data || body;
+      const accountReference = String(
+        responseData.ExternalReference ||
+        responseData.AccountReference ||
+        responseData.account_reference ||
+        responseData.BillRefNumber ||
+        body.external_reference ||
+        "UNMATCHED"
+      ).trim();
+
+      const amount = Number(
+        responseData.Amount ||
+        responseData.TransAmount ||
+        responseData.amount ||
+        0
+      );
+
+      const mpesaReceiptNumber = String(
+        responseData.MpesaReceiptNumber ||
+        responseData.TransID ||
+        responseData.transaction_reference ||
+        `PH${Date.now().toString().slice(-8)}`
+      ).trim();
+
+      const paybillNumber = String(
+        responseData.BusinessShortCode ||
+        responseData.PaybillNumber ||
+        responseData.paybill_number ||
+        "4098871"
+      ).trim();
+
+      const payerPhone = String(
+        responseData.Phone ||
+        responseData.MSISDN ||
+        responseData.phone ||
+        ""
+      ).trim();
+
+      const payerName = String(
+        responseData.FirstName ||
+        responseData.customer_name ||
+        ""
+      ).trim();
+
+      const result = await reconcileAndRecordPayHeroC2B({
+        paybillNumber,
+        channelId: String(responseData.channel_id || ""),
+        accountReference,
+        amount,
+        mpesaReceiptNumber,
+        payerPhone,
+        payerName,
+        source: "C2B Callback",
+        rawPayload: body,
+        processedBy: "PayHero Webhook Callback"
+      });
+
+      return res.status(200).json({
+        success: true,
+        reconciliationStatus: result.transaction.reconciliationStatus,
+        transactionReference: result.transaction.transactionReference
+      });
+    } catch (err: any) {
+      console.warn("[PayHero Webhook Error]", err?.message);
+      return res.status(200).json({ success: false, error: err?.message });
+    }
+  });
+
+  // GET /api/settings/database/export — Export full database snapshot as JSON for backup & compliance
+  app.get("/api/settings/database/export", requireRole(["super_admin", "owner", "administrator"]), async (req, res) => {
+    const actorName = req.currentUser?.fullName || "Administrator";
+    const [state, systemSettings, paybills, transactions, emailSettings, smsSettings] = await Promise.all([
+      fetchFullDatabaseState(),
+      getSystemSettingsRecord(),
+      listPayHeroPaybills(),
+      listPayHeroTransactions(),
+      getEmailNotificationSettings(true),
+      getSmsNotificationSettings()
+    ]);
+
+    const nowIso = new Date().toISOString();
+    await updateSystemSettingsSection(
+      "backup",
+      { lastBackupAt: nowIso, lastBackupBy: actorName },
+      actorName
+    );
+
+    void logActivity(
+      "system",
+      `Full Database Backup Exported`,
+      `Exported properties, units, tenants, leases, payments, expenses, maintenance, and settings snapshot.`,
+      actorName,
+      void 0,
+      "mint"
+    );
+
+    return res.json({
+      exportedAt: nowIso,
+      exportedBy: actorName,
+      system: "ARabella agency — Rental Management System",
+      counts: {
+        properties: state.properties.length,
+        unitTypes: state.unitTypes.length,
+        tenants: state.tenants.length,
+        payments: state.payments.length,
+        expenses: state.transactions.length,
+        maintenance: state.maintenanceItems.length,
+        paybills: paybills.length,
+        payheroTransactions: transactions.length
+      },
+      data: {
+        systemSettings,
+        paybills,
+        payheroTransactions: transactions,
+        emailSettings,
+        smsSettings,
+        properties: state.properties,
+        unitTypes: state.unitTypes,
+        tenants: state.tenants,
+        payments: state.payments,
+        expenses: state.transactions,
+        maintenance: state.maintenanceItems,
+        tasks: state.tasks
+      }
+    });
   });
 
   // Real-time Server-Sent Events (SSE) Fallback Stream

@@ -24,6 +24,9 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   HelpCircle,
+  Sun,
+  Moon,
+  Monitor,
 } from 'lucide-react';
 import {
   NavPageId,
@@ -68,6 +71,11 @@ interface LayoutShellProps {
   onLogout?: () => Promise<void>;
   errorBanner: string | null;
   onClearError: () => void;
+  companyName?: string;
+  companyTagline?: string;
+  sidebarMode?: 'expanded' | 'collapsed';
+  themeMode?: 'light' | 'dark' | 'system';
+  onChangeThemeMode?: (mode: 'light' | 'dark' | 'system') => void;
   children: React.ReactNode;
 }
 
@@ -88,6 +96,10 @@ const PAGE_TITLES: Record<NavPageId, { title: string; subtitle?: string }> = {
   staff: {
     title: 'Staff & Role Access',
     subtitle: 'Account Management, Invitations & Role-Based Permissions',
+  },
+  settings: {
+    title: 'Settings',
+    subtitle: 'System Configuration, Themes & User Preferences',
   },
 };
 
@@ -114,9 +126,22 @@ export const LayoutShell: React.FC<LayoutShellProps> = ({
   onLogout,
   errorBanner,
   onClearError,
+  companyName = 'ARabella agency',
+  companyTagline = 'Rental Management',
+  sidebarMode,
+  themeMode = 'light',
+  onChangeThemeMode,
   children,
 }) => {
-  const [sidebarExpanded, setSidebarExpanded] = useState(false);
+  const [sidebarExpanded, setSidebarExpanded] = useState<boolean>(
+    sidebarMode === 'expanded'
+  );
+
+  React.useEffect(() => {
+    if (sidebarMode) {
+      setSidebarExpanded(sidebarMode === 'expanded');
+    }
+  }, [sidebarMode]);
   const [financialsOpen, setFinancialsOpen] = useState(true);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
@@ -305,7 +330,7 @@ export const LayoutShell: React.FC<LayoutShellProps> = ({
             type="button"
             onClick={() => handleNavClick('dashboard')}
             className="flex items-center gap-3 group focus:outline-none cursor-pointer"
-            title="ARabella agency — Dashboard"
+            title={`${companyName} — Dashboard`}
           >
             <div className="w-11 h-11 rounded-[16px] bg-[#D6F45A] flex items-center justify-center shadow-[0_4px_12px_rgba(214,244,90,0.3)] transition-transform duration-200 group-hover:scale-105 shrink-0">
               {/* Four-point star emblem matching clean icon language */}
@@ -320,10 +345,10 @@ export const LayoutShell: React.FC<LayoutShellProps> = ({
             {isExpanded && (
               <div className="text-left min-w-0">
                 <span className="block text-[15.5px] font-extrabold tracking-tight text-[#17231E] truncate">
-                  ARabella agency
+                  {companyName}
                 </span>
                 <span className="block text-[10.5px] font-medium text-[#7A8681] truncate">
-                  Rental Management
+                  {companyTagline}
                 </span>
               </div>
             )}
@@ -497,10 +522,9 @@ export const LayoutShell: React.FC<LayoutShellProps> = ({
               id: 'settings',
               label: 'Settings',
               icon: Settings,
-              isActive: profileModalOpen,
+              isActive: activePage === 'settings',
               onClick: () => {
-                setProfileModalOpen(true);
-                setMobileMenuOpen(false);
+                handleNavClick('settings');
               },
             },
             mode
@@ -692,6 +716,41 @@ export const LayoutShell: React.FC<LayoutShellProps> = ({
               <Search className="w-4 h-4 text-[#7A8881] absolute right-3.5 top-1/2 -translate-y-1/2 pointer-events-none stroke-[2]" />
             </div>
 
+            {/* Persistent Theme Switcher (Light / Dark / System) */}
+            {onChangeThemeMode && (
+              <div
+                className="hidden sm:inline-flex items-center p-1 rounded-full bg-[#EAF0EC] border border-[#DEE6E0]"
+                role="group"
+                aria-label="Theme mode switcher"
+              >
+                {(
+                  [
+                    { id: 'light', label: 'Light', Icon: Sun },
+                    { id: 'dark', label: 'Dark', Icon: Moon },
+                    { id: 'system', label: 'System', Icon: Monitor },
+                  ] as const
+                ).map(({ id, label, Icon }) => {
+                  const active = themeMode === id;
+                  return (
+                    <button
+                      key={id}
+                      type="button"
+                      onClick={() => onChangeThemeMode(id)}
+                      title={`${label} Theme`}
+                      aria-label={`${label} Theme`}
+                      className={`w-8 h-8 rounded-full flex items-center justify-center transition-all cursor-pointer ${
+                        active
+                          ? 'bg-[#D6F45A] text-[#17231E] shadow-2xs font-bold'
+                          : 'text-[#5A6762] hover:text-[#17231E]'
+                      }`}
+                    >
+                      <Icon className="w-4 h-4" />
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
             {/* Circular Messages / Chat Button */}
             <button
               onClick={() => handleNavClick('messages')}
@@ -856,7 +915,7 @@ export const LayoutShell: React.FC<LayoutShellProps> = ({
         {/* Footer */}
         <footer className="px-4 sm:px-6 py-3 flex flex-col sm:flex-row items-center justify-between gap-2 text-[11px] text-[#84918B]">
           <div className="flex flex-wrap items-center gap-4">
-            <span>Copyright © {new Date().getFullYear()} ARabella agency</span>
+            <span>Copyright © {new Date().getFullYear()} {companyName}</span>
             <button
               onClick={() => handleNavClick('reports')}
               className="hover:text-[#17231E] transition-colors cursor-pointer"
@@ -968,22 +1027,33 @@ export const LayoutShell: React.FC<LayoutShellProps> = ({
                 </div>
               </div>
 
-              <div className="mt-5 flex items-center justify-between gap-2">
-                {allowedPages.includes('staff') ? (
+              <div className="mt-5 flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5">
                   <button
                     type="button"
                     onClick={() => {
                       setProfileModalOpen(false);
-                      handleNavClick('staff');
+                      handleNavClick('settings');
                     }}
-                    className="rms-interactive-btn inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-[#F4F8F6] hover:bg-[#E4ECE8] text-[#17231E] text-[12px] font-bold cursor-pointer"
+                    className="rms-interactive-btn inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-[#D5F267] hover:bg-[#c8e757] text-[#17231E] text-[12px] font-bold cursor-pointer"
                   >
-                    <UserCog className="w-3.5 h-3.5" />
-                    Staff & Role Access
+                    <Settings className="w-3.5 h-3.5" />
+                    Settings
                   </button>
-                ) : (
-                  <div />
-                )}
+                  {allowedPages.includes('staff') && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setProfileModalOpen(false);
+                        handleNavClick('staff');
+                      }}
+                      className="rms-interactive-btn inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-[#F4F8F6] hover:bg-[#E4ECE8] text-[#17231E] text-[12px] font-bold cursor-pointer"
+                    >
+                      <UserCog className="w-3.5 h-3.5" />
+                      Staff
+                    </button>
+                  )}
+                </div>
 
                 <div className="flex items-center gap-2">
                   <button

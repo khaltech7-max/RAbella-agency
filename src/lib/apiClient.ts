@@ -21,6 +21,11 @@ import {
   SmsLogRecord,
   SmsNotificationSettings,
   SmsTriggerType,
+  SystemSettingsRecord,
+  UserAppearancePreferences,
+  PayHeroPaybillMapping,
+  PayHeroTransactionRecord,
+  IntegrationStatusSummary,
   getAllowedPagesForRole,
   getRoleDisplayLabel,
   isManagementRole,
@@ -5179,6 +5184,113 @@ export const rentalApi = {
       method: 'POST',
     });
   },
+
+  getAllSettings: async () => {
+    return await apiRequest<{
+      systemSettings: SystemSettingsRecord;
+      userPreferences: UserAppearancePreferences;
+      paybills: PayHeroPaybillMapping[];
+      transactions: PayHeroTransactionRecord[];
+      emailSettings: EmailNotificationSettings;
+      smsSettings: SmsNotificationSettings;
+      integrations: IntegrationStatusSummary;
+    }>('/api/settings/all', {
+      method: 'GET',
+    });
+  },
+
+  updateSystemSettingsSection: async (
+    section:
+      | 'general'
+      | 'appearanceDefaults'
+      | 'property'
+      | 'tenant'
+      | 'payment'
+      | 'notifications'
+      | 'lease'
+      | 'invoice'
+      | 'maintenance'
+      | 'security'
+      | 'backup',
+    data: Record<string, any>
+  ) => {
+    return await apiRequest<{
+      systemSettings: SystemSettingsRecord;
+      message: string;
+    }>(`/api/settings/system/${encodeURIComponent(section)}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  },
+
+  updateUserPreferences: async (data: Partial<UserAppearancePreferences>) => {
+    return await apiRequest<{
+      userPreferences: UserAppearancePreferences;
+      message: string;
+    }>('/api/settings/preferences', {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  },
+
+  upsertPayHeroPaybill: async (data: Partial<PayHeroPaybillMapping>) => {
+    return await apiRequest<{
+      paybills: PayHeroPaybillMapping[];
+      message: string;
+    }>('/api/settings/payhero/paybills', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  },
+
+  deletePayHeroPaybill: async (id: string) => {
+    return await apiRequest<{
+      paybills: PayHeroPaybillMapping[];
+      message: string;
+    }>(`/api/settings/payhero/paybills/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    });
+  },
+
+  recordManualPayHeroC2B: async (data: {
+    paybillNumber: string;
+    channelId?: string;
+    accountReference: string;
+    amount: number;
+    mpesaReceiptNumber?: string;
+    payerPhone?: string;
+    payerName?: string;
+    notes?: string;
+  }) => {
+    return await apiRequest<{
+      success: boolean;
+      transaction: PayHeroTransactionRecord;
+      transactions: PayHeroTransactionRecord[];
+      matchedTenant: {
+        id: string;
+        tenantRef: string;
+        name: string;
+        property: string;
+        unitNumber: string;
+      } | null;
+      message: string;
+    }>('/api/settings/payhero/manual-c2b', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  },
+
+  exportDatabaseSnapshot: async () => {
+    return await apiRequest<{
+      exportedAt: string;
+      exportedBy: string;
+      system: string;
+      counts: Record<string, number>;
+      data: Record<string, any>;
+    }>('/api/settings/database/export', {
+      method: 'GET',
+    });
+  },
 };
 
 export const smsApi = {
@@ -5200,6 +5312,16 @@ export const emailApi = {
   retryEmailNotification: rentalApi.retryEmailNotification,
   testEmail: rentalApi.testEmail,
   triggerAutomatedEmailChecks: rentalApi.triggerAutomatedEmailChecks,
+};
+
+export const settingsApi = {
+  getAllSettings: rentalApi.getAllSettings,
+  updateSystemSettingsSection: rentalApi.updateSystemSettingsSection,
+  updateUserPreferences: rentalApi.updateUserPreferences,
+  upsertPayHeroPaybill: rentalApi.upsertPayHeroPaybill,
+  deletePayHeroPaybill: rentalApi.deletePayHeroPaybill,
+  recordManualPayHeroC2B: rentalApi.recordManualPayHeroC2B,
+  exportDatabaseSnapshot: rentalApi.exportDatabaseSnapshot,
 };
 
 export { SupabaseIntegrationError };

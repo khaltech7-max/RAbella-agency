@@ -22,6 +22,8 @@ import {
   SmsNotificationSettings,
   UserSession,
   UserRole,
+  SystemSettingsRecord,
+  UserAppearancePreferences,
   getAllowedPagesForRole,
   getDefaultPageForRole,
   getRoleDisplayLabel,
@@ -50,6 +52,12 @@ import {
   InvoicesPage,
   ReportsPage,
 } from './components/PortfolioViews';
+import {
+  SettingsPage,
+  applyAppearanceToDocument,
+  getCachedUserPreferences,
+  setCachedUserPreferences,
+} from './components/SettingsPage';
 
 const PATH_TO_PAGE: Record<string, NavPageId> = {
   '/dashboard': 'dashboard',
@@ -63,7 +71,7 @@ const PATH_TO_PAGE: Record<string, NavPageId> = {
   '/invoices': 'invoices',
   '/reports': 'reports',
   '/staff': 'staff',
-  '/settings': 'staff',
+  '/settings': 'settings',
 };
 
 const PUBLIC_PATHS = new Set([
@@ -127,6 +135,18 @@ export default function App() {
   const [smsLogs, setSmsLogs] = useState<SmsLogRecord[]>([]);
   const [smsSettings, setSmsSettings] = useState<SmsNotificationSettings | null>(null);
   const [analytics, setAnalytics] = useState<DashboardAnalytics | null>(null);
+  const [systemSettings, setSystemSettings] = useState<SystemSettingsRecord | null>(null);
+  const [userPreferences, setUserPreferences] = useState<UserAppearancePreferences | null>(() =>
+    getCachedUserPreferences()
+  );
+
+  // Apply cached appearance preferences immediately on initial render
+  useEffect(() => {
+    const cached = getCachedUserPreferences();
+    if (cached) {
+      applyAppearanceToDocument(cached, null);
+    }
+  }, []);
 
   const wipeProtectedState = useCallback(() => {
     setCurrentUser(null);
@@ -147,6 +167,8 @@ export default function App() {
     setSmsLogs([]);
     setSmsSettings(null);
     setAnalytics(null);
+    setSystemSettings(null);
+    setUserPreferences(null);
   }, []);
 
   // Register global 401 unauthorized handler for expired or revoked sessions
@@ -336,6 +358,34 @@ export default function App() {
           setSmsLogs(data.smsLogs || []);
           setSmsSettings(data.smsSettings || null);
           setAnalytics(data.analytics);
+
+          // Load system settings & per-user appearance preferences in background
+          void rentalApi
+            .getAllSettings()
+            .then((settingsRes) => {
+              if (settingsRes?.systemSettings) {
+                setSystemSettings(settingsRes.systemSettings);
+              }
+              const cached = getCachedUserPreferences(data.user.id);
+              const resolvedPrefs = cached
+                ? {
+                    ...(settingsRes?.userPreferences || {}),
+                    ...cached,
+                    userId: data.user.id,
+                    userEmail: data.user.email,
+                  }
+                : settingsRes?.userPreferences || null;
+              if (resolvedPrefs) {
+                setUserPreferences(resolvedPrefs as UserAppearancePreferences);
+              }
+              applyAppearanceToDocument(
+                resolvedPrefs as UserAppearancePreferences | null,
+                settingsRes?.systemSettings || null
+              );
+            })
+            .catch(() => {
+              // Non-fatal if settings endpoint fails
+            });
 
           const allowed = getAllowedPagesForRole(data.user.role);
           const defaultPage = getDefaultPageForRole(data.user.role);
@@ -722,6 +772,45 @@ export default function App() {
       onLogout={handleLogout}
       errorBanner={errorBanner}
       onClearError={() => setErrorBanner(null)}
+      companyName={systemSettings?.general?.companyName || 'ARabella agency'}
+      companyTagline={systemSettings?.general?.companyTagline || 'Rental Management'}
+      sidebarMode={
+        userPreferences?.sidebarMode ||
+        (systemSettings?.appearanceDefaults?.sidebarDefaultExpanded
+          ? 'expanded'
+          : undefined)
+      }
+      themeMode={
+        userPreferences?.themeMode ||
+        systemSettings?.appearanceDefaults?.defaultTheme ||
+        'light'
+      }
+      onChangeThemeMode={(nextMode) => {
+        const nextPrefs: UserAppearancePreferences = {
+          userId: currentUser.id,
+          userEmail: currentUser.email,
+          themeMode: nextMode,
+          accentTheme: userPreferences?.accentTheme || 'lime',
+          primaryColor: userPreferences?.primaryColor || '#17231E',
+          accentColor: userPreferences?.accentColor || '#D5F267',
+          layoutDensity: userPreferences?.layoutDensity || 'comfortable',
+          sidebarMode: userPreferences?.sidebarMode || 'collapsed',
+          fontScale: userPreferences?.fontScale || 'normal',
+          fontFamily: userPreferences?.fontFamily || 'Plus Jakarta Sans',
+          compactTables: userPreferences?.compactTables ?? false,
+          reducedMotion: userPreferences?.reducedMotion ?? false,
+          dashboardLayout: userPreferences?.dashboardLayout || {
+            showRatings: true,
+            showTasks: true,
+            showActivities: true,
+            defaultChartRange: '6M',
+          },
+        };
+        setUserPreferences(nextPrefs);
+        setCachedUserPreferences(nextPrefs);
+        applyAppearanceToDocument(nextPrefs, systemSettings);
+        void rentalApi.updateUserPreferences(nextPrefs).catch(() => {});
+      }}
     >
       {loading || !analytics ? (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 animate-pulse">
@@ -1258,6 +1347,32 @@ export default function App() {
                 await runMutation(() => rentalApi.deleteStaff(id));
               }}
               onSwitchUserSession={handleSwitchRole}
+              globalSearch={globalSearch}
+              onGlobalSearchChange={setGlobalSearch}
+            />
+          )}
+
+          {activePage === 'settings' && (
+            <SettingsPage
+              currentUser={currentUser}
+              users={users}
+              properties={properties}
+              tenants={tenants}
+              payments={payments}
+              securityLogs={securityLogs}
+              brandedEmails={brandedEmails}
+              smsLogs={smsLogs}
+              smsSettings={smsSettings}
+              systemSettings={systemSettings}
+              userPreferences={userPreferences}
+              onSystemSettingsChange={setSystemSettings}
+              onUserPreferencesChange={setUserPreferences}
+              onSmsSettingsChange={setSmsSettings}
+              onBrandedEmailsChange={setBrandedEmails}
+              onPaymentsRefresh={async () => {
+                await refreshDatabaseState({ silent: true, force: true });
+              }}
+              onNavigate={handleSelectPage}
               globalSearch={globalSearch}
               onGlobalSearchChange={setGlobalSearch}
             />
