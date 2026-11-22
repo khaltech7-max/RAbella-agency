@@ -248,13 +248,14 @@ export const LayoutShell: React.FC<LayoutShellProps> = ({
             whileTap={{ scale: 0.97 }}
             onClick={item.onClick}
             aria-label={item.label}
+            data-active-nav={item.isActive ? 'true' : undefined}
             className={`relative flex items-center transition-colors duration-200 cursor-pointer focus:outline-none ${
               isExpanded
                 ? `w-full px-3.5 ${item.isSubItem ? 'py-2' : 'py-2.5'} rounded-[16px] justify-between`
                 : 'w-11 h-11 rounded-[16px] justify-center'
             } ${
               item.isActive
-                ? 'text-[#17231E] font-bold'
+                ? 'text-[#17231E] dark:text-[var(--rms-accent-ink)] font-bold'
                 : 'text-[#6E7A75] hover:text-[#17231E] hover:bg-[#F4F8F6] font-semibold'
             }`}
           >
@@ -262,7 +263,7 @@ export const LayoutShell: React.FC<LayoutShellProps> = ({
               <motion.div
                 layoutId={`floating-sidebar-active-${layoutScope}`}
                 transition={{ duration: 0.22, ease: 'easeOut' }}
-                className="absolute inset-0 rounded-[16px] bg-[#D6F45A] shadow-[0_4px_12px_rgba(214,244,90,0.35)]"
+                className="absolute inset-0 rounded-[16px] bg-[#D6F45A] shadow-[0_4px_12px_rgba(214,244,90,0.35)] dark:shadow-none"
               />
             )}
 
@@ -275,7 +276,7 @@ export const LayoutShell: React.FC<LayoutShellProps> = ({
                 className={`${
                   item.isSubItem ? 'w-4 h-4' : 'w-[19px] h-[19px]'
                 } shrink-0 transition-colors duration-200 ${
-                  item.isActive ? 'text-[#17231E]' : 'text-current'
+                  item.isActive ? 'text-[#17231E] dark:text-[var(--rms-accent)]' : 'text-current'
                 }`}
               />
               {isExpanded && (
@@ -316,7 +317,7 @@ export const LayoutShell: React.FC<LayoutShellProps> = ({
 
     return (
       <div
-        className={`flex flex-col justify-between h-full bg-white text-[#17231E] rounded-[24px] shadow-[0_10px_30px_rgba(23,35,30,0.07)] border border-[#E4ECE8] select-none transition-all duration-250 ease-out ${
+        className={`flex flex-col justify-between h-full bg-white text-[#17231E] rounded-[24px] shadow-[0_10px_30px_rgba(23,35,30,0.07)] dark:shadow-[0_16px_36px_rgba(0,0,0,0.45)] border border-[#E4ECE8] select-none transition-all duration-250 ease-out ${
           isExpanded ? 'w-[240px] px-3.5 py-4' : 'w-[68px] px-2.5 py-4 items-center'
         }`}
       >
@@ -332,7 +333,7 @@ export const LayoutShell: React.FC<LayoutShellProps> = ({
             className="flex items-center gap-3 group focus:outline-none cursor-pointer"
             title={`${companyName} — Dashboard`}
           >
-            <div className="w-11 h-11 rounded-[16px] bg-[#D6F45A] flex items-center justify-center shadow-[0_4px_12px_rgba(214,244,90,0.3)] transition-transform duration-200 group-hover:scale-105 shrink-0">
+            <div className="w-11 h-11 rounded-[16px] bg-[#D6F45A] flex items-center justify-center shadow-[0_4px_12px_rgba(214,244,90,0.3)] dark:shadow-none transition-transform duration-200 group-hover:scale-105 shrink-0">
               {/* Four-point star emblem matching clean icon language */}
               <svg
                 viewBox="0 0 24 24"
@@ -597,7 +598,7 @@ export const LayoutShell: React.FC<LayoutShellProps> = ({
                   : 'justify-center'
               }`}
             >
-              <div className="w-11 h-11 rounded-full bg-[#D6F45A] text-[#17231E] font-extrabold text-[13px] tracking-tight flex items-center justify-center shrink-0 shadow-[0_3px_10px_rgba(214,244,90,0.3)] ring-2 ring-[#E4ECE8]">
+              <div className="w-11 h-11 rounded-full bg-[#D6F45A] text-[#17231E] font-extrabold text-[13px] tracking-tight flex items-center justify-center shrink-0 shadow-[0_3px_10px_rgba(214,244,90,0.3)] dark:shadow-none ring-2 ring-[#E4ECE8] dark:ring-[#313131]">
                 {userInitials}
               </div>
               {isExpanded && (
@@ -701,7 +702,7 @@ export const LayoutShell: React.FC<LayoutShellProps> = ({
                 value={globalSearch}
                 onChange={(e) => onGlobalSearchChange(e.target.value)}
                 placeholder="Search tenant, ref (A-001), unit, property..."
-                className="w-full pl-4 pr-14 py-2 sm:py-2.5 rounded-full bg-[#EBF0ED] border border-[#DEE6E0] text-[13px] text-[#17231E] placeholder-[#88968F] focus:outline-none focus:ring-1 focus:ring-[#D6F45A] focus:bg-white transition-all shadow-2xs"
+                className="w-full pl-4 pr-14 py-2 sm:py-2.5 rounded-full bg-[#EBF0ED] border border-[#DEE6E0] text-[13px] text-[#17231E] placeholder-[#88968F] focus:outline-none focus:ring-1 focus:ring-[#D6F45A] focus:bg-white dark:focus:bg-[#282828] transition-all shadow-2xs"
               />
               {globalSearch && (
                 <button
@@ -783,7 +784,7 @@ export const LayoutShell: React.FC<LayoutShellProps> = ({
                 aria-label="Notifications"
               >
                 <Bell className="w-[18px] h-[18px] stroke-[1.9]" />
-                <span className="w-2.5 h-2.5 rounded-full bg-[#EF4444] border-2 border-[#EEF3F0] absolute top-1.5 right-1.5" />
+                <span className="w-2.5 h-2.5 rounded-full bg-[#EF4444] border-2 border-[#EEF3F0] dark:border-[#282828] absolute top-1.5 right-1.5" />
               </button>
 
               {/* Real Database Activity Notifications Dropdown */}

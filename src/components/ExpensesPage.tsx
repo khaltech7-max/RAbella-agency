@@ -35,6 +35,7 @@ import {
   DashboardAnalytics,
   PropertyRecord,
 } from '../data/rentalData';
+import { useThemePalette } from '../lib/useThemeState';
 
 interface ExpensesPageProps {
   transactions: ExpenseTransaction[];
@@ -56,6 +57,7 @@ export const ExpensesPage: React.FC<ExpensesPageProps> = ({
   onGlobalSearchChange,
 }) => {
   const prefersReducedMotion = useReducedMotion();
+  const theme = useThemePalette();
   const [breakdownTab, setBreakdownTab] = useState<'Income' | 'Expense'>('Expense');
   const [search, setSearch] = useState(globalSearch || '');
 
@@ -268,11 +270,17 @@ export const ExpensesPage: React.FC<ExpensesPageProps> = ({
                 <h2 className="text-[16px] font-bold text-[#17231E]">Earnings</h2>
                 <div className="flex items-center gap-4 mt-1 text-[11px] text-[#7A8681]">
                   <span className="flex items-center gap-1.5">
-                    <span className="w-2.5 h-2.5 rounded-xs bg-[#BCEAD2]" />
+                    <span
+                      className="w-2.5 h-2.5 rounded-xs"
+                      style={{ backgroundColor: theme.secondary }}
+                    />
                     Income
                   </span>
                   <span className="flex items-center gap-1.5">
-                    <span className="w-2.5 h-2.5 rounded-xs bg-[#DBF573]" />
+                    <span
+                      className="w-2.5 h-2.5 rounded-xs"
+                      style={{ backgroundColor: theme.primary }}
+                    />
                     Expense
                   </span>
                 </div>
@@ -287,8 +295,17 @@ export const ExpensesPage: React.FC<ExpensesPageProps> = ({
             <div className="relative h-[250px] w-full">
               {(totalIncomeVal > 0 || analytics.totalExpenses > 0) && (
                 <div className="absolute left-[46%] top-3 z-10 pointer-events-none hidden sm:block">
-                  <div className="px-3 py-1.5 rounded-xl bg-[#E4F69B] text-[#17231E] shadow-xs border border-[#CEE876] text-[10.5px]">
-                    <p className="text-[#4F613F] font-semibold">YTD Totals</p>
+                  <div
+                    className="px-3 py-1.5 rounded-xl shadow-xs text-[10.5px]"
+                    style={{
+                      backgroundColor: theme.calloutBg,
+                      border: `1px solid ${theme.calloutBorder}`,
+                      color: theme.tooltipText,
+                    }}
+                  >
+                    <p className="font-semibold" style={{ color: theme.calloutLabel }}>
+                      YTD Totals
+                    </p>
                     <p className="font-bold tabular-nums">
                       Income: <AnimatedCounter value={totalIncomeVal} prefix="KSh " />
                     </p>
@@ -306,34 +323,38 @@ export const ExpensesPage: React.FC<ExpensesPageProps> = ({
                   margin={{ top: 16, right: 8, left: -10, bottom: 0 }}
                   barSize={22}
                 >
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#EEF3F0" />
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={theme.gridStroke} />
                   <XAxis
                     dataKey="month"
                     axisLine={false}
                     tickLine={false}
-                    tick={{ fill: '#88948F', fontSize: 11 }}
+                    tick={{ fill: theme.axisTick, fontSize: 11 }}
                   />
                   <YAxis
                     axisLine={false}
                     tickLine={false}
-                    tick={{ fill: '#88948F', fontSize: 10.5 }}
+                    tick={{ fill: theme.axisTick, fontSize: 10.5 }}
                     tickFormatter={(val) =>
                       val === 0 ? '0' : `${val / 1000}K`
                     }
                   />
-                  <ReferenceLine y={0} stroke="#E4ECE8" />
+                  <ReferenceLine y={0} stroke={theme.referenceLine} />
                   <Tooltip
                     isAnimationActive={!prefersReducedMotion}
                     animationDuration={180}
                     animationEasing="ease-out"
-                    cursor={{ fill: '#F4F8F6' }}
+                    cursor={{ fill: theme.cursorFill }}
                     contentStyle={{
-                      backgroundColor: '#E4F69B',
-                      border: 'none',
+                      backgroundColor: theme.tooltipAccentBg,
+                      border: theme.tooltipAccentBorder,
                       borderRadius: '10px',
                       fontSize: '11.5px',
                       fontWeight: 700,
+                      color: theme.tooltipText,
+                      boxShadow: theme.isDark ? '0 8px 24px rgba(0,0,0,0.45)' : undefined,
                     }}
+                    itemStyle={{ color: theme.tooltipAccentValue }}
+                    labelStyle={{ color: theme.tooltipMuted }}
                     formatter={(val: any, name: any) => [
                       `KSh ${Math.abs(Number(val || 0)).toLocaleString()}`,
                       name === 'income' ? 'Income' : 'Expense',
@@ -342,7 +363,7 @@ export const ExpensesPage: React.FC<ExpensesPageProps> = ({
                   <Bar
                     dataKey="income"
                     stackId="stack"
-                    fill="#BCEAD2"
+                    fill={theme.secondary}
                     radius={[6, 6, 0, 0]}
                     isAnimationActive={!prefersReducedMotion}
                     animationBegin={60}
@@ -352,7 +373,7 @@ export const ExpensesPage: React.FC<ExpensesPageProps> = ({
                   <Bar
                     dataKey="expense"
                     stackId="stack"
-                    fill="#DBF573"
+                    fill={theme.primary}
                     radius={[6, 6, 0, 0]}
                     isAnimationActive={!prefersReducedMotion}
                     animationBegin={180}
@@ -416,8 +437,11 @@ export const ExpensesPage: React.FC<ExpensesPageProps> = ({
                   <Pie
                     data={
                       activeDonutData.some((d) => d.value > 0)
-                        ? activeDonutData
-                        : [{ name: 'No Records', value: 1, color: '#EEF3F0' }]
+                        ? activeDonutData.map((entry, idx) => ({
+                            ...entry,
+                            color: theme.donutPalette[idx % theme.donutPalette.length],
+                          }))
+                        : [{ name: 'No Records', value: 1, color: theme.emptyRing }]
                     }
                     cx="50%"
                     cy="50%"
@@ -434,8 +458,11 @@ export const ExpensesPage: React.FC<ExpensesPageProps> = ({
                     animationEasing="ease-out"
                   >
                     {(activeDonutData.some((d) => d.value > 0)
-                      ? activeDonutData
-                      : [{ name: 'No Records', value: 1, color: '#EEF3F0' }]
+                      ? activeDonutData.map((entry, idx) => ({
+                          ...entry,
+                          color: theme.donutPalette[idx % theme.donutPalette.length],
+                        }))
+                      : [{ name: 'No Records', value: 1, color: theme.emptyRing }]
                     ).map((entry, idx) => (
                       <Cell key={idx} fill={entry.color} />
                     ))}
@@ -447,7 +474,7 @@ export const ExpensesPage: React.FC<ExpensesPageProps> = ({
 
           {/* Category List */}
           <div className="space-y-2.5 mt-3">
-            {activeDonutData.map((cat) => (
+            {activeDonutData.map((cat, idx) => (
               <div
                 key={cat.name}
                 className="flex items-center justify-between text-[12px]"
@@ -455,7 +482,10 @@ export const ExpensesPage: React.FC<ExpensesPageProps> = ({
                 <div className="flex items-center gap-2.5 min-w-0">
                   <span
                     className="w-5 h-2.5 rounded-sm shrink-0"
-                    style={{ backgroundColor: cat.color }}
+                    style={{
+                      backgroundColor:
+                        theme.donutPalette[idx % theme.donutPalette.length],
+                    }}
                   />
                   <span className="text-[#17231E] font-medium truncate">
                     {cat.name}{' '}

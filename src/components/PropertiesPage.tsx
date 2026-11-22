@@ -36,6 +36,7 @@ import {
   UnitTypeItem,
 } from '../data/rentalData';
 import { rentalApi } from '../lib/apiClient';
+import { useThemePalette } from '../lib/useThemeState';
 
 interface PropertiesPageProps {
   properties: PropertyRecord[];
@@ -72,6 +73,7 @@ export const PropertiesPage: React.FC<PropertiesPageProps> = ({
   globalSearch = '',
   onGlobalSearchChange,
 }) => {
+  const theme = useThemePalette();
   // Search & Filter state
   const [searchTerm, setSearchTerm] = useState(globalSearch || '');
   const [selectedPrefixFilter, setSelectedPrefixFilter] = useState<string>('ALL');
@@ -603,7 +605,8 @@ export const PropertiesPage: React.FC<PropertiesPageProps> = ({
             <div className="w-full bg-[#E5EAE7] rounded-full h-2 overflow-hidden mb-1.5">
               <AnimatedProgressBar
                 percent={Math.min(100, Math.max(0, Number(overallOccupancyPct)))}
-                className="bg-[#24693D] h-full rounded-full"
+                className="h-full rounded-full"
+                style={{ backgroundColor: theme.primary }}
               />
             </div>
             <div className="text-[11px] text-[#7C8B83] tabular-nums">

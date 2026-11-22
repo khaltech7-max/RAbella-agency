@@ -713,10 +713,10 @@ export default function App() {
   // 1. While verifying an existing session token, show only the verification gate (never flash dashboard content)
   if (authChecking) {
     return (
-      <div className="min-h-screen bg-[#EEF3F0] flex items-center justify-center p-4">
-        <div className="bg-white rounded-2xl border border-[#E4ECE8] px-6 py-5 shadow-xs flex items-center gap-3">
-          <div className="w-4 h-4 rounded-full border-2 border-[#17231E] border-t-transparent animate-spin" />
-          <span className="text-[13px] font-semibold text-[#17231E]">
+      <div className="min-h-screen bg-[#EEF3F0] dark:bg-[#191919] flex items-center justify-center p-4">
+        <div className="bg-white dark:bg-[#212121] rounded-2xl border border-[#E4ECE8] dark:border-[#313131] px-6 py-5 shadow-xs flex items-center gap-3">
+          <div className="w-4 h-4 rounded-full border-2 border-[#17231E] dark:border-[#D5F267] border-t-transparent dark:border-t-transparent animate-spin" />
+          <span className="text-[13px] font-semibold text-[#17231E] dark:text-[#ECF4F0]">
             Verifying authenticated session...
           </span>
         </div>
@@ -815,9 +815,9 @@ export default function App() {
       {loading || !analytics ? (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 animate-pulse">
           {[1, 2, 3, 4].map((n) => (
-            <div key={n} className="h-28 rounded-2xl bg-white/80" />
+            <div key={n} className="h-28 rounded-2xl bg-white/80 dark:bg-[#212121] border border-transparent dark:border-[#313131]" />
           ))}
-          <div className="sm:col-span-2 lg:col-span-4 h-96 rounded-2xl bg-white/80" />
+          <div className="sm:col-span-2 lg:col-span-4 h-96 rounded-2xl bg-white/80 dark:bg-[#212121] border border-transparent dark:border-[#313131]" />
         </div>
       ) : !isPageAuthorized ? (
         <div className="bg-white rounded-2xl p-8 border border-[#E4ECE8] text-center max-w-lg mx-auto my-8">

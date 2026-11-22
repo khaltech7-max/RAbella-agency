@@ -111,6 +111,7 @@ export const AnimatedCounter: React.FC<AnimatedCounterProps> = ({
 export interface AnimatedProgressBarProps {
   percent: number;
   className?: string;
+  style?: React.CSSProperties;
   delay?: number;
   duration?: number;
   title?: string;
@@ -123,6 +124,7 @@ export interface AnimatedProgressBarProps {
 export const AnimatedProgressBar: React.FC<AnimatedProgressBarProps> = ({
   percent,
   className = '',
+  style,
   delay = 0,
   duration = 0.85,
   title,
@@ -144,6 +146,7 @@ export const AnimatedProgressBar: React.FC<AnimatedProgressBarProps> = ({
             }
       }
       className={className}
+      style={style}
       title={title}
     />
   );

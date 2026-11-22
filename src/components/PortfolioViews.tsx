@@ -44,6 +44,7 @@ import {
   formatYmdShort,
   parseBillingDateToYmd,
 } from '../lib/anniversaryBilling';
+import { useThemePalette } from '../lib/useThemeState';
 
 interface PropertiesViewProps {
   properties: PropertyRecord[];
@@ -747,6 +748,7 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
   onGlobalSearchChange,
 }) => {
   const prefersReducedMotion = useReducedMotion();
+  const theme = useThemePalette();
   const [search, setSearch] = useState(globalSearch || '');
 
   useEffect(() => {
@@ -915,29 +917,39 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
                   margin={{ top: 10, right: 10, left: -20, bottom: 0 }}
                   barSize={28}
                 >
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#EEF3F0" />
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={theme.gridStroke} />
                   <XAxis
                     dataKey="name"
                     axisLine={false}
                     tickLine={false}
-                    tick={{ fill: '#88948F', fontSize: 11 }}
+                    tick={{ fill: theme.axisTick, fontSize: 11 }}
                   />
                   <YAxis
                     axisLine={false}
                     tickLine={false}
-                    tick={{ fill: '#88948F', fontSize: 11 }}
+                    tick={{ fill: theme.axisTick, fontSize: 11 }}
                     tickFormatter={(v) => `${v}%`}
                   />
                   <Tooltip
                     isAnimationActive={!prefersReducedMotion}
                     animationDuration={180}
                     animationEasing="ease-out"
+                    cursor={{ fill: theme.cursorFill }}
+                    contentStyle={{
+                      backgroundColor: theme.tooltipBg,
+                      border: theme.tooltipBorder,
+                      borderRadius: '10px',
+                      fontSize: '12px',
+                      color: theme.tooltipText,
+                    }}
+                    itemStyle={{ color: theme.tooltipText }}
+                    labelStyle={{ color: theme.tooltipMuted, fontWeight: 700 }}
                   />
                   <Bar
                     dataKey="occupied"
                     name="Occupied %"
                     stackId="a"
-                    fill="#BCEAD2"
+                    fill={theme.secondary}
                     radius={[0, 0, 6, 6]}
                     isAnimationActive={!prefersReducedMotion}
                     animationBegin={60}
@@ -948,7 +960,7 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
                     dataKey="vacant"
                     name="Vacant %"
                     stackId="a"
-                    fill="#D5F267"
+                    fill={theme.primary}
                     radius={[6, 6, 0, 0]}
                     isAnimationActive={!prefersReducedMotion}
                     animationBegin={180}

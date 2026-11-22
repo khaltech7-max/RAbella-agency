@@ -684,13 +684,32 @@ export interface UserAppearancePreferences {
   userId: string;
   userEmail?: string;
   themeMode: 'light' | 'dark' | 'system';
-  accentTheme: 'lime' | 'emerald' | 'teal' | 'amber';
+  accentTheme:
+    | 'lime'
+    | 'emerald'
+    | 'teal'
+    | 'amber'
+    | 'terracotta'
+    | 'sienna'
+    | 'navy'
+    | 'beige'
+    | 'camel'
+    | 'olive'
+    | 'charcoal'
+    | 'brown';
   primaryColor: string;
   accentColor: string;
   layoutDensity: 'comfortable' | 'compact';
   sidebarMode: 'collapsed' | 'expanded';
   fontScale: 'small' | 'normal' | 'large';
-  fontFamily: 'Plus Jakarta Sans' | 'DM Sans' | 'Manrope' | 'Outfit';
+  fontFamily:
+    | 'Plus Jakarta Sans'
+    | 'DM Sans'
+    | 'Manrope'
+    | 'Outfit'
+    | 'Inter'
+    | 'Roboto'
+    | 'IBM Plex Sans';
   compactTables: boolean;
   reducedMotion: boolean;
   dashboardLayout: {

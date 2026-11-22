@@ -662,7 +662,7 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
   };
 
   return (
-    <div className="space-y-6 bg-[#F5F7F6] text-[#172B25] min-h-screen">
+    <div className="space-y-6 bg-transparent text-[#172B25] min-h-screen">
       {/* 1. TOP HEADER & METRIC STRIP */}
       <header className="bg-white rounded-2xl p-5 border border-[#E7ECE9] shadow-xs">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">

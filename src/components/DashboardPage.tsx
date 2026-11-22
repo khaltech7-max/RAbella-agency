@@ -50,6 +50,7 @@ import {
   PropertyRecord,
   UserSession,
 } from '../data/rentalData';
+import { useThemePalette } from '../lib/useThemeState';
 
 interface DashboardPageProps {
   currentUser?: UserSession;
@@ -95,6 +96,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
   onNavigate,
 }) => {
   const prefersReducedMotion = useReducedMotion();
+  const theme = useThemePalette();
   const [revenueRange, setRevenueRange] = useState<'6m' | '12m'>('6m');
   const [collectionRange, setCollectionRange] = useState<'7d' | '14d'>('7d');
   const [tableSearch, setTableSearch] = useState(globalSearch || '');
@@ -258,7 +260,10 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
           </p>
         </div>
         <div className="hidden sm:inline-flex items-center gap-2 text-[12px] font-medium text-[#76827D]">
-          <span className="w-2 h-2 rounded-full bg-[#D5F267]" />
+          <span
+            className="w-2 h-2 rounded-full"
+            style={{ backgroundColor: theme.primary }}
+          />
           <span>{todayFormatted}</span>
         </div>
       </div>
@@ -282,12 +287,12 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                   <AnimatedCounter value={analytics.activeLeasesCount} />
                 </p>
               </div>
-              <div className="w-9 h-9 rounded-xl bg-white flex items-center justify-center text-[#17231E] shadow-2xs">
+              <div className="w-9 h-9 rounded-xl bg-white dark:bg-[#242424] border border-transparent dark:border-white/10 flex items-center justify-center text-[#145338] dark:text-[var(--rms-soft-ink)] shadow-2xs">
                 <FileCheck2 className="w-4 h-4" />
               </div>
             </div>
             <div className="mt-4 flex items-center gap-2">
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-white text-[#145338] text-[10.5px] font-bold tabular-nums">
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-white dark:bg-[#242424] border border-transparent dark:border-white/10 text-[#145338] dark:text-[var(--rms-soft-ink)] text-[10.5px] font-bold tabular-nums">
                 <TrendingUp className="w-3 h-3" />
                 <AnimatedCounter
                   value={analytics.occupancyRatePct}
@@ -295,7 +300,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                   suffix="%"
                 />
               </span>
-              <span className="text-[11px] text-[#5B7268]">occupancy rate</span>
+              <span className="text-[11px] text-[#5B7268] dark:text-[#A6ACA8]">occupancy rate</span>
             </div>
           </div>
 
@@ -415,7 +420,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
 
               {/* Multi-segment Horizontal Bar (Animated) */}
               {rawTotalAvail === 0 ? (
-                <div className="h-10 w-full rounded-xl bg-[#EEF3F0] flex items-center justify-center text-[11px] font-medium text-[#7A8681]">
+                <div className="h-10 w-full rounded-xl bg-[#EEF3F0] dark:bg-[#282828] flex items-center justify-center text-[11px] font-medium text-[#7A8681]">
                   No units registered yet — Add a Property or Unit Type
                 </div>
               ) : (
@@ -424,7 +429,8 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                     <AnimatedProgressBar
                       percent={Math.max(8, Math.round((avail.occupied / totalAvail) * 100))}
                       delay={0.04}
-                      className="bg-[#BCEAD2] h-full rounded-l-xl"
+                      className="h-full rounded-l-xl"
+                      style={{ backgroundColor: theme.secondary }}
                       title={`Occupied: ${avail.occupied} units`}
                     />
                   )}
@@ -432,7 +438,8 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                     <AnimatedProgressBar
                       percent={Math.max(8, Math.round((avail.reserved / totalAvail) * 100))}
                       delay={0.1}
-                      className="bg-[#E5F7A3] h-full"
+                      className="h-full"
+                      style={{ backgroundColor: theme.tertiary }}
                       title={`Reserved / Pending: ${avail.reserved} units`}
                     />
                   )}
@@ -440,7 +447,8 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                     <AnimatedProgressBar
                       percent={Math.max(8, Math.round((avail.available / totalAvail) * 100))}
                       delay={0.16}
-                      className="bg-[#D5F267] h-full"
+                      className="h-full"
+                      style={{ backgroundColor: theme.primary }}
                       title={`Available: ${avail.available} units`}
                     />
                   )}
@@ -448,7 +456,8 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                     <AnimatedProgressBar
                       percent={Math.max(8, Math.round((avail.notReady / totalAvail) * 100))}
                       delay={0.22}
-                      className="bg-[#E8F1EC] h-full rounded-r-xl"
+                      className="h-full rounded-r-xl"
+                      style={{ backgroundColor: theme.neutral }}
                       title={`Not Ready / Maintenance: ${avail.notReady} units`}
                     />
                   )}
@@ -459,7 +468,10 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
             {/* 2x2 Breakdown Grid matching reference */}
             <div className="grid grid-cols-2 gap-y-4 gap-x-6 mt-5 pt-2">
               <div className="flex items-start gap-2.5">
-                <span className="w-1 h-9 rounded-full bg-[#BCEAD2] shrink-0 mt-0.5" />
+                <span
+                  className="w-1 h-9 rounded-full shrink-0 mt-0.5"
+                  style={{ backgroundColor: theme.secondary }}
+                />
                 <div>
                   <p className="text-[11px] text-[#7A8681] font-medium">Occupied</p>
                   <p className="text-[20px] font-extrabold text-[#17231E] leading-tight tabular-nums">
@@ -469,7 +481,10 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
               </div>
 
               <div className="flex items-start gap-2.5">
-                <span className="w-1 h-9 rounded-full bg-[#E5F7A3] shrink-0 mt-0.5" />
+                <span
+                  className="w-1 h-9 rounded-full shrink-0 mt-0.5"
+                  style={{ backgroundColor: theme.tertiary }}
+                />
                 <div>
                   <p className="text-[11px] text-[#7A8681] font-medium">Reserved</p>
                   <p className="text-[20px] font-extrabold text-[#17231E] leading-tight tabular-nums">
@@ -479,7 +494,10 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
               </div>
 
               <div className="flex items-start gap-2.5">
-                <span className="w-1 h-9 rounded-full bg-[#D5F267] shrink-0 mt-0.5" />
+                <span
+                  className="w-1 h-9 rounded-full shrink-0 mt-0.5"
+                  style={{ backgroundColor: theme.primary }}
+                />
                 <div>
                   <p className="text-[11px] text-[#7A8681] font-medium">Available</p>
                   <p className="text-[20px] font-extrabold text-[#17231E] leading-tight tabular-nums">
@@ -489,7 +507,10 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
               </div>
 
               <div className="flex items-start gap-2.5">
-                <span className="w-1 h-9 rounded-full bg-[#D7E5DD] shrink-0 mt-0.5" />
+                <span
+                  className="w-1 h-9 rounded-full shrink-0 mt-0.5"
+                  style={{ backgroundColor: theme.isDark ? '#424242' : '#D7E5DD' }}
+                />
                 <div>
                   <p className="text-[11px] text-[#7A8681] font-medium">Not Ready</p>
                   <p className="text-[20px] font-extrabold text-[#17231E] leading-tight tabular-nums">
@@ -525,8 +546,18 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                   transition={{ duration: 0.45, delay: 0.25, ease: 'easeOut' }}
                   className="absolute left-[38%] top-2 z-10 pointer-events-none hidden sm:block"
                 >
-                  <div className="px-2.5 py-1 rounded-lg bg-[#E4F69B] text-[#17231E] shadow-xs border border-[#CEE876]">
-                    <p className="text-[9.5px] text-[#536643] font-medium leading-none">
+                  <div
+                    className="px-2.5 py-1 rounded-lg shadow-xs"
+                    style={{
+                      backgroundColor: theme.calloutBg,
+                      border: `1px solid ${theme.calloutBorder}`,
+                      color: theme.tooltipText,
+                    }}
+                  >
+                    <p
+                      className="text-[9.5px] font-medium leading-none"
+                      style={{ color: theme.calloutLabel }}
+                    >
                       Confirmed Revenue
                     </p>
                     <p className="text-[12px] font-extrabold tabular-nums mt-0.5">
@@ -551,26 +582,34 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                     margin={{ top: 18, right: 10, left: -10, bottom: 0 }}
                   >
                     <defs>
-                      <linearGradient id="revGrad" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#CBEAD8" stopOpacity={0.65} />
-                        <stop offset="95%" stopColor="#CBEAD8" stopOpacity={0.05} />
+                      <linearGradient id={`revGrad-${theme.accentTheme}`} x1="0" y1="0" x2="0" y2="1">
+                        <stop
+                          offset="5%"
+                          stopColor={theme.areaGrad}
+                          stopOpacity={theme.isDark ? 0.32 : 0.65}
+                        />
+                        <stop
+                          offset="95%"
+                          stopColor={theme.areaGrad}
+                          stopOpacity={0.02}
+                        />
                       </linearGradient>
                     </defs>
                     <CartesianGrid
                       strokeDasharray="3 3"
                       vertical={false}
-                      stroke="#EEF3F0"
+                      stroke={theme.gridStroke}
                     />
                     <XAxis
                       dataKey="month"
                       axisLine={false}
                       tickLine={false}
-                      tick={{ fill: '#88948F', fontSize: 10.5 }}
+                      tick={{ fill: theme.axisTick, fontSize: 10.5 }}
                     />
                     <YAxis
                       axisLine={false}
                       tickLine={false}
-                      tick={{ fill: '#88948F', fontSize: 10 }}
+                      tick={{ fill: theme.axisTick, fontSize: 10 }}
                       tickFormatter={(val) =>
                         val === 0
                           ? 'KSh 0'
@@ -584,13 +623,16 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                       animationDuration={180}
                       animationEasing="ease-out"
                       contentStyle={{
-                        backgroundColor: '#E4F69B',
-                        border: 'none',
+                        backgroundColor: theme.tooltipAccentBg,
+                        border: theme.tooltipAccentBorder,
                         borderRadius: '10px',
                         fontSize: '12px',
                         fontWeight: 700,
-                        color: '#17231E',
+                        color: theme.tooltipText,
+                        boxShadow: theme.isDark ? '0 8px 24px rgba(0,0,0,0.45)' : undefined,
                       }}
+                      itemStyle={{ color: theme.tooltipAccentValue }}
+                      labelStyle={{ color: theme.tooltipMuted }}
                       formatter={(value: any) => [
                         `KSh ${Number(value || 0).toLocaleString()}`,
                         'Rent Revenue',
@@ -599,18 +641,18 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                     <Area
                       type="monotone"
                       dataKey="revenue"
-                      stroke="#C2E456"
+                      stroke={theme.areaStroke}
                       strokeWidth={2.5}
                       fillOpacity={1}
-                      fill="url(#revGrad)"
+                      fill={`url(#revGrad-${theme.accentTheme})`}
                       isAnimationActive={!prefersReducedMotion}
                       animationBegin={40}
                       animationDuration={860}
                       animationEasing="ease-out"
                       activeDot={{
                         r: 5,
-                        fill: '#17231E',
-                        stroke: '#D5F267',
+                        fill: theme.primary,
+                        stroke: theme.cardBg,
                         strokeWidth: 2,
                       }}
                     />
@@ -631,11 +673,17 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                 </h2>
                 <div className="flex items-center gap-4 mt-1 text-[11px] text-[#7A8681]">
                   <span className="flex items-center gap-1.5">
-                    <span className="w-2.5 h-2.5 rounded-xs bg-[#BCEAD2]" />
+                    <span
+                      className="w-2.5 h-2.5 rounded-xs"
+                      style={{ backgroundColor: theme.secondary }}
+                    />
                     Collected
                   </span>
                   <span className="flex items-center gap-1.5">
-                    <span className="w-2.5 h-2.5 rounded-xs bg-[#D5F267]" />
+                    <span
+                      className="w-2.5 h-2.5 rounded-xs"
+                      style={{ backgroundColor: theme.primary }}
+                    />
                     Pending
                   </span>
                 </div>
@@ -665,37 +713,41 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                   <CartesianGrid
                     strokeDasharray="3 3"
                     vertical={false}
-                    stroke="#EEF3F0"
+                    stroke={theme.gridStroke}
                   />
                   <XAxis
                     dataKey="day"
                     axisLine={false}
                     tickLine={false}
-                    tick={{ fill: '#88948F', fontSize: 10.5 }}
+                    tick={{ fill: theme.axisTick, fontSize: 10.5 }}
                   />
                   <YAxis
                     allowDecimals={false}
                     axisLine={false}
                     tickLine={false}
-                    tick={{ fill: '#88948F', fontSize: 10.5 }}
+                    tick={{ fill: theme.axisTick, fontSize: 10.5 }}
                   />
                   <Tooltip
                     isAnimationActive={!prefersReducedMotion}
                     animationDuration={180}
                     animationEasing="ease-out"
-                    cursor={{ fill: '#F4F8F6' }}
+                    cursor={{ fill: theme.cursorFill }}
                     contentStyle={{
-                      backgroundColor: '#FFFFFF',
-                      border: '1px solid #E4ECE8',
+                      backgroundColor: theme.tooltipBg,
+                      border: theme.tooltipBorder,
                       borderRadius: '10px',
                       fontSize: '12px',
+                      color: theme.tooltipText,
+                      boxShadow: theme.isDark ? '0 8px 24px rgba(0,0,0,0.45)' : undefined,
                     }}
+                    itemStyle={{ color: theme.tooltipText }}
+                    labelStyle={{ color: theme.tooltipMuted, fontWeight: 700 }}
                   />
                   <Bar
                     dataKey="collected"
                     name="Collected Payments"
                     stackId="a"
-                    fill="#BCEAD2"
+                    fill={theme.secondary}
                     radius={[0, 0, 6, 6]}
                     isAnimationActive={!prefersReducedMotion}
                     animationBegin={60}
@@ -706,7 +758,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                     dataKey="pending"
                     name="Pending Payments"
                     stackId="a"
-                    fill="#D5F267"
+                    fill={theme.primary}
                     radius={[6, 6, 0, 0]}
                     isAnimationActive={!prefersReducedMotion}
                     animationBegin={180}
@@ -767,8 +819,11 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                         animationDuration={880}
                         animationEasing="ease-out"
                       >
-                        {analytics.leasesByProperty.map((entry, idx) => (
-                          <Cell key={idx} fill={entry.color} />
+                        {analytics.leasesByProperty.map((_entry, idx) => (
+                          <Cell
+                            key={idx}
+                            fill={theme.donutPalette[idx % theme.donutPalette.length]}
+                          />
                         ))}
                       </Pie>
                       <Tooltip
@@ -777,24 +832,30 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                         animationEasing="ease-out"
                         formatter={(val: any) => [`${val ?? 0}%`, 'Share']}
                         contentStyle={{
+                          backgroundColor: theme.tooltipBg,
                           borderRadius: '10px',
-                          border: '1px solid #E4ECE8',
+                          border: theme.tooltipBorder,
                           fontSize: '11px',
+                          color: theme.tooltipText,
                         }}
+                        itemStyle={{ color: theme.tooltipAccentValue }}
                       />
                     </PieChart>
                   </ResponsiveContainer>
                 </div>
 
                 <div className="col-span-7 space-y-2 pl-2">
-                  {analytics.leasesByProperty.map((item) => (
+                  {analytics.leasesByProperty.map((item, idx) => (
                     <div
                       key={item.name}
                       className="flex items-center gap-2 text-[11.5px]"
                     >
                       <span
                         className="w-2.5 h-2.5 rounded-full shrink-0"
-                        style={{ backgroundColor: item.color }}
+                        style={{
+                          backgroundColor:
+                            theme.donutPalette[idx % theme.donutPalette.length],
+                        }}
                       />
                       <span className="font-bold text-[#17231E] w-9 tabular-nums">
                         <AnimatedCounter
@@ -1040,7 +1101,8 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                   <AnimatedProgressBar
                     percent={item.pct}
                     delay={0.05 * idx}
-                    className="h-full rounded-full bg-[#D5F267]"
+                    className="h-full rounded-full"
+                    style={{ backgroundColor: theme.primary }}
                   />
                 </div>
                 <span className="w-7 text-right font-bold text-[#17231E] tabular-nums">
@@ -1084,7 +1146,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                 <div
                   key={task.id}
                   onClick={() => onToggleTask(task.id)}
-                  className={`rms-interactive-btn p-3 rounded-xl cursor-pointer group ${
+                  className={`rms-interactive-btn p-3 rounded-xl border border-transparent cursor-pointer group ${
                     task.tone === 'lime' ? 'bg-[#DDF576]' : 'bg-[#D8F3E5]'
                   } ${task.done ? 'opacity-65' : ''}`}
                 >
@@ -1096,12 +1158,12 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                           e.stopPropagation();
                           onDeleteTask(task.id);
                         }}
-                        className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-white/60 text-[#4E6459] transition-opacity"
+                        className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-white/60 dark:hover:bg-white/10 text-[#4E6459] transition-opacity"
                         title="Delete task"
                       >
                         <Trash2 className="w-3 h-3" />
                       </button>
-                      <span className="w-4 h-4 rounded-full bg-white/70 flex items-center justify-center">
+                      <span className="w-4 h-4 rounded-full bg-white/70 dark:bg-white/10 flex items-center justify-center">
                         {task.done ? (
                           <Check className="w-2.5 h-2.5 text-[#17231E]" />
                         ) : (

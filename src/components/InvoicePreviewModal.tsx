@@ -181,6 +181,7 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
 
       {/* Full Invoice Sheet Container — Fits Entire Invoice on Screen */}
       <div
+        data-invoice-paper="true"
         className={`w-full ${
           fitScreen ? 'max-w-[700px]' : 'max-w-[820px]'
         } rounded-[22px] overflow-hidden relative shadow-2xl border border-[#D5E2DB] shrink-0 transition-all duration-200`}

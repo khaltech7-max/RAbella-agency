@@ -302,8 +302,13 @@ export function applyAppearanceToDocument(
     effectivePrefs?.primaryColor ||
     effectiveSys?.appearanceDefaults?.primaryColor ||
     '#17231E';
-  root.style.setProperty('--rms-accent', accentColor);
-  root.style.setProperty('--rms-primary', primaryColor);
+  if (isDark) {
+    root.style.removeProperty('--rms-accent');
+    root.style.removeProperty('--rms-primary');
+  } else {
+    root.style.setProperty('--rms-accent', accentColor);
+    root.style.setProperty('--rms-primary', primaryColor);
+  }
   setSystemBrandingForInvoices(effectiveSys, effectivePrefs);
 
   // Attach live OS prefers-color-scheme listener once so "system" mode updates automatically
@@ -1224,8 +1229,8 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                     },
                     {
                       id: 'dark' as const,
-                      title: 'Dark Mode (Forest Slate)',
-                      desc: 'Low-glare dark emerald canvas (#0C1512) with high-contrast lime accents',
+                      title: 'Dark Mode (Charcoal #191919)',
+                      desc: 'Deep neutral charcoal canvas (#191919) paired with elevated slate cards and soft botanical lime glow',
                       icon: Moon,
                     },
                     {
@@ -1274,6 +1279,14 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                       { id: 'emerald' as const, label: 'Forest Mint', hex: '#A7F3D0', primary: '#145338' },
                       { id: 'teal' as const, label: 'Coastal Teal', hex: '#99F6E4', primary: '#134E4A' },
                       { id: 'amber' as const, label: 'Warm Gold', hex: '#FDE68A', primary: '#451A03' },
+                      { id: 'terracotta' as const, label: 'Terracotta (#E87A3D)', hex: '#E87A3D', primary: '#431407' },
+                      { id: 'sienna' as const, label: 'Burnt Sienna (#CC5D24)', hex: '#CC5D24', primary: '#3B1506' },
+                      { id: 'navy' as const, label: 'Navy Blue', hex: '#1E3A8A', primary: '#0F172A' },
+                      { id: 'beige' as const, label: 'Beige', hex: '#E6D7C3', primary: '#3D3226' },
+                      { id: 'camel' as const, label: 'Camel', hex: '#C69C6D', primary: '#3B2814' },
+                      { id: 'olive' as const, label: 'Sage Olive Green', hex: '#849B74', primary: '#1F2E16' },
+                      { id: 'charcoal' as const, label: 'Charcoal Gray', hex: '#374151', primary: '#1F242B' },
+                      { id: 'brown' as const, label: 'Brown', hex: '#6B4423', primary: '#3B2311' },
                     ].map((acc) => {
                       const active = prefDraft.accentTheme === acc.id;
                       return (
@@ -1321,6 +1334,9 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                     <option value="DM Sans">DM Sans (Clean Geometric)</option>
                     <option value="Manrope">Manrope (Modern Financial)</option>
                     <option value="Outfit">Outfit (Architectural Display)</option>
+                    <option value="Inter">Inter (Crisp UI Standard)</option>
+                    <option value="Roboto">Roboto (Clean Neutral)</option>
+                    <option value="IBM Plex Sans">IBM Plex Sans (Technical Precision)</option>
                   </select>
                 </div>
 

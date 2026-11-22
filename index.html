@@ -11,9 +11,36 @@
     <meta name="twitter:card" content="summary_large_image" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&family=IBM+Plex+Sans:wght@400;500;600;700&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&family=Manrope:wght@400;500;600;700;800&family=Outfit:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Roboto:wght@400;500;700;900&display=swap" rel="stylesheet" />
+    <script>
+      (function () {
+        try {
+          var raw = localStorage.getItem('rms_user_appearance_cache_v1');
+          var prefs = raw ? JSON.parse(raw) : null;
+          var mode = (prefs && prefs.themeMode) || 'light';
+          var sysDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+          var isDark = mode === 'dark' || (mode === 'system' && sysDark);
+          if (isDark) {
+            document.documentElement.classList.add('dark');
+            document.documentElement.setAttribute('data-resolved-theme', 'dark');
+          } else {
+            document.documentElement.classList.remove('dark');
+            document.documentElement.setAttribute('data-resolved-theme', 'light');
+          }
+          if (prefs && prefs.accentTheme) {
+            document.documentElement.setAttribute('data-accent-theme', prefs.accentTheme);
+          }
+          if (prefs && prefs.fontFamily) {
+            document.documentElement.style.setProperty(
+              '--rms-font-family',
+              "'" + prefs.fontFamily + "', -apple-system, BlinkMacSystemFont, sans-serif"
+            );
+          }
+        } catch (e) {}
+      })();
+    </script>
   </head>
-  <body class="bg-[#EEF3F0] text-[#17231E] antialiased selection:bg-[#D5F267] selection:text-[#17231E]">
+  <body class="bg-[#EEF3F0] dark:bg-[#191919] text-[#17231E] dark:text-[#F4F5F4] antialiased selection:bg-[#D5F267] selection:text-[#17231E]">
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

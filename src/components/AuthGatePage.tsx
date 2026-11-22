@@ -416,20 +416,24 @@ export const AuthGatePage: React.FC<AuthGatePageProps> = ({
   };
 
   return (
-    <div className="relative min-h-screen w-full overflow-hidden bg-gradient-to-b from-[#F7FAF2] via-[#F2F7EC] to-[#E8F2DF] text-[#111C21] flex flex-col justify-between select-none">
+    <div className="relative min-h-screen w-full overflow-hidden bg-gradient-to-b from-[#F7FAF2] via-[#F2F7EC] to-[#E8F2DF] dark:from-[#191919] dark:via-[#191919] dark:to-[#1F1F1F] text-[#111C21] dark:text-[#F4F5F4] flex flex-col justify-between select-none">
       {/* Desktop & Tablet Property-Inspired Architectural & Skyline Environment */}
       <div
-        className="hidden md:block absolute inset-0 bg-cover bg-center bg-no-repeat pointer-events-none"
+        className="hidden md:block absolute inset-0 bg-cover bg-center bg-no-repeat pointer-events-none dark:opacity-15 dark:mix-blend-luminosity"
         style={{
           backgroundImage: `url('/assets/aistudio/rentify_login_bg_clean.png')`,
         }}
         aria-hidden="true"
       />
+      <div
+        className="hidden dark:block absolute inset-0 pointer-events-none bg-[radial-gradient(ellipse_at_top_right,rgba(110,231,183,0.10),transparent_55%),radial-gradient(ellipse_at_bottom_left,rgba(213,242,103,0.08),transparent_55%)]"
+        aria-hidden="true"
+      />
 
       {/* Mobile Subtle Decorative Lime-Green Curved Shapes (Clean & Uncluttered) */}
       <div className="md:hidden absolute inset-0 pointer-events-none overflow-hidden" aria-hidden="true">
-        <div className="absolute -right-20 top-24 w-72 h-72 rounded-full bg-[#C7EE6B]/25 blur-2xl" />
-        <div className="absolute -left-20 bottom-20 w-72 h-72 rounded-full bg-[#DCEFC0]/40 blur-2xl" />
+        <div className="absolute -right-20 top-24 w-72 h-72 rounded-full bg-[#C7EE6B]/25 dark:bg-[#6EE7B7]/10 blur-2xl" />
+        <div className="absolute -left-20 bottom-20 w-72 h-72 rounded-full bg-[#DCEFC0]/40 dark:bg-[#D5F267]/10 blur-2xl" />
         <svg
           viewBox="0 0 1440 320"
           className="absolute bottom-0 left-0 w-full h-36 object-cover"
@@ -489,10 +493,10 @@ export const AuthGatePage: React.FC<AuthGatePageProps> = ({
 
       {/* Center White Authentication Card (Compact, Balanced, Fits Standard Screens) */}
       <main className="relative z-10 flex-1 flex items-center justify-center px-4 py-2 sm:py-3">
-        <div className="w-[92%] sm:w-full max-w-[430px] bg-white/98 backdrop-blur-xs rounded-[24px] sm:rounded-[28px] px-5 py-5 sm:px-7 sm:py-6 shadow-[0_16px_45px_rgba(16,34,24,0.12)] border border-white border-b-[3px] border-b-[#9FE224]">
+        <div className="w-[92%] sm:w-full max-w-[430px] bg-white/98 dark:bg-[#212121]/95 backdrop-blur-xs rounded-[24px] sm:rounded-[28px] px-5 py-5 sm:px-7 sm:py-6 shadow-[0_16px_45px_rgba(16,34,24,0.12)] dark:shadow-[0_24px_60px_rgba(0,0,0,0.55)] border border-white dark:border-[#313131] border-b-[3px] border-b-[#9FE224] dark:border-b-[#AED654]">
           {/* Card Top Header: Circular Light-Green Property Icon + Welcome Back */}
           <div className="flex items-center gap-3 sm:gap-3.5 mb-3.5">
-            <div className="w-[46px] h-[46px] sm:w-[52px] sm:h-[52px] rounded-full bg-[#E1F3B8] flex items-center justify-center shrink-0">
+            <div className="w-[46px] h-[46px] sm:w-[52px] sm:h-[52px] rounded-full bg-[#E1F3B8] dark:bg-[#272E2A] border border-transparent dark:border-[#3B463F] flex items-center justify-center shrink-0 text-[#124E0E] dark:text-[#CBEB7E]">
               {/* Refined Property House Icon matching reference */}
               <svg
                 viewBox="0 0 48 48"
@@ -502,19 +506,19 @@ export const AuthGatePage: React.FC<AuthGatePageProps> = ({
               >
                 <path
                   d="M6 23.5L24 8.5L42 23.5"
-                  stroke="#124E0E"
+                  stroke="currentColor"
                   strokeWidth="3.4"
                   strokeLinecap="round"
                   strokeLinejoin="round"
                 />
                 <path
                   d="M11.5 23.5L24 13L36.5 23.5V39C36.5 39.8284 35.8284 40.5 35 40.5H13C12.1716 40.5 11.5 39.8284 11.5 39V23.5Z"
-                  fill="#124E0E"
+                  fill="currentColor"
                 />
-                <rect x="20" y="25.5" width="3.3" height="3.3" rx="0.4" fill="#E1F3B8" />
-                <rect x="24.7" y="25.5" width="3.3" height="3.3" rx="0.4" fill="#E1F3B8" />
-                <rect x="20" y="30.2" width="3.3" height="3.3" rx="0.4" fill="#E1F3B8" />
-                <rect x="24.7" y="30.2" width="3.3" height="3.3" rx="0.4" fill="#E1F3B8" />
+                <rect x="20" y="25.5" width="3.3" height="3.3" rx="0.4" className="fill-[#E1F3B8] dark:fill-[#272E2A]" />
+                <rect x="24.7" y="25.5" width="3.3" height="3.3" rx="0.4" className="fill-[#E1F3B8] dark:fill-[#272E2A]" />
+                <rect x="20" y="30.2" width="3.3" height="3.3" rx="0.4" className="fill-[#E1F3B8] dark:fill-[#272E2A]" />
+                <rect x="24.7" y="30.2" width="3.3" height="3.3" rx="0.4" className="fill-[#E1F3B8] dark:fill-[#272E2A]" />
               </svg>
             </div>
 
@@ -536,7 +540,7 @@ export const AuthGatePage: React.FC<AuthGatePageProps> = ({
           <div
             role="tablist"
             aria-label="Authentication options"
-            className="grid grid-cols-2 p-1 rounded-full bg-[#F2F4F6] mb-3 text-[11.5px] sm:text-[12px]"
+            className="grid grid-cols-2 p-1 rounded-full bg-[#F2F4F6] dark:bg-[#282828] border border-transparent dark:border-[#313131] mb-3 text-[11.5px] sm:text-[12px]"
           >
             <button
               type="button"
@@ -545,7 +549,7 @@ export const AuthGatePage: React.FC<AuthGatePageProps> = ({
               onClick={() => switchPublicView('login')}
               className={`py-1.5 px-3 rounded-full flex items-center justify-center gap-1.5 transition-all cursor-pointer whitespace-nowrap ${
                 view === 'login' || view === 'recover'
-                  ? 'bg-[#A6E221] text-[#111C15] font-bold shadow-[0_2px_6px_rgba(166,226,33,0.30)]'
+                  ? 'bg-[#A6E221] text-[#111C15] font-bold shadow-[0_2px_6px_rgba(166,226,33,0.30)] dark:shadow-none'
                   : 'text-[#232F34] hover:text-[#111C21] font-semibold'
               }`}
             >
@@ -560,7 +564,7 @@ export const AuthGatePage: React.FC<AuthGatePageProps> = ({
               onClick={() => switchPublicView('setup')}
               className={`py-1.5 px-3 rounded-full flex items-center justify-center gap-1.5 transition-all cursor-pointer whitespace-nowrap ${
                 view === 'setup'
-                  ? 'bg-[#A6E221] text-[#111C15] font-bold shadow-[0_2px_6px_rgba(166,226,33,0.30)]'
+                  ? 'bg-[#A6E221] text-[#111C15] font-bold shadow-[0_2px_6px_rgba(166,226,33,0.30)] dark:shadow-none'
                   : 'text-[#232F34] hover:text-[#111C21] font-semibold'
               }`}
             >
