@@ -1,5 +1,10 @@
 {
   "version": 2,
+  "functions": {
+    "api/index.ts": {
+      "includeFiles": "{server.ts,src/data/rentalData.ts,src/lib/smsService.ts,supabase/migrations/**}"
+    }
+  },
   "crons": [
     {
       "path": "/api/sms/run-automated-checks",

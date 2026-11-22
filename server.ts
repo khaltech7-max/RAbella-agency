@@ -1,6 +1,5 @@
 // @ts-nocheck
 import express from "express";
-import { createServer as createViteServer } from "vite";
 import { createClient } from "@supabase/supabase-js";
 import { PGlite } from "@electric-sql/pglite";
 import * as dotenv from "dotenv";
@@ -8,7 +7,7 @@ import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import { WebSocket, WebSocketServer } from "ws";
-import { getRoleDisplayLabel, getAllowedPagesForRole, isManagementRole } from "./src/data/rentalData.ts";
+import { getRoleDisplayLabel, getAllowedPagesForRole, isManagementRole } from "./src/data/rentalData.js";
 import {
   sendSmsNotification,
   sendSozuriSms,
@@ -18,7 +17,7 @@ import {
   getNairobiDateString,
   getNairobiBillingPeriod,
   getSozuriConfigFromEnv,
-} from "./src/lib/smsService.ts";
+} from "./src/lib/smsService.js";
 
 dotenv.config();
 
@@ -3784,10 +3783,24 @@ async function resolveUserMiddleware(req, res, next) {
       }
     }
     if (!matched) {
-      const usersRes = await pg.query(`SELECT * FROM public.profiles WHERE id = $1 OR LOWER(email) = LOWER($2) LIMIT 1;`, [verifiedSession.userId, verifiedSession.email]);
-      const u = usersRes.rows[0];
+      const usersRes = await pg.query(`SELECT * FROM public.profiles WHERE id = $1 OR LOWER(email) = LOWER($2) LIMIT 1;`, [verifiedSession.userId, verifiedSession.email]).catch(() => ({ rows: [] }));
+      const u = usersRes.rows?.[0];
       if (u) {
         matched = { id: u.id, email: u.email, fullName: u.full_name, role: u.role || "owner", roleLabel: getRoleLabel(u.role || "owner", u.tenant_ref), status: "Active", permissions: getAllowedPagesForRole(u.role || "owner"), tenantRef: u.tenant_ref || tenantRefHeader || void 0, avatarBg: u.avatar_bg || "#D5F267", token: bearerToken };
+      } else if (verifiedSession.email) {
+        const fallbackRole = verifiedSession.roleOverride || "owner";
+        matched = {
+          id: verifiedSession.userId || "00000000-0000-0000-0000-000000000001",
+          email: verifiedSession.email,
+          fullName: verifiedSession.email.split("@")[0] || "Admin",
+          role: fallbackRole,
+          roleLabel: getRoleLabel(fallbackRole, verifiedSession.tenantRefOverride || tenantRefHeader),
+          status: "Active",
+          permissions: getAllowedPagesForRole(fallbackRole),
+          tenantRef: verifiedSession.tenantRefOverride || tenantRefHeader || void 0,
+          avatarBg: "#D5F267",
+          token: bearerToken
+        };
       }
     }
     if (!matched) {
@@ -8380,6 +8393,7 @@ async function startServer() {
   const app = await getApp();
 
   if (process.env.NODE_ENV !== "production") {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({ server: { middlewareMode: true, hmr: false }, appType: "spa" });
     app.use(vite.middlewares);
   } else {
