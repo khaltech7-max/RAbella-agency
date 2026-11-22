@@ -11,6 +11,8 @@ import {
   Trash2,
   Building2,
   Search,
+  Eye,
+  RefreshCw,
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -30,6 +32,18 @@ import {
   TenantProfile,
 } from '../data/rentalData';
 import { UnitIllustration } from './UnitIllustration';
+import { InvoicePreviewModal } from './InvoicePreviewModal';
+import {
+  InvoiceDocumentData,
+  buildInvoiceDataFromPayment,
+  downloadDesignedInvoiceFile,
+  downloadDesignedInvoicePng,
+} from '../lib/invoiceGenerator';
+import {
+  extractBillingPeriodFromPayment,
+  formatYmdShort,
+  parseBillingDateToYmd,
+} from '../lib/anniversaryBilling';
 
 interface PropertiesViewProps {
   properties: PropertyRecord[];
@@ -439,19 +453,25 @@ export const PropertiesPage: React.FC<PropertiesViewProps> = ({
 
 interface InvoicesPageProps {
   payments: RentPaymentRecord[];
+  tenants?: TenantProfile[];
   onSelectTenantRef: (ref: string) => void;
+  onSyncAnniversaryBilling?: () => Promise<string | void>;
   globalSearch?: string;
   onGlobalSearchChange?: (val: string) => void;
 }
 
 export const InvoicesPage: React.FC<InvoicesPageProps> = ({
   payments,
+  tenants = [],
   onSelectTenantRef,
+  onSyncAnniversaryBilling,
   globalSearch = '',
   onGlobalSearchChange,
 }) => {
   const [downloadedId, setDownloadedId] = useState<string | null>(null);
   const [search, setSearch] = useState(globalSearch || '');
+  const [syncingBilling, setSyncingBilling] = useState(false);
+  const [syncMessage, setSyncMessage] = useState<string | null>(null);
 
   useEffect(() => {
     setSearch(globalSearch || '');
@@ -465,11 +485,17 @@ export const InvoicesPage: React.FC<InvoicesPageProps> = ({
   const query = (search || globalSearch).trim().toLowerCase();
   const currentYear = new Date().getFullYear();
 
+  const findTenantForInvoice = (inv: RentPaymentRecord) => {
+    const refUpper = String(inv.tenantRef || '').trim().toUpperCase();
+    return tenants.find((t) => String(t.tenantRef || '').trim().toUpperCase() === refUpper);
+  };
+
   const filteredInvoices = payments
     .map((inv, idx) => ({
       inv,
       idx,
-      invoiceNumber: `INV-${currentYear}-${String(idx + 1).padStart(3, '0')}`,
+      tenant: findTenantForInvoice(inv),
+      invoiceNumber: inv.paymentId || `INV-${currentYear}-${String(idx + 1).padStart(3, '0')}`,
     }))
     .filter(({ inv, invoiceNumber }) => {
       if (!query) return true;
@@ -481,34 +507,28 @@ export const InvoicesPage: React.FC<InvoicesPageProps> = ({
         inv.unitNumber.toLowerCase().includes(query) ||
         (inv.unitType || '').toLowerCase().includes(query) ||
         (inv.dueDate || '').toLowerCase().includes(query) ||
+        (inv.billingPeriodStart || '').toLowerCase().includes(query) ||
+        (inv.billingPeriodEnd || '').toLowerCase().includes(query) ||
         (inv.status || '').toLowerCase().includes(query) ||
         String(inv.amount || '').includes(query)
       );
     });
 
+  const [previewInvoice, setPreviewInvoice] = useState<InvoiceDocumentData | null>(null);
+
+  const handlePreviewInvoice = (inv: RentPaymentRecord, idx: number) => {
+    const invoiceNumber = inv.paymentId || `INV-${currentYear}-${String(idx + 1).padStart(3, '0')}`;
+    const docData = buildInvoiceDataFromPayment(inv, invoiceNumber, payments, findTenantForInvoice(inv));
+    setPreviewInvoice(docData);
+  };
+
   const handleDownloadInvoice = (inv: RentPaymentRecord, idx: number) => {
     setDownloadedId(inv.id);
-    const invoiceNumber = `INV-${currentYear}-${String(idx + 1).padStart(3, '0')}`;
-    const text = [
-      'RENTIFY OFFICIAL RENT INVOICE',
-      '=============================',
-      `Invoice Number: ${invoiceNumber}`,
-      `Tenant Reference: ${inv.tenantRef}`,
-      `Tenant Name: ${inv.tenantName}`,
-      `Property & Unit: ${inv.property} • ${inv.unitNumber} (${inv.unitType})`,
-      `Lease Term: ${inv.leaseTerm}`,
-      `Billing Period: ${inv.dueDate}`,
-      `Amount Due: KSh ${inv.amount.toLocaleString()}`,
-      `Payment Status: ${inv.status}`,
-    ].join('\n');
-    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${invoiceNumber}-${inv.tenantRef}.txt`;
-    a.click();
-    URL.revokeObjectURL(url);
-    setTimeout(() => setDownloadedId(null), 1500);
+    const invoiceNumber = inv.paymentId || `INV-${currentYear}-${String(idx + 1).padStart(3, '0')}`;
+    const docData = buildInvoiceDataFromPayment(inv, invoiceNumber, payments, findTenantForInvoice(inv));
+    setPreviewInvoice(docData);
+    downloadDesignedInvoiceFile(docData, 'Invoice');
+    setTimeout(() => setDownloadedId(null), 1800);
   };
 
   return (
@@ -516,11 +536,14 @@ export const InvoicesPage: React.FC<InvoicesPageProps> = ({
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-5">
         <div>
           <h2 className="text-[16px] font-bold text-[#17231E]">
-            Monthly Rent Invoices & Statements
+            Anniversary Rent Invoices &amp; Statements
           </h2>
           <p className="text-[11.5px] text-[#7A8681]">
-            Automated invoices generated from live PostgreSQL rent ledger records ({filteredInvoices.length} of {payments.length})
+            Automated monthly invoices anchored to each tenant&apos;s move-in date ({filteredInvoices.length} of {payments.length})
           </p>
+          {syncMessage && (
+            <p className="text-[11px] font-semibold text-[#145338] mt-1">{syncMessage}</p>
+          )}
         </div>
 
         <div className="flex flex-wrap items-center gap-2.5">
@@ -543,6 +566,30 @@ export const InvoicesPage: React.FC<InvoicesPageProps> = ({
               </button>
             )}
           </div>
+
+          {onSyncAnniversaryBilling && (
+            <button
+              type="button"
+              disabled={syncingBilling}
+              onClick={async () => {
+                setSyncingBilling(true);
+                setSyncMessage(null);
+                try {
+                  const msg = await onSyncAnniversaryBilling();
+                  setSyncMessage(msg || 'Anniversary billing invoices synchronized.');
+                  setTimeout(() => setSyncMessage(null), 5000);
+                } catch (err: any) {
+                  setSyncMessage(err?.message || 'Failed to sync anniversary invoices.');
+                } finally {
+                  setSyncingBilling(false);
+                }
+              }}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-[#EEF4F1] hover:bg-[#D8F3E5] text-[#145338] text-[12px] font-bold border border-[#CDE5D8] cursor-pointer disabled:opacity-50"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${syncingBilling ? 'animate-spin' : ''}`} />
+              <span>{syncingBilling ? 'Syncing...' : 'Sync Anniversary Invoices'}</span>
+            </button>
+          )}
 
           <button
             onClick={() => window.print()}
@@ -576,7 +623,10 @@ export const InvoicesPage: React.FC<InvoicesPageProps> = ({
               </tr>
             </thead>
             <tbody className="divide-y divide-[#EEF3F0] text-[12px]">
-              {filteredInvoices.map(({ inv, idx, invoiceNumber }) => (
+              {filteredInvoices.map(({ inv, idx, tenant, invoiceNumber }) => {
+                const period = extractBillingPeriodFromPayment(inv, tenant?.moveInDate || tenant?.leaseStart);
+                const dueYmd = parseBillingDateToYmd(inv.dueDate);
+                return (
                 <tr key={inv.id} className="hover:bg-[#F8FBF9]">
                   <td className="py-3 px-3 font-bold text-[#17231E] tabular-nums">
                     {invoiceNumber}
@@ -595,15 +645,35 @@ export const InvoicesPage: React.FC<InvoicesPageProps> = ({
                   <td className="py-3 px-3 text-[#46544E]">
                     {inv.property} • {inv.unitNumber}
                   </td>
-                  <td className="py-3 px-3 text-[#46544E] tabular-nums">{inv.dueDate}</td>
+                  <td className="py-3 px-3 text-[#46544E] tabular-nums">
+                    {period ? (
+                      <>
+                        <div className="font-semibold text-[#17231E]">
+                          {formatYmdShort(period.periodStart)} – {formatYmdShort(period.periodEnd)}
+                        </div>
+                        <div className="text-[10.5px] text-[#7A8681]">
+                          Due: {dueYmd ? formatYmdShort(dueYmd) : inv.dueDate}
+                        </div>
+                      </>
+                    ) : (
+                      <span>{dueYmd ? formatYmdShort(dueYmd) : inv.dueDate}</span>
+                    )}
+                  </td>
                   <td className="py-3 px-3 font-extrabold text-[#17231E] tabular-nums">
-                    KSh {inv.amount.toLocaleString()}
+                    <div>KSh {inv.amount.toLocaleString()}</div>
+                    {Number(inv.balanceDue ?? 0) > 0 && Number(inv.amountPaid ?? 0) > 0 && (
+                      <div className="text-[10px] font-semibold text-[#92400E]">
+                        Paid {Number(inv.amountPaid).toLocaleString()} • Bal {Number(inv.balanceDue).toLocaleString()}
+                      </div>
+                    )}
                   </td>
                   <td className="py-3 px-3">
                     <span
                       className={`px-2.5 py-0.5 rounded-md text-[11px] font-bold ${
                         inv.status === 'Paid'
                           ? 'bg-[#D8F3E5] text-[#145338]'
+                          : inv.status === 'Overdue'
+                          ? 'bg-[#FDE6E6] text-[#B91C1C]'
                           : 'bg-[#FEF6D2] text-[#8A6508]'
                       }`}
                     >
@@ -611,29 +681,48 @@ export const InvoicesPage: React.FC<InvoicesPageProps> = ({
                     </span>
                   </td>
                   <td className="py-3 px-3">
-                    <button
-                      onClick={() => handleDownloadInvoice(inv, idx)}
-                      className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-[#D5F267] hover:bg-[#c8e755] text-[#17231E] text-[11px] font-bold cursor-pointer"
-                    >
-                      {downloadedId === inv.id ? (
-                        <>
-                          <Check className="w-3 h-3" />
-                          Downloaded
-                        </>
-                      ) : (
-                        <>
-                          <Download className="w-3 h-3" />
-                          Statement
-                        </>
-                      )}
-                    </button>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => handlePreviewInvoice(inv, idx)}
+                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#EEF4F1] hover:bg-[#D8F3E5] text-[#145338] text-[11px] font-bold cursor-pointer"
+                        title="Preview Designed Invoice & Ledger"
+                      >
+                        <Eye className="w-3 h-3" />
+                        View
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDownloadInvoice(inv, idx)}
+                        className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-[#D5F267] hover:bg-[#c8e755] text-[#17231E] text-[11px] font-bold cursor-pointer"
+                        title="Download Designed Invoice & Ledger"
+                      >
+                        {downloadedId === inv.id ? (
+                          <>
+                            <Check className="w-3 h-3" />
+                            Downloaded
+                          </>
+                        ) : (
+                          <>
+                            <Download className="w-3 h-3" />
+                            Download Invoice
+                          </>
+                        )}
+                      </button>
+                    </div>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
       )}
+
+      <InvoicePreviewModal
+        invoiceData={previewInvoice}
+        onClose={() => setPreviewInvoice(null)}
+      />
     </div>
   );
 };

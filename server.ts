@@ -18,6 +18,23 @@ import {
   getNairobiBillingPeriod,
   getSozuriConfigFromEnv,
 } from "./src/lib/smsService.js";
+import {
+  parseBillingDateToYmd,
+  formatYmdShort,
+  formatOrdinalDay,
+  getBillingAnniversaryDay,
+  getBillingCycleForIndex,
+  getBillingCycleForDate,
+  getAllDueCyclesThroughDate,
+  getNextBillingDate,
+  buildBillingPeriodKey,
+  buildAnniversaryInvoiceCode,
+  formatBillingPeriodNote,
+  extractBillingPeriodFromPayment,
+  isDuplicateCyclePayment,
+  computeInvoiceFinancials,
+  diffDaysBetweenYmd,
+} from "./src/lib/anniversaryBilling.js";
 
 dotenv.config();
 
@@ -103,6 +120,7 @@ const EMAIL_REMINDER_SQL_PATH = path.resolve(process.cwd(), "supabase", "migrati
 const SMS_DELIVERY_TRACKING_SQL_PATH = path.resolve(process.cwd(), "supabase", "migrations", "010_sms_settings_and_delivery_tracking.sql");
 const TENANT_EDIT_SYNC_SQL_PATH = path.resolve(process.cwd(), "supabase", "migrations", "012_tenant_due_date_and_edit_sync.sql");
 const COMPLETE_SETTINGS_SQL_PATH = path.resolve(process.cwd(), "supabase", "migrations", "014_complete_settings_and_payhero.sql");
+const ANNIVERSARY_BILLING_SQL_PATH = path.resolve(process.cwd(), "supabase", "migrations", "015_anniversary_billing_cycle.sql");
 const UPLOADS_DIR = isServerless ? path.resolve('/tmp', 'uploads', 'property-images') : path.resolve(process.cwd(), "public", "uploads", "property-images");
 try {
   fs.mkdirSync(UPLOADS_DIR, { recursive: true });
@@ -471,6 +489,8 @@ CREATE TABLE IF NOT EXISTS public.leases (
   lease_notes TEXT DEFAULT '',
   perks JSONB DEFAULT '[]'::jsonb,
   payment_method TEXT DEFAULT 'M-Pesa / Bank Transfer',
+  billing_anniversary_day INTEGER,
+  next_billing_date TEXT,
   is_active BOOLEAN NOT NULL DEFAULT TRUE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -489,6 +509,11 @@ CREATE TABLE IF NOT EXISTS public.rent_payments (
   lease_term TEXT DEFAULT '12 Months',
   due_date TEXT NOT NULL,
   paid_date TEXT,
+  invoice_date TEXT,
+  billing_period_start TEXT,
+  billing_period_end TEXT,
+  billing_period_key TEXT,
+  billing_anniversary_day INTEGER,
   amount_due NUMERIC(12,2) NOT NULL DEFAULT 0,
   amount_paid NUMERIC(12,2) NOT NULL DEFAULT 0,
   status TEXT NOT NULL DEFAULT 'Pending',
@@ -671,6 +696,7 @@ CREATE TABLE IF NOT EXISTS public.email_notification_settings (
   from_email TEXT NOT NULL DEFAULT 'ARabella agency <onboarding@resend.dev>',
   payment_instructions TEXT NOT NULL DEFAULT 'Remit payment via M-Pesa Paybill or Bank Transfer quoting your Tenant Account Reference (e.g., A-001) as the account number.',
   prevent_duplicates_hours INTEGER NOT NULL DEFAULT 24,
+  advance_reminder_days INTEGER NOT NULL DEFAULT 3,
   updated_by TEXT NOT NULL DEFAULT 'System Default',
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -784,6 +810,9 @@ async function initPostgresDatabase() {
 
     const completeSettingsSql = safeReadSqlFile(COMPLETE_SETTINGS_SQL_PATH);
     if (completeSettingsSql) await executeMigrationSql(completeSettingsSql);
+
+    const anniversaryBillingSql = safeReadSqlFile(ANNIVERSARY_BILLING_SQL_PATH);
+    if (anniversaryBillingSql) await executeMigrationSql(anniversaryBillingSql);
 
     await pg.exec(`
       INSERT INTO public.profiles (id, email, password_hash, full_name, role, job_title, assigned_property_name, account_status, avatar_bg)
@@ -945,6 +974,7 @@ async function sendEmailViaResend(options: {
   subject: string;
   html: string;
   from?: string;
+  attachments?: Array<{ filename: string; content: string; content_type?: string }>;
 }): Promise<{
   success: boolean;
   resendId?: string;
@@ -953,6 +983,14 @@ async function sendEmailViaResend(options: {
 }> {
   const apiKey = (process.env.RESEND_API_KEY || '').trim();
   const fromEmail = sanitizeResendSender(options.from);
+  const cleanAttachments =
+    Array.isArray(options.attachments) && options.attachments.length > 0
+      ? options.attachments.map((a) => ({
+          filename: a.filename,
+          content: a.content,
+          ...(a.content_type ? { content_type: a.content_type } : {}),
+        }))
+      : undefined;
 
   if (!apiKey || apiKey === 're_your_resend_api_key' || apiKey === 'your-resend-api-key') {
     const simId = `sim_resend_${Math.random().toString(36).substring(2, 10)}`;
@@ -977,6 +1015,7 @@ async function sendEmailViaResend(options: {
         to: [options.to],
         subject: options.subject,
         html: options.html,
+        ...(cleanAttachments ? { attachments: cleanAttachments } : {}),
       }),
     });
 
@@ -1006,6 +1045,7 @@ async function sendEmailViaResend(options: {
             to: [options.to],
             subject: options.subject,
             html: options.html,
+            ...(cleanAttachments ? { attachments: cleanAttachments } : {}),
           }),
         });
         const fallbackData = await fallbackRes.json().catch(() => null);
@@ -1058,6 +1098,7 @@ async function sendEmailViaResend(options: {
               to: [sandboxAccountEmail],
               subject: `[For: ${options.to}] ${options.subject}`,
               html: sandboxBanner + options.html,
+              ...(cleanAttachments ? { attachments: cleanAttachments } : {}),
             }),
           });
           const sandboxData = await sandboxRes.json().catch(() => null);
@@ -1101,6 +1142,487 @@ async function sendEmailViaResend(options: {
   }
 }
 
+function escapePdfString(str: string): string {
+  return String(str || "")
+    .replace(/[^\x20-\x7E]/g, " ")
+    .replace(/\\/g, "\\\\")
+    .replace(/\(/g, "\\(")
+    .replace(/\)/g, "\\)");
+}
+
+function measureHelveticaText(text: string, fontSize: number, isBold = false): number {
+  const str = String(text || "");
+  let units = 0;
+  for (let i = 0; i < str.length; i++) {
+    const ch = str[i];
+    if ("ilI.,:;!| ".includes(ch)) units += 278;
+    else if ("frt()[]".includes(ch)) units += 333;
+    else if ("mwMW@%".includes(ch)) units += 833;
+    else if (ch >= "A" && ch <= "Z") units += isBold ? 700 : 667;
+    else units += isBold ? 575 : 535;
+  }
+  return (units / 1000) * fontSize;
+}
+
+function pdfRoundedRect(x: number, yBottom: number, w: number, h: number, r: number): string {
+  const radius = Math.min(r, w / 2, h / 2);
+  const k = 0.552284749831 * radius;
+  const x0 = x;
+  const y0 = yBottom;
+  const x1 = x + w;
+  const y1 = yBottom + h;
+  return [
+    `${(x0 + radius).toFixed(2)} ${y0.toFixed(2)} m`,
+    `${(x1 - radius).toFixed(2)} ${y0.toFixed(2)} l`,
+    `${(x1 - radius + k).toFixed(2)} ${y0.toFixed(2)} ${x1.toFixed(2)} ${(y0 + radius - k).toFixed(2)} ${x1.toFixed(2)} ${(y0 + radius).toFixed(2)} c`,
+    `${x1.toFixed(2)} ${(y1 - radius).toFixed(2)} l`,
+    `${x1.toFixed(2)} ${(y1 - radius + k).toFixed(2)} ${(x1 - radius + k).toFixed(2)} ${y1.toFixed(2)} ${(x1 - radius).toFixed(2)} ${y1.toFixed(2)} c`,
+    `${(x0 + radius).toFixed(2)} ${y1.toFixed(2)} l`,
+    `${(x0 + radius - k).toFixed(2)} ${y1.toFixed(2)} ${x0.toFixed(2)} ${(y1 - radius + k).toFixed(2)} ${x0.toFixed(2)} ${(y1 - radius).toFixed(2)} c`,
+    `${x0.toFixed(2)} ${(y0 + radius).toFixed(2)} l`,
+    `${x0.toFixed(2)} ${(y0 + radius - k).toFixed(2)} ${(x0 + radius - k).toFixed(2)} ${y0.toFixed(2)} ${(x0 + radius).toFixed(2)} ${y0.toFixed(2)} c`,
+    "h",
+  ].join(" ");
+}
+
+function pdfCircle(cx: number, cy: number, r: number): string {
+  const k = 0.552284749831 * r;
+  return [
+    `${(cx + r).toFixed(2)} ${cy.toFixed(2)} m`,
+    `${(cx + r).toFixed(2)} ${(cy + k).toFixed(2)} ${(cx + k).toFixed(2)} ${(cy + r).toFixed(2)} ${cx.toFixed(2)} ${(cy + r).toFixed(2)} c`,
+    `${(cx - k).toFixed(2)} ${(cy + r).toFixed(2)} ${(cx - r).toFixed(2)} ${(cy + k).toFixed(2)} ${(cx - r).toFixed(2)} ${cy.toFixed(2)} c`,
+    `${(cx - r).toFixed(2)} ${(cy - k).toFixed(2)} ${(cx - k).toFixed(2)} ${(cy - r).toFixed(2)} ${cx.toFixed(2)} ${(cy - r).toFixed(2)} c`,
+    `${(cx + k).toFixed(2)} ${(cy - r).toFixed(2)} ${(cx + r).toFixed(2)} ${(cy - k).toFixed(2)} ${(cx + r).toFixed(2)} ${cy.toFixed(2)} c`,
+    "h",
+  ].join(" ");
+}
+
+function buildDesignedInvoicePdfBuffer(data: {
+  invoiceNumber: string;
+  issueDate: string;
+  dueDate: string;
+  billingPeriodStart: string;
+  billingPeriodEnd: string;
+  paymentStatus: string;
+  monthlyRent: number;
+  tenantName: string;
+  tenantRef: string;
+  propertyName: string;
+  unitNumber: string;
+  companyName: string;
+  companySubtitle: string;
+  bankName: string;
+  bankAccount: string;
+  paybillNumber: string;
+  website: string;
+  supportPhone: string;
+  supportEmail: string;
+  baseRent: number;
+  subTotal: number;
+  amountPaid: number;
+  grandTotal: number;
+}): Buffer {
+  const pageW = 595.28;
+  const pageH = 841.89;
+  const topY = (yFromTop: number, h = 0) => pageH - yFromTop - h;
+  const fmt = (n: number) => `KSh ${Number(n || 0).toLocaleString()}`;
+
+  const cPrimary = "0.090 0.137 0.118"; // #17231E Deep Forest
+  const cForest = "0.078 0.325 0.220";  // #145338 Emerald
+  const cAccent = "0.835 0.949 0.404";  // #D5F267 Electric Lime
+  const cBar1 = "0.624 0.886 0.286";    // #9FE249 Soft Lime
+  const cCanvas = "0.933 0.957 0.945";  // #EEF4F1 Soft Sage Canvas
+  const cCanvasTop = "0.969 0.980 0.973"; // #F7FAF8 Alabaster Sage
+  const cBorder = "0.847 0.890 0.867";  // #D8E3DD Card Border
+  const cMuted = "0.275 0.329 0.306";   // #46544E Muted Slate
+  const cRed = "0.600 0.106 0.106";     // #991B1B Overdue Red
+  const cRedBg = "0.996 0.886 0.886";   // #FEE2E2 Soft Red
+  const cMintBg = "0.847 0.953 0.898";  // #D8F3E5 Soft Mint
+  const cWhite = "1 1 1";
+
+  const cmds: string[] = [];
+
+  const addText = (
+    text: string,
+    x: number,
+    yFromTop: number,
+    size: number,
+    rgb: string,
+    bold = false,
+    align: "left" | "center" | "right" = "left"
+  ) => {
+    const clean = escapePdfString(text);
+    const w = measureHelveticaText(text, size, bold);
+    let drawX = x;
+    if (align === "center") drawX = x - w / 2;
+    else if (align === "right") drawX = x - w;
+    const drawY = pageH - yFromTop;
+    cmds.push(
+      `BT /${bold ? "F2" : "F1"} ${size.toFixed(2)} Tf ${rgb} rg ${drawX.toFixed(2)} ${drawY.toFixed(2)} Td (${clean}) Tj ET`
+    );
+  };
+
+  // 1. Sage Canvas Background
+  cmds.push(`${cCanvas} rg 0 0 ${pageW.toFixed(2)} ${pageH.toFixed(2)} re f`);
+  cmds.push(`${cCanvasTop} rg 0 ${(pageH - 315).toFixed(2)} ${pageW.toFixed(2)} 315 re f`);
+
+  // 2. Top-Right Decorative System Lime & Emerald Ring
+  const ringCx = pageW - 48;
+  const ringCy = pageH - 82;
+  cmds.push(`q 32 w ${cAccent} RG ${pdfCircle(ringCx, ringCy, 128)} S Q`);
+  cmds.push(`q 16 w ${cForest} RG ${pdfCircle(ringCx + 10, ringCy - 8, 126)} S Q`);
+
+  // 3. System 3-Bar Emblem + Brand Name & Tagline
+  cmds.push(`${cBar1} rg ${pdfRoundedRect(46, topY(62, 15), 4.8, 15, 2.4)} f`);
+  cmds.push(`${cAccent} rg ${pdfRoundedRect(54, topY(54, 23), 4.8, 23, 2.4)} f`);
+  cmds.push(`${cForest} rg ${pdfRoundedRect(62, topY(58, 19), 4.8, 19, 2.4)} f`);
+
+  addText(data.companyName || "ARabella agency", 75, 65, 18.5, cPrimary, true, "left");
+  addText(data.companySubtitle || "Smart Property Management", 75, 81, 9.5, cForest, true, "left");
+
+  // 4. Top-Right INVOICE Title
+  addText("INVOICE", pageW - 46, 74, 30, cPrimary, true, "right");
+
+  // 5. Left: PAYABLE TO & BANK DETAILS
+  addText("PAYABLE TO", 46, 128, 10, cPrimary, true, "left");
+  addText(data.tenantName || "Resident", 46, 145, 11, cPrimary, true, "left");
+  addText(
+    `Property: ${data.propertyName} | Unit: ${data.unitNumber} (Ref: ${data.tenantRef})`,
+    46,
+    161,
+    9.2,
+    cMuted,
+    false,
+    "left"
+  );
+
+  addText("BANK DETAILS", 46, 192, 10, cPrimary, true, "left");
+  addText(data.bankName || "ARabella agency Trust Account", 46, 208, 9.8, cPrimary, true, "left");
+  addText(
+    data.bankAccount || `M-Pesa PayBill ${data.paybillNumber} - Account: ${data.tenantRef}`,
+    46,
+    223,
+    9.2,
+    cMuted,
+    false,
+    "left"
+  );
+
+  // Right: Invoice Number, Invoice Date, Payment Due Date, Payment Status
+  addText(`Invoice Number: ${data.invoiceNumber}`, pageW - 46, 128, 10, cPrimary, true, "right");
+  addText(`Invoice Date: ${data.issueDate}`, pageW - 46, 144, 9.5, cPrimary, false, "right");
+  addText(`Payment Due Date: ${data.dueDate}`, pageW - 46, 160, 9.5, cForest, true, "right");
+
+  const normStatus = String(data.paymentStatus || "Pending").trim();
+  const statusText = `Payment Status: ${normStatus}`;
+  const statusBg = normStatus === "Paid" ? cMintBg : normStatus === "Overdue" ? cRedBg : cAccent;
+  const statusFg = normStatus === "Paid" ? cForest : normStatus === "Overdue" ? cRed : cPrimary;
+  const statusW = measureHelveticaText(statusText, 9, true) + 18;
+  cmds.push(
+    `${statusBg} rg ${pdfRoundedRect(pageW - 46 - statusW, topY(170, 20), statusW, 20, 10)} f`
+  );
+  addText(statusText, pageW - 55, 183, 9, statusFg, true, "right");
+
+  // 5b. Dedicated Billing Period Banner Card (Billing Period Start & End + Monthly Rent)
+  const bpYTop = 242;
+  const bpH = 44;
+  cmds.push(
+    `q 1 w ${cWhite} rg ${cBorder} RG ${pdfRoundedRect(46, topY(bpYTop, bpH), pageW - 92, bpH, 12)} B Q`
+  );
+  addText("BILLING PERIOD START", 64, bpYTop + 17, 8, cMuted, true, "left");
+  addText(data.billingPeriodStart || data.dueDate, 64, bpYTop + 33, 10.5, cPrimary, true, "left");
+
+  addText("BILLING PERIOD END", 245, bpYTop + 17, 8, cMuted, true, "left");
+  addText(data.billingPeriodEnd || data.dueDate, 245, bpYTop + 33, 10.5, cPrimary, true, "left");
+
+  addText("MONTHLY RENT", pageW - 64, bpYTop + 17, 8, cMuted, true, "right");
+  addText(fmt(data.monthlyRent || data.baseRent), pageW - 64, bpYTop + 33, 10.5, cForest, true, "right");
+
+  // 6. Forest-to-Emerald Rounded Pill Table Header Bar
+  const pillYTop = 302;
+  const pillH = 34;
+  cmds.push(`${cForest} rg ${pdfRoundedRect(46, topY(pillYTop, pillH), pageW - 92, pillH, 17)} f`);
+
+  const headerTextY = pillYTop + 21;
+  addText("ITEM DESCRIPTION", 66, headerTextY, 9.5, cAccent, true, "left");
+  addText("QTY", 336, headerTextY, 9.5, cWhite, true, "center");
+  addText("PRICE", 435, headerTextY, 9.5, cWhite, true, "right");
+  addText("TOTAL", pageW - 66, headerTextY, 9.5, cAccent, true, "right");
+
+  // 7. White Rounded Line Items Card (Only Rent — No Estate Security)
+  const cardYTop = 348;
+  const cardH = 76;
+  cmds.push(
+    `q 1 w ${cWhite} rg ${cBorder} RG ${pdfRoundedRect(46, topY(cardYTop, cardH), pageW - 92, cardH, 14)} B Q`
+  );
+
+  const desc = `Monthly Rent (${data.billingPeriodStart} - ${data.billingPeriodEnd}) - ${data.unitNumber}`.slice(0, 56);
+  const rY = cardYTop + 42;
+  addText(desc, 66, rY, 9.8, cPrimary, true, "left");
+  addText("1", 336, rY, 9.8, cMuted, false, "center");
+  addText(fmt(data.baseRent), 435, rY, 9.8, cMuted, false, "right");
+  addText(fmt(data.baseRent), pageW - 66, rY, 9.8, cPrimary, true, "right");
+
+  // 8. Notes (Left) & White Rounded Totals Card (Right)
+  const notesYTop = cardYTop + cardH + 26;
+  addText("NOTES:", 48, notesYTop + 14, 10, cPrimary, true, "left");
+
+  const noteLines = [
+    `Billing Cycle: ${data.billingPeriodStart} to ${data.billingPeriodEnd}.`,
+    `Payment is due on your monthly move-in anniversary (${data.dueDate}).`,
+    `Kindly quote Account Ref ${data.tenantRef} on all M-Pesa PayBill`,
+    `(${data.paybillNumber}) or Bank payments for automatic reconciliation.`,
+  ];
+  noteLines.forEach((line, idx) => {
+    addText(line, 48, notesYTop + 32 + idx * 14, 8.8, cMuted, false, "left");
+  });
+
+  const totCardW = 240;
+  const totCardH = 114;
+  const totCardX = pageW - 46 - totCardW;
+  cmds.push(
+    `q 1 w ${cWhite} rg ${cBorder} RG ${pdfRoundedRect(totCardX, topY(notesYTop, totCardH), totCardW, totCardH, 14)} B Q`
+  );
+
+  addText("MONTHLY RENT", totCardX + 16, notesYTop + 24, 9.2, cPrimary, true, "left");
+  addText(fmt(data.monthlyRent || data.subTotal), pageW - 62, notesYTop + 24, 9.2, cPrimary, true, "right");
+
+  addText("AMOUNT PAID", totCardX + 16, notesYTop + 45, 9.2, cPrimary, true, "left");
+  addText(fmt(data.amountPaid), pageW - 62, notesYTop + 45, 9.2, cForest, true, "right");
+
+  addText("PAYMENT STATUS", totCardX + 16, notesYTop + 65, 9.2, cPrimary, true, "left");
+  addText(normStatus.toUpperCase(), pageW - 62, notesYTop + 65, 9.2, statusFg, true, "right");
+
+  const totDivY = pageH - (notesYTop + 76);
+  cmds.push(
+    `q 0.8 w ${cBorder} RG ${(totCardX + 16).toFixed(2)} ${totDivY.toFixed(2)} m ${(pageW - 62).toFixed(2)} ${totDivY.toFixed(2)} l S Q`
+  );
+
+  addText("OUTSTANDING BALANCE", totCardX + 16, notesYTop + 97, 9.2, cPrimary, true, "left");
+
+  const grandStr = fmt(data.grandTotal);
+  const grandW = measureHelveticaText(grandStr, 10, true) + 14;
+  cmds.push(
+    `${cAccent} rg ${pdfRoundedRect(pageW - 58 - grandW, topY(notesYTop + 83, 20), grandW, 20, 6)} f`
+  );
+  addText(grandStr, pageW - 65, notesYTop + 97, 10, cPrimary, true, "right");
+
+  // 9. Bottom System Forest-to-Lime Footer Band & Deep Forest Contact Pill Bar
+  const footerH = 78;
+  cmds.push(`${cForest} rg 0 0 ${pageW.toFixed(2)} ${footerH.toFixed(2)} re f`);
+  cmds.push(`${cAccent} rg 0 ${(footerH - 4).toFixed(2)} ${pageW.toFixed(2)} 4 re f`);
+
+  const contactPillYTop = pageH - footerH + 20;
+  const contactPillH = 38;
+  cmds.push(
+    `${cPrimary} rg ${pdfRoundedRect(46, topY(contactPillYTop, contactPillH), pageW - 92, contactPillH, 19)} f`
+  );
+
+  const contactTextY = contactPillYTop + 23;
+  cmds.push(`${cAccent} rg ${pdfCircle(68, pageH - (contactPillYTop + 19), 8)} f`);
+  addText("W", 68, contactPillYTop + 22, 7.5, cPrimary, true, "center");
+  addText(data.website || "www.arabella-agency.co.ke", 82, contactTextY, 8.8, cWhite, true, "left");
+
+  cmds.push(`${cAccent} rg ${pdfCircle(252, pageH - (contactPillYTop + 19), 8)} f`);
+  addText("P", 252, contactPillYTop + 22, 7.5, cPrimary, true, "center");
+  addText(data.supportPhone || "+254 712 345 678", 266, contactTextY, 8.8, cWhite, true, "left");
+
+  cmds.push(`${cAccent} rg ${pdfCircle(404, pageH - (contactPillYTop + 19), 8)} f`);
+  addText("@", 404, contactPillYTop + 22, 7.5, cPrimary, true, "center");
+  addText(data.supportEmail || "billing@arabella.co.ke", 418, contactTextY, 8.8, cWhite, true, "left");
+
+  const streamBody = cmds.join("\n");
+
+  const obj1 = "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n";
+  const obj2 = "2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n";
+  const obj3 = `3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pageW.toFixed(2)} ${pageH.toFixed(2)}] /Contents 4 0 R /Resources << /Font << /F1 5 0 R /F2 6 0 R >> >> >>\nendobj\n`;
+  const obj4 = `4 0 obj\n<< /Length ${Buffer.byteLength(streamBody, "utf8")} >>\nstream\n${streamBody}\nendstream\nendobj\n`;
+  const obj5 = "5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n";
+  const obj6 = "6 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>\nendobj\n";
+
+  const header = "%PDF-1.4\n";
+  const objects = [obj1, obj2, obj3, obj4, obj5, obj6];
+  let offset = Buffer.byteLength(header, "utf8");
+  const offsets: number[] = [];
+  for (const o of objects) {
+    offsets.push(offset);
+    offset += Buffer.byteLength(o, "utf8");
+  }
+  const xrefStart = offset;
+  let xref = `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  for (const off of offsets) {
+    xref += `${String(off).padStart(10, "0")} 00000 n \n`;
+  }
+  const trailer = `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefStart}\n%%EOF\n`;
+  return Buffer.from(header + objects.join("") + xref + trailer, "utf8");
+}
+
+async function buildTenantInvoiceAndLedgerBundle(params: {
+  tenantRef: string;
+  tenantName: string;
+  propertyName: string;
+  unitNumber: string;
+  amountDue?: number;
+  dueDate?: string;
+  billingPeriodStart?: string;
+  billingPeriodEnd?: string;
+  paymentId?: string;
+  templateType: string;
+  receiptNo?: string;
+}) {
+  const cleanRef = String(params.tenantRef || "A-001").trim().toUpperCase();
+  const nairobiToday = getNairobiDateString();
+  const state = await fetchFullDatabaseState().catch(() => ({ tenants: [], payments: [] as any[] }));
+  const matchedTenant = (state.tenants || []).find(
+    (t: any) => String(t.tenantRef || "").trim().toUpperCase() === cleanRef
+  );
+  const tenantPayments = (state.payments || []).filter(
+    (p: any) => String(p.tenantRef || "").trim().toUpperCase() === cleanRef
+  );
+
+  // Target specific invoice if paymentId/receiptNo matches, else oldest unpaid invoice, else most recent invoice
+  const targetPayment =
+    (params.paymentId
+      ? tenantPayments.find((p: any) => p.id === params.paymentId || p.paymentId === params.paymentId)
+      : null) ||
+    (params.receiptNo ? tenantPayments.find((p: any) => p.paymentId === params.receiptNo) : null) ||
+    tenantPayments.find((p: any) => p.status !== "Paid") ||
+    tenantPayments[0] ||
+    null;
+
+  const moveInAnchor =
+    matchedTenant?.moveInDate ||
+    matchedTenant?.leaseStart ||
+    targetPayment?.billingPeriodStart ||
+    targetPayment?.dueDate ||
+    nairobiToday;
+
+  const activeCycle =
+    getBillingCycleForDate(moveInAnchor, nairobiToday) ||
+    getBillingCycleForIndex(nairobiToday, 0);
+
+  const extractedPeriod = targetPayment
+    ? extractBillingPeriodFromPayment(targetPayment, moveInAnchor)
+    : null;
+
+  const periodStartYmd =
+    parseBillingDateToYmd(params.billingPeriodStart) ||
+    extractedPeriod?.periodStart ||
+    activeCycle?.periodStart ||
+    nairobiToday;
+  const periodEndYmd =
+    parseBillingDateToYmd(params.billingPeriodEnd) ||
+    extractedPeriod?.periodEnd ||
+    activeCycle?.periodEnd ||
+    nairobiToday;
+  const dueDateYmd =
+    parseBillingDateToYmd(params.dueDate) ||
+    parseBillingDateToYmd(targetPayment?.dueDate) ||
+    periodStartYmd;
+  const invoiceDateYmd =
+    parseBillingDateToYmd(targetPayment?.invoiceDate) ||
+    parseBillingDateToYmd(targetPayment?.createdAt) ||
+    periodStartYmd ||
+    nairobiToday;
+
+  const invoiceNumber =
+    params.receiptNo ||
+    targetPayment?.paymentId ||
+    buildAnniversaryInvoiceCode(cleanRef, periodStartYmd);
+
+  const issueDate = formatYmdShort(invoiceDateYmd);
+  const dueDate = formatYmdShort(dueDateYmd);
+  const billingPeriodStart = formatYmdShort(periodStartYmd);
+  const billingPeriodEnd = formatYmdShort(periodEndYmd);
+
+  const monthlyRent = Number(
+    matchedTenant?.monthlyRent || targetPayment?.amount || params.amountDue || 0
+  );
+  const isConfirmedPaid = params.templateType === "payment_confirmed";
+
+  const invoiceAmountDue = Number(
+    targetPayment?.amount ?? (params.amountDue !== undefined ? params.amountDue : monthlyRent)
+  );
+  const invoiceAmountPaid = isConfirmedPaid
+    ? invoiceAmountDue
+    : Number(
+        targetPayment?.amountPaid !== undefined
+          ? targetPayment.amountPaid
+          : targetPayment?.status === "Paid"
+          ? invoiceAmountDue
+          : 0
+      );
+
+  const financials = computeInvoiceFinancials({
+    amountDue: invoiceAmountDue,
+    amountPaid: invoiceAmountPaid,
+    monthlyRent,
+    dueDate: dueDateYmd,
+    storedStatus: isConfirmedPaid
+      ? "Paid"
+      : targetPayment?.status || (params.templateType === "rent_overdue" ? "Overdue" : "Pending"),
+    referenceYmd: nairobiToday,
+  });
+
+  const sysCfg = typeof cachedSystemSettings !== "undefined" && cachedSystemSettings ? cachedSystemSettings : null;
+  const sysCompanyName = sysCfg?.general?.companyName || "ARabella agency";
+  const sysCompanyTagline = sysCfg?.general?.companyTagline || "Smart Property Management";
+  const sysPhone = sysCfg?.general?.businessPhone || "+254 712 345 678";
+  const sysEmail = sysCfg?.general?.businessEmail || "billing@arabella.co.ke";
+  const sysPaybill = sysCfg?.payment?.defaultPaybillNumber || "400200";
+
+  const safeRef = cleanRef.replace(/[^A-Z0-9_-]/gi, "-");
+  const pdfFilename = `Invoice-${safeRef}.pdf`;
+
+  // Full-Color Vector PDF Attachment (ONLY PDF attached to the email)
+  const pdfBuffer = buildDesignedInvoicePdfBuffer({
+    invoiceNumber,
+    issueDate,
+    dueDate,
+    billingPeriodStart,
+    billingPeriodEnd,
+    paymentStatus: financials.status,
+    monthlyRent: financials.monthlyRent,
+    tenantName: params.tenantName,
+    tenantRef: cleanRef,
+    propertyName: params.propertyName,
+    unitNumber: params.unitNumber,
+    companyName: sysCompanyName,
+    companySubtitle: sysCompanyTagline,
+    bankName: `${sysCompanyName} Trust Account`,
+    bankAccount: `M-Pesa PayBill ${sysPaybill} - Account: ${cleanRef}`,
+    paybillNumber: sysPaybill,
+    website: "www.arabella-agency.co.ke",
+    supportPhone: sysPhone,
+    supportEmail: sysEmail,
+    baseRent: financials.amountDue,
+    subTotal: financials.amountDue,
+    amountPaid: financials.amountPaid,
+    grandTotal: financials.outstandingBalance,
+  });
+
+  const attachments = [
+    {
+      filename: pdfFilename,
+      content: pdfBuffer.toString("base64"),
+      content_type: "application/pdf",
+    },
+  ];
+
+  return {
+    embeddedHtml: "",
+    attachments,
+    invoiceNumber,
+    billingPeriodStart,
+    billingPeriodEnd,
+    dueDate,
+    paymentStatus: financials.status,
+    totalBilled: financials.amountDue,
+    totalPaid: financials.amountPaid,
+    netBalance: financials.outstandingBalance,
+  };
+}
+
 async function dispatchBrandedRentifyEmail(params: {
   templateType: string;
   recipientEmail: string;
@@ -1124,6 +1646,8 @@ async function dispatchBrandedRentifyEmail(params: {
   paymentId?: string;
   leaseId?: string;
   sentBy?: string;
+  embeddedLedgerHtml?: string;
+  attachments?: Array<{ filename: string; content: string; content_type?: string }>;
 }) {
   const detailsHtml = params.details && params.details.length > 0 ? `<div style="background:#F7FAF8;border:1px solid #E4ECE8;border-radius:14px;padding:14px 16px;margin:16px 0;">
           ${params.details.map((d) => `<div style="display:flex;justify-content:space-between;padding:5px 0;font-size:12.5px;border-bottom:1px solid #EDF2EF;">
@@ -1146,7 +1670,7 @@ async function dispatchBrandedRentifyEmail(params: {
         </div>` : "";
   const footerText = params.footerNote || "This notification was dispatched automatically by ARabella agency Rental Management System (Africa/Nairobi EAT). If you have any questions or have already completed your payment, please contact your property manager.";
   const bodyHtml = `
-    <div style="font-family:'Plus Jakarta Sans',Inter,-apple-system,BlinkMacSystemFont,sans-serif;max-width:580px;margin:0 auto;background:#FFFFFF;border:1px solid #E4ECE8;border-radius:20px;overflow:hidden;box-shadow:0 8px 30px rgba(0,0,0,0.06);">
+    <div style="font-family:'Plus Jakarta Sans',Inter,-apple-system,BlinkMacSystemFont,sans-serif;max-width:660px;margin:0 auto;background:#FFFFFF;border:1px solid #E4ECE8;border-radius:20px;overflow:hidden;box-shadow:0 8px 30px rgba(0,0,0,0.06);">
       <div style="background:#F6F8F3;padding:20px 26px;border-bottom:1px solid #E4ECE8;display:flex;align-items:center;justify-content:space-between;">
         <div style="display:flex;align-items:center;gap:8px;">
           <span style="display:inline-block;width:6px;height:18px;background:#A6E22E;border-radius:99px;"></span>
@@ -1164,7 +1688,7 @@ async function dispatchBrandedRentifyEmail(params: {
         ${paymentInstructionsHtml}
         ${ctaHtml}
         ${directLinkHtml}
-        <p style="margin:20px 0 0;font-size:11.5px;color:#7B8780;line-height:1.5;">
+        <p style="margin:18px 0 0;font-size:11.5px;color:#7B8780;line-height:1.5;">
           ${footerText}
         </p>
       </div>
@@ -1174,11 +1698,12 @@ async function dispatchBrandedRentifyEmail(params: {
     </div>
   `.trim();
 
-  // Send via Resend
+  // Send via Resend (including PDF + HTML invoice & ledger attachments when present)
   const resendResult = await sendEmailViaResend({
     to: params.recipientEmail,
     subject: params.subject,
     html: bodyHtml,
+    attachments: params.attachments,
   });
 
   const isSandboxFwd = Boolean((resendResult as any).sandboxForwarded);
@@ -1325,6 +1850,7 @@ let cachedEmailSettings = {
   fromEmail: (process.env.RESEND_FROM_EMAIL || "ARabella agency <onboarding@resend.dev>").trim(),
   paymentInstructions: "Remit payment via M-Pesa Paybill or Bank Transfer quoting your Tenant Account Reference (e.g., A-001) as the account number.",
   preventDuplicatesHours: 24,
+  advanceReminderDays: 3,
   apiKeyConfigured: Boolean(process.env.RESEND_API_KEY && process.env.RESEND_API_KEY !== "re_your_resend_api_key"),
   updatedBy: "System Default",
   updatedAt: new Date().toISOString(),
@@ -1360,6 +1886,7 @@ async function getEmailNotificationSettings(forceRefresh = false) {
             row.payment_instructions ||
             "Remit payment via M-Pesa Paybill or Bank Transfer quoting your Tenant Account Reference (e.g., A-001) as the account number.",
           preventDuplicatesHours: Number(row.prevent_duplicates_hours || 24),
+          advanceReminderDays: Math.max(1, Math.min(14, Number(row.advance_reminder_days ?? 3) || 3)),
           apiKeyConfigured: hasResendKey,
           updatedBy: row.updated_by || "Super Admin",
           updatedAt: row.updated_at || new Date().toISOString(),
@@ -1388,6 +1915,9 @@ async function updateEmailNotificationSettings(patch: Record<string, any>, actor
     ...(patch.preventDuplicatesHours !== undefined
       ? { preventDuplicatesHours: Math.max(1, Number(patch.preventDuplicatesHours) || 24) }
       : {}),
+    ...(patch.advanceReminderDays !== undefined
+      ? { advanceReminderDays: Math.max(1, Math.min(14, Number(patch.advanceReminderDays) || 3)) }
+      : {}),
     updatedBy: actorName,
     updatedAt: new Date().toISOString(),
   };
@@ -1395,14 +1925,14 @@ async function updateEmailNotificationSettings(patch: Record<string, any>, actor
   emailSettingsLastFetchedAt = Date.now();
 
   if (pg) {
-    await pg
-      .query(
+    try {
+      await pg.query(
         `INSERT INTO public.email_notification_settings (
           id, master_enabled, auto_rent_upcoming_3d, auto_rent_due_today,
           auto_rent_overdue, auto_payment_confirmed, auto_lease_expiry_30d,
           auto_lease_expiry_7d, sender_name, from_email, payment_instructions,
-          prevent_duplicates_hours, updated_by, updated_at
-        ) VALUES ('default', $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())
+          prevent_duplicates_hours, advance_reminder_days, updated_by, updated_at
+        ) VALUES ('default', $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW())
         ON CONFLICT (id) DO UPDATE SET
           master_enabled = EXCLUDED.master_enabled,
           auto_rent_upcoming_3d = EXCLUDED.auto_rent_upcoming_3d,
@@ -1415,6 +1945,7 @@ async function updateEmailNotificationSettings(patch: Record<string, any>, actor
           from_email = EXCLUDED.from_email,
           payment_instructions = EXCLUDED.payment_instructions,
           prevent_duplicates_hours = EXCLUDED.prevent_duplicates_hours,
+          advance_reminder_days = EXCLUDED.advance_reminder_days,
           updated_by = EXCLUDED.updated_by,
           updated_at = NOW();`,
         [
@@ -1429,10 +1960,50 @@ async function updateEmailNotificationSettings(patch: Record<string, any>, actor
           next.fromEmail,
           next.paymentInstructions,
           next.preventDuplicatesHours,
+          next.advanceReminderDays,
           actorName,
         ]
-      )
-      .catch(() => {});
+      );
+    } catch {
+      await pg
+        .query(
+          `INSERT INTO public.email_notification_settings (
+            id, master_enabled, auto_rent_upcoming_3d, auto_rent_due_today,
+            auto_rent_overdue, auto_payment_confirmed, auto_lease_expiry_30d,
+            auto_lease_expiry_7d, sender_name, from_email, payment_instructions,
+            prevent_duplicates_hours, updated_by, updated_at
+          ) VALUES ('default', $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())
+          ON CONFLICT (id) DO UPDATE SET
+            master_enabled = EXCLUDED.master_enabled,
+            auto_rent_upcoming_3d = EXCLUDED.auto_rent_upcoming_3d,
+            auto_rent_due_today = EXCLUDED.auto_rent_due_today,
+            auto_rent_overdue = EXCLUDED.auto_rent_overdue,
+            auto_payment_confirmed = EXCLUDED.auto_payment_confirmed,
+            auto_lease_expiry_30d = EXCLUDED.auto_lease_expiry_30d,
+            auto_lease_expiry_7d = EXCLUDED.auto_lease_expiry_7d,
+            sender_name = EXCLUDED.sender_name,
+            from_email = EXCLUDED.from_email,
+            payment_instructions = EXCLUDED.payment_instructions,
+            prevent_duplicates_hours = EXCLUDED.prevent_duplicates_hours,
+            updated_by = EXCLUDED.updated_by,
+            updated_at = NOW();`,
+          [
+            next.masterEnabled,
+            next.autoRentUpcoming3d,
+            next.autoRentDueToday,
+            next.autoRentOverdue,
+            next.autoPaymentConfirmed,
+            next.autoLeaseExpiry30d,
+            next.autoLeaseExpiry7d,
+            next.senderName,
+            next.fromEmail,
+            next.paymentInstructions,
+            next.preventDuplicatesHours,
+            actorName,
+          ]
+        )
+        .catch(() => {});
+    }
   }
   broadcastRealtime("email:settings_updated", { settings: next });
   return next;
@@ -2305,8 +2876,251 @@ async function dispatchSmsNotification(params) {
   };
 }
 
+/**
+ * Automatically generates missing anniversary-based monthly invoices for all active tenants
+ * up to `referenceDateYmd` (defaults to Nairobi today), updates unpaid past-due invoices to Overdue,
+ * strictly prevents duplicates for the same tenancy & billing period, and preserves all historical records.
+ */
+async function ensureAnniversaryInvoicesForAllTenants(
+  referenceDateYmd?: string,
+  actorName = "Anniversary Billing Engine"
+) {
+  const nairobiToday = parseBillingDateToYmd(referenceDateYmd) || getNairobiDateString();
+  const state = await fetchFullDatabaseState(true);
+  let generatedCount = 0;
+  let overdueUpdatedCount = 0;
+  let skippedDuplicateCount = 0;
+  let skippedInactiveCount = 0;
+  const generatedInvoices: Array<{
+    tenantRef: string;
+    tenantName: string;
+    invoiceNumber: string;
+    billingPeriodStart: string;
+    billingPeriodEnd: string;
+    dueDate: string;
+    amount: number;
+    status: string;
+  }> = [];
+
+  for (const tenant of state.tenants) {
+    const cleanRef = String(tenant.tenantRef || "").trim().toUpperCase();
+    const lease = ((state as any).leases || []).find(
+      (l: any) => l.tenantRef?.toUpperCase() === cleanRef || l.tenantId === tenant.id
+    );
+    if (lease && lease.isActive === false) {
+      skippedInactiveCount++;
+      continue;
+    }
+
+    const moveInYmd = parseBillingDateToYmd(tenant.moveInDate || tenant.leaseStart || lease?.leaseStart);
+    const monthlyRent = Number(tenant.monthlyRent || lease?.monthlyRent || 0);
+    if (!moveInYmd || monthlyRent <= 0) continue;
+
+    const myPayments = state.payments.filter(
+      (p: any) => String(p.tenantRef || "").trim().toUpperCase() === cleanRef
+    );
+
+    // 1. Auto-mark any existing unpaid Pending invoice past its due date as Overdue (never touch Paid history)
+    for (const p of myPayments) {
+      const fin = computeInvoiceFinancials({
+        amountDue: p.amount,
+        amountPaid: p.amountPaid,
+        monthlyRent,
+        dueDate: p.dueDate,
+        storedStatus: p.status,
+        referenceYmd: nairobiToday,
+      });
+      if (p.status === "Pending" && fin.status === "Overdue") {
+        if (supabaseAdmin && !isSupabaseQuotaRestricted()) {
+          await supabaseAdmin
+            .from("rent_payments")
+            .update({ status: "Overdue" })
+            .eq("id", p.id)
+            .neq("status", "Paid")
+            .then(() => {}, () => {});
+        } else if (pg) {
+          await pg
+            .query(
+              `UPDATE public.rent_payments SET status = 'Overdue' WHERE id = $1 AND status <> 'Paid';`,
+              [p.id]
+            )
+            .catch(() => {});
+        }
+        p.status = "Overdue";
+        overdueUpdatedCount++;
+      }
+    }
+
+    // 2. Determine all anniversary billing cycles due on or before nairobiToday
+    const dueCycles = getAllDueCyclesThroughDate(moveInYmd, nairobiToday, {
+      leaseEndRaw: lease?.leaseEnd || tenant.leaseEnd,
+      includeInitialIfFuture: false,
+    });
+
+    for (const cycle of dueCycles) {
+      if (isDuplicateCyclePayment(myPayments, cleanRef, cycle, moveInYmd)) {
+        skippedDuplicateCount++;
+        continue;
+      }
+
+      const invoiceCode = buildAnniversaryInvoiceCode(cleanRef, cycle.periodStart);
+      const periodKey = buildBillingPeriodKey(cleanRef, cycle.periodStart, cycle.periodEnd);
+      const periodNote = formatBillingPeriodNote(cycle.periodStart, cycle.periodEnd);
+      const initialStatus = cycle.dueDate < nairobiToday ? "Overdue" : "Pending";
+      let insertedRow: any = null;
+
+      if (supabaseAdmin && !isSupabaseQuotaRestricted()) {
+        const basePayload = {
+          payment_code: invoiceCode,
+          lease_id: lease?.id || null,
+          tenant_id: tenant.id,
+          tenant_ref: cleanRef,
+          tenant_name: tenant.name,
+          avatar_bg: tenant.avatarBg || "#D8F3E5",
+          property_name: tenant.property,
+          unit_type: tenant.unitType || "Deluxe",
+          unit_number: tenant.unitNumber,
+          payment_note: periodNote,
+          lease_term: tenant.leaseDuration || "12 Months",
+          due_date: cycle.dueDate,
+          paid_date: "-",
+          amount_due: monthlyRent,
+          amount_paid: 0,
+          status: initialStatus,
+        };
+        const extPayload = {
+          ...basePayload,
+          invoice_date: cycle.periodStart,
+          billing_period_start: cycle.periodStart,
+          billing_period_end: cycle.periodEnd,
+          billing_period_key: periodKey,
+          billing_anniversary_day: cycle.anniversaryDay,
+        };
+        let insRes = await supabaseAdmin.from("rent_payments").insert(extPayload).select("*").maybeSingle();
+        if (insRes.error) {
+          // Fallback cleanly if Supabase Cloud hasn't run migration 015 yet
+          insRes = await supabaseAdmin.from("rent_payments").insert(basePayload).select("*").maybeSingle();
+        }
+        if (insRes.data) insertedRow = insRes.data;
+      } else if (pg) {
+        try {
+          const pgRes = await pg.query(
+            `INSERT INTO public.rent_payments
+              (payment_code, lease_id, tenant_id, tenant_ref, tenant_name, avatar_bg, property_name, unit_type, unit_number, payment_note, lease_term, due_date, paid_date, invoice_date, billing_period_start, billing_period_end, billing_period_key, billing_anniversary_day, amount, amount_due, amount_paid, status)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'-',$13,$14,$15,$16,$17,$18,$18,0,$19)
+             RETURNING *;`,
+            [
+              invoiceCode,
+              lease?.id || null,
+              tenant.id,
+              cleanRef,
+              tenant.name,
+              tenant.avatarBg || "#D8F3E5",
+              tenant.property,
+              tenant.unitType || "Deluxe",
+              tenant.unitNumber,
+              periodNote,
+              tenant.leaseDuration || "12 Months",
+              cycle.dueDate,
+              cycle.periodStart,
+              cycle.periodStart,
+              cycle.periodEnd,
+              periodKey,
+              cycle.anniversaryDay,
+              monthlyRent,
+              initialStatus,
+            ]
+          );
+          insertedRow = pgRes.rows?.[0] || null;
+        } catch {
+          const fallbackPg = await pg
+            .query(
+              `INSERT INTO public.rent_payments
+                (payment_code, tenant_id, tenant_ref, tenant_name, avatar_bg, property_name, unit_type, unit_number, payment_note, lease_term, due_date, paid_date, amount, amount_due, amount_paid, status)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'-',$12,$12,0,$13)
+               RETURNING *;`,
+              [
+                invoiceCode,
+                tenant.id,
+                cleanRef,
+                tenant.name,
+                tenant.avatarBg || "#D8F3E5",
+                tenant.property,
+                tenant.unitType || "Deluxe",
+                tenant.unitNumber,
+                periodNote,
+                tenant.leaseDuration || "12 Months",
+                cycle.dueDate,
+                monthlyRent,
+                initialStatus,
+              ]
+            )
+            .catch(() => ({ rows: [] }));
+          insertedRow = fallbackPg.rows?.[0] || null;
+        }
+      }
+
+      if (insertedRow) {
+        generatedCount++;
+        const genEntry = {
+          tenantRef: cleanRef,
+          tenantName: tenant.name,
+          invoiceNumber: invoiceCode,
+          billingPeriodStart: cycle.periodStart,
+          billingPeriodEnd: cycle.periodEnd,
+          dueDate: cycle.dueDate,
+          amount: monthlyRent,
+          status: initialStatus,
+        };
+        generatedInvoices.push(genEntry);
+        myPayments.push({
+          id: insertedRow.id,
+          paymentId: invoiceCode,
+          tenantRef: cleanRef,
+          dueDate: cycle.dueDate,
+          billingPeriodStart: cycle.periodStart,
+          billingPeriodEnd: cycle.periodEnd,
+          billingPeriodKey: periodKey,
+          paymentNote: periodNote,
+          amount: monthlyRent,
+          amountPaid: 0,
+          status: initialStatus,
+        });
+        void logActivity(
+          "payment",
+          `Anniversary Rent Invoice Issued (${cleanRef})`,
+          `Auto-generated ${invoiceCode} for ${tenant.name} (${cycle.periodRangeLabel}, Due: ${cycle.dueDateLabel}, KSh ${monthlyRent.toLocaleString()}).`,
+          actorName,
+          cleanRef,
+          "lime"
+        );
+      }
+    }
+  }
+
+  if (generatedCount > 0 || overdueUpdatedCount > 0) {
+    cachedFullDatabaseState = null;
+    cachedFullDatabaseStateExpiresAt = 0;
+  }
+
+  return {
+    nairobiDate: nairobiToday,
+    generatedCount,
+    overdueUpdatedCount,
+    skippedDuplicateCount,
+    skippedInactiveCount,
+    generatedInvoices,
+  };
+}
+
 async function runAutomatedRentSmsChecks(actorName = "Automated Rent Scheduler") {
-  const state = await fetchFullDatabaseState();
+  await ensureAnniversaryInvoicesForAllTenants(undefined, actorName).catch(() => {});
+  const [state, emailSettings] = await Promise.all([
+    fetchFullDatabaseState(true),
+    getEmailNotificationSettings(),
+  ]);
+  const nairobiToday = getNairobiDateString();
+  const advanceDays = Math.max(1, Math.min(14, Number(emailSettings.advanceReminderDays ?? 3) || 3));
   let dueSoonSent = 0;
   let overdueSent = 0;
   let skippedDuplicates = 0;
@@ -2332,13 +3146,27 @@ async function runAutomatedRentSmsChecks(actorName = "Automated Rent Scheduler")
     const unpaidPayments = state.payments.filter(
       (p) => p.tenantRef?.toUpperCase() === tenant.tenantRef?.toUpperCase() && p.status !== "Paid"
     );
+    const primaryUnpaid = unpaidPayments[unpaidPayments.length - 1] || unpaidPayments[0];
+    const dueYmd = parseBillingDateToYmd(primaryUnpaid?.dueDate || tenant.dueDate);
+    const daysToDue = dueYmd ? diffDaysBetweenYmd(dueYmd, nairobiToday) : null;
+    const dueDateStr = dueYmd ? formatYmdShort(dueYmd) : formatYmdShort(tenant.nextBillingDate || tenant.leaseStart);
+    const periodText =
+      primaryUnpaid?.billingPeriodStart && primaryUnpaid?.billingPeriodEnd
+        ? ` (Period: ${formatYmdShort(primaryUnpaid.billingPeriodStart)} - ${formatYmdShort(primaryUnpaid.billingPeriodEnd)})`
+        : "";
 
-    const hasOverdue = tenant.status === "Overdue" || unpaidPayments.some((p) => p.status === "Overdue");
-    const hasPendingDue = !hasOverdue && (tenant.rentBalance > 0 || tenant.status === "Pending" || unpaidPayments.some((p) => p.status === "Pending"));
+    const hasOverdue =
+      tenant.status === "Overdue" ||
+      unpaidPayments.some((p) => p.status === "Overdue") ||
+      (daysToDue !== null && daysToDue < 0);
+    const hasPendingDue =
+      !hasOverdue &&
+      (daysToDue === null || (daysToDue >= 0 && daysToDue <= advanceDays)) &&
+      (tenant.rentBalance > 0 || tenant.status === "Pending" || unpaidPayments.some((p) => p.status === "Pending"));
 
     if (hasOverdue) {
       const overdueAmt = tenant.rentBalance > 0 ? tenant.rentBalance : tenant.monthlyRent;
-      const msg = `Dear ${tenant.name}, urgent notice: your rent balance of KSh ${overdueAmt.toLocaleString()} for ${tenant.property}, Unit ${tenant.unitNumber} (Account Ref: ${tenant.tenantRef}) is OVERDUE. Please clear immediately via M-Pesa Paybill / Bank quoting Account Ref: ${tenant.tenantRef} to avoid penalties.`;
+      const msg = `Dear ${tenant.name}, urgent notice: your rent balance of KSh ${overdueAmt.toLocaleString()} for ${tenant.property}, Unit ${tenant.unitNumber}${periodText} (Account Ref: ${tenant.tenantRef}, Due: ${dueDateStr}) is OVERDUE. Please clear immediately via M-Pesa Paybill / Bank quoting Account Ref: ${tenant.tenantRef}.`;
       const res = await dispatchSmsNotification({
         tenantId: tenant.id,
         tenantRef: tenant.tenantRef,
@@ -2355,8 +3183,8 @@ async function runAutomatedRentSmsChecks(actorName = "Automated Rent Scheduler")
       else if (res.duplicateSkipped) skippedDuplicates++;
     } else if (hasPendingDue) {
       const dueAmt = tenant.rentBalance > 0 ? tenant.rentBalance : tenant.monthlyRent;
-      const dueDateStr = unpaidPayments[0]?.dueDate || tenant.dueDate || "5th of this month";
-      const msg = `Dear ${tenant.name}, friendly reminder that your rent of KSh ${dueAmt.toLocaleString()} for ${tenant.property}, Unit ${tenant.unitNumber} (Account Ref: ${tenant.tenantRef}) is due on ${dueDateStr}. Kindly pay via M-Pesa Paybill / Bank quoting Account Ref: ${tenant.tenantRef}.`;
+      const dueTiming = daysToDue === 0 ? `is due TODAY (${dueDateStr})` : `is due on ${dueDateStr}`;
+      const msg = `Dear ${tenant.name}, friendly reminder that your rent of KSh ${dueAmt.toLocaleString()} for ${tenant.property}, Unit ${tenant.unitNumber}${periodText} (Account Ref: ${tenant.tenantRef}) ${dueTiming}. Kindly pay via M-Pesa Paybill / Bank quoting Account Ref: ${tenant.tenantRef}.`;
       const res = await dispatchSmsNotification({
         tenantId: tenant.id,
         tenantRef: tenant.tenantRef,
@@ -2437,6 +3265,9 @@ async function dispatchTenantEmailNotification(params: {
     | "test_email";
   amountDue?: number;
   dueDate?: string;
+  billingPeriodStart?: string;
+  billingPeriodEnd?: string;
+  advanceDays?: number;
   leaseEndDate?: string;
   receiptNo?: string;
   customSubject?: string;
@@ -2579,7 +3410,15 @@ async function dispatchTenantEmailNotification(params: {
 
   // 5. Build branded ARabella agency email content
   const amountFormatted = `KES ${Number(params.amountDue || 0).toLocaleString()}`;
-  const dueDateDisplay = params.dueDate || params.leaseEndDate || "5th of this month";
+  const resolvedDueYmd = parseBillingDateToYmd(params.dueDate || params.leaseEndDate);
+  const dueDateDisplay = resolvedDueYmd
+    ? formatYmdShort(resolvedDueYmd)
+    : params.dueDate || params.leaseEndDate || formatYmdShort(getNairobiDateString());
+  const advanceDaysLabel = Math.max(1, Number(params.advanceDays ?? settings.advanceReminderDays ?? 3) || 3);
+  const billingPeriodDisplay =
+    params.billingPeriodStart && params.billingPeriodEnd
+      ? `${formatYmdShort(params.billingPeriodStart)} – ${formatYmdShort(params.billingPeriodEnd)}`
+      : "";
   const paymentInstructions =
     settings.paymentInstructions ||
     `Remit payment via M-Pesa Paybill or Bank Transfer quoting Account Reference ${cleanRef}.`;
@@ -2593,38 +3432,41 @@ async function dispatchTenantEmailNotification(params: {
     { label: "Property Name", value: params.propertyName },
     { label: "House / Unit Number", value: params.unitNumber },
   ];
+  if (billingPeriodDisplay) {
+    details.push({ label: "Billing Period", value: billingPeriodDisplay });
+  }
   let includePaymentInstructions = true;
 
   switch (params.triggerType) {
     case "rent_upcoming_3d":
       subject =
         subject ||
-        `Upcoming Rent Reminder (Due in 3 Days): ${params.propertyName} - ${params.unitNumber} (Ref: ${cleanRef})`;
-      headline = "Upcoming Rent Payment Reminder (3 Days Before Due Date)";
+        `Upcoming Rent Reminder (Due ${dueDateDisplay}): ${params.propertyName} - ${params.unitNumber} (Ref: ${cleanRef})`;
+      headline = `Upcoming Rent Payment Reminder (${advanceDaysLabel} Day${advanceDaysLabel === 1 ? "" : "s"} Advance Notice)`;
       bodyParagraphs = [
-        `This is a friendly reminder from <strong>${params.propertyName}</strong> that your upcoming monthly rent payment of <strong>${amountFormatted}</strong> for <strong>${params.unitNumber}</strong> is due in 3 days on <strong>${dueDateDisplay}</strong>.`,
-        `Submitting your payment on or before the due date keeps your tenancy ledger in good standing.`,
+        `This is a friendly reminder from <strong>${params.propertyName}</strong> that your upcoming monthly rent payment of <strong>${amountFormatted}</strong> for <strong>${params.unitNumber}</strong>${billingPeriodDisplay ? ` covering <strong>${billingPeriodDisplay}</strong>` : ""} is due on <strong>${dueDateDisplay}</strong>.`,
+        `Submitting your payment on or before your monthly billing anniversary keeps your tenancy ledger in good standing.`,
       ];
       details.push(
         { label: "Amount Due", value: amountFormatted },
-        { label: "Due Date (EAT)", value: dueDateDisplay },
-        { label: "Reminder Type", value: "3 Days Before Due Date" }
+        { label: "Payment Due Date (EAT)", value: dueDateDisplay },
+        { label: "Reminder Type", value: `Advance Reminder (${advanceDaysLabel}d before due date)` }
       );
       break;
 
     case "rent_due_today":
       subject =
         subject ||
-        `Rent Due Today: ${amountFormatted} for ${params.propertyName}, ${params.unitNumber} (Ref: ${cleanRef})`;
+        `Rent Due Today (${dueDateDisplay}): ${amountFormatted} for ${params.propertyName}, ${params.unitNumber} (Ref: ${cleanRef})`;
       headline = "Your Monthly Rent Payment Is Due Today";
       bodyParagraphs = [
-        `Kindly note that your rent payment of <strong>${amountFormatted}</strong> for <strong>${params.unitNumber}</strong> at <strong>${params.propertyName}</strong> is due today (<strong>${dueDateDisplay}</strong>).`,
+        `Kindly note that your rent payment of <strong>${amountFormatted}</strong> for <strong>${params.unitNumber}</strong> at <strong>${params.propertyName}</strong>${billingPeriodDisplay ? ` covering <strong>${billingPeriodDisplay}</strong>` : ""} is due today (<strong>${dueDateDisplay}</strong>).`,
         `Please complete your payment using your Tenant Account Reference <strong>${cleanRef}</strong> so your receipt is automatically reconciled.`,
       ];
       details.push(
         { label: "Amount Due Today", value: amountFormatted },
-        { label: "Due Date (EAT)", value: `${dueDateDisplay} (Today)` },
-        { label: "Reminder Type", value: "Rent Due Today" }
+        { label: "Payment Due Date (EAT)", value: `${dueDateDisplay} (Today)` },
+        { label: "Reminder Type", value: "Anniversary Due Date Reminder" }
       );
       break;
 
@@ -2634,12 +3476,12 @@ async function dispatchTenantEmailNotification(params: {
         `URGENT: Overdue Rent Balance of ${amountFormatted} – ${params.propertyName}, ${params.unitNumber} (Ref: ${cleanRef})`;
       headline = "Overdue Rent Payment Notice";
       bodyParagraphs = [
-        `Our records indicate that your rent payment of <strong>${amountFormatted}</strong> for <strong>${params.unitNumber}</strong> at <strong>${params.propertyName}</strong> (Due Date: <strong>${dueDateDisplay}</strong>) remains unpaid and is currently <strong>OVERDUE</strong>.`,
+        `Our records indicate that your rent payment of <strong>${amountFormatted}</strong> for <strong>${params.unitNumber}</strong> at <strong>${params.propertyName}</strong>${billingPeriodDisplay ? ` (Billing Period: <strong>${billingPeriodDisplay}</strong>)` : ""} due on <strong>${dueDateDisplay}</strong> remains unpaid and is currently <strong>OVERDUE</strong>.`,
         `Please settle your outstanding balance immediately to avoid late payment penalties or tenancy disruption.`,
       ];
       details.push(
         { label: "Overdue Balance", value: amountFormatted },
-        { label: "Original Due Date", value: dueDateDisplay },
+        { label: "Payment Due Date", value: dueDateDisplay },
         { label: "Account Status", value: "Overdue — Immediate Action Required" }
       );
       break;
@@ -2652,13 +3494,13 @@ async function dispatchTenantEmailNotification(params: {
       headline = "Rent Payment Confirmed & Official Receipt";
       bodyParagraphs = [
         `Thank you! We have received and verified your rent payment of <strong>${amountFormatted}</strong> for <strong>${params.unitNumber}</strong> at <strong>${params.propertyName}</strong>.`,
-        `Your tenant ledger has been updated and your account is marked as <strong>Paid</strong>.`,
+        `Your tenant ledger has been updated and your invoice status is marked as <strong>Paid</strong>.`,
       ];
       details.push(
         { label: "Amount Paid", value: amountFormatted },
         { label: "Receipt / Reference", value: params.receiptNo || params.paymentId || cleanRef },
         { label: "Date Confirmed (EAT)", value: dueDateDisplay },
-        { label: "Payment Status", value: "Paid & Verified" }
+        { label: "Payment Status", value: "Paid" }
       );
       break;
 
@@ -2701,7 +3543,7 @@ async function dispatchTenantEmailNotification(params: {
       headline = "Resend Email Integration & Automation Verified";
       bodyParagraphs = [
         params.customBody ||
-          `This is a live verification email from your <strong>ARabella agency</strong> Rental Management System confirming that your Resend integration and automated tenant reminder engine (Africa/Nairobi timezone) are active.`,
+          `This is a live verification email from your <strong>ARabella agency</strong> Rental Management System confirming that your Resend integration and automated anniversary billing reminder engine (Africa/Nairobi timezone) are active.`,
       ];
       details.push(
         { label: "Sample Amount Due", value: amountFormatted },
@@ -2722,10 +3564,24 @@ async function dispatchTenantEmailNotification(params: {
         details.push({ label: "Amount Due", value: amountFormatted });
       }
       if (params.dueDate) {
-        details.push({ label: "Due Date", value: dueDateDisplay });
+        details.push({ label: "Payment Due Date", value: dueDateDisplay });
       }
       break;
   }
+
+  const ledgerBundle = await buildTenantInvoiceAndLedgerBundle({
+    tenantRef: cleanRef,
+    tenantName: params.tenantName,
+    propertyName: params.propertyName,
+    unitNumber: params.unitNumber,
+    amountDue: params.amountDue,
+    dueDate: resolvedDueYmd || params.dueDate,
+    billingPeriodStart: params.billingPeriodStart,
+    billingPeriodEnd: params.billingPeriodEnd,
+    paymentId: params.paymentId,
+    templateType: params.triggerType,
+    receiptNo: params.receiptNo,
+  });
 
   const emailRes = await dispatchBrandedRentifyEmail({
     templateType: params.triggerType,
@@ -2748,6 +3604,8 @@ async function dispatchTenantEmailNotification(params: {
     paymentId: params.paymentId,
     leaseId: params.leaseId,
     sentBy,
+    embeddedLedgerHtml: ledgerBundle.embeddedHtml,
+    attachments: ledgerBundle.attachments,
   });
 
   const ok = emailRes.resendResult?.success !== false;
@@ -2757,7 +3615,7 @@ async function dispatchTenantEmailNotification(params: {
     resendId: emailRes.resendId,
     status: emailRes.status,
     message: ok
-      ? `Email (${params.triggerType}) dispatched to ${params.tenantName} (${targetEmail})`
+      ? `Email (${params.triggerType}) with Invoice & Tenant Ledger attached dispatched to ${params.tenantName} (${targetEmail})`
       : `Failed to send email to ${targetEmail}: ${emailRes.errorMessage || "Resend delivery error"}`,
   };
 }
@@ -2860,8 +3718,18 @@ async function retryEmailNotification(emailId: string, actorName: string) {
 }
 
 async function runAutomatedEmailReminders(actorName = "Automated Email Scheduler") {
-  const state = await fetchFullDatabaseState();
+  const billingRun = await ensureAnniversaryInvoicesForAllTenants(undefined, actorName).catch(() => ({
+    generatedCount: 0,
+    overdueUpdatedCount: 0,
+    skippedDuplicateCount: 0,
+    generatedInvoices: [],
+  }));
+  const [state, emailSettings] = await Promise.all([
+    fetchFullDatabaseState(true),
+    getEmailNotificationSettings(),
+  ]);
   const nairobiToday = getNairobiDateString();
+  const advanceDays = Math.max(1, Math.min(14, Number(emailSettings.advanceReminderDays ?? 3) || 3));
   let upcoming3dSent = 0;
   let dueTodaySent = 0;
   let overdueSent = 0;
@@ -2931,33 +3799,65 @@ async function runAutomatedEmailReminders(actorName = "Automated Email Scheduler
       }
     }
 
-    // B. Check Rent Payment Reminders (Skip if tenant has already paid)
-    if (tenant.status === "Paid" || (tenant.rentBalance !== undefined && tenant.rentBalance <= 0)) {
-      skippedPaidOrDisabled++;
-      continue;
-    }
-
+    // B. Check Anniversary Rent Payment Reminders (Advance notice before next billing date OR unpaid/overdue invoice)
     const unpaidPayments = state.payments.filter(
       (p) => p.tenantRef?.toUpperCase() === cleanRef && p.status !== "Paid"
     );
-    const primaryUnpaid = unpaidPayments[0];
-    const rawDueDate = primaryUnpaid?.dueDate || tenant.dueDate || "5th of this month";
-    const dueYmd = parseFlexibleDateToNairobiYmd(rawDueDate, nairobiToday);
-    const daysToDue = daysDiffFromNairobiToday(dueYmd, nairobiToday);
+
+    // Case B1: Tenant has already paid current cycle — still check if their NEXT anniversary billing date is within `advanceDays`!
+    if (tenant.status === "Paid" || (tenant.rentBalance !== undefined && tenant.rentBalance <= 0 && unpaidPayments.length === 0)) {
+      const nextDueYmd = parseBillingDateToYmd(tenant.nextBillingDate);
+      const daysToNextAnniversary = nextDueYmd ? diffDaysBetweenYmd(nextDueYmd, nairobiToday) : null;
+      if (daysToNextAnniversary !== null && daysToNextAnniversary >= 1 && daysToNextAnniversary <= advanceDays) {
+        const moveInAnchor = tenant.moveInDate || tenant.leaseStart;
+        const upcomingCycle = moveInAnchor ? getBillingCycleForDate(moveInAnchor, nextDueYmd) : null;
+        const advRes = await dispatchTenantEmailNotification({
+          tenantId: tenant.id,
+          tenantRef: cleanRef,
+          tenantName: tenant.name,
+          recipientEmail: tenant.email,
+          propertyName: tenant.property,
+          unitNumber: tenant.unitNumber,
+          triggerType: "rent_upcoming_3d",
+          amountDue: tenant.monthlyRent,
+          dueDate: nextDueYmd,
+          billingPeriodStart: upcomingCycle?.periodStart || nextDueYmd,
+          billingPeriodEnd: upcomingCycle?.periodEnd,
+          advanceDays: daysToNextAnniversary,
+          sentBy: actorName,
+        });
+        if (advRes.log) dispatchedEmails.push(advRes.log);
+        if (advRes.success) upcoming3dSent++;
+        else if (advRes.duplicateSkipped) skippedDuplicates++;
+        else if (advRes.disabledSkipped) skippedPaidOrDisabled++;
+        else failedCount++;
+      } else {
+        skippedPaidOrDisabled++;
+      }
+      continue;
+    }
+
+    // Case B2: Tenant has one or more unpaid anniversary invoices
+    const primaryUnpaid = unpaidPayments[unpaidPayments.length - 1] || unpaidPayments[0];
+    const dueYmd =
+      parseBillingDateToYmd(primaryUnpaid?.dueDate) ||
+      parseBillingDateToYmd(tenant.dueDate) ||
+      parseBillingDateToYmd(tenant.moveInDate || tenant.leaseStart);
+    const daysToDue = dueYmd ? diffDaysBetweenYmd(dueYmd, nairobiToday) : null;
     const amountDue = tenant.rentBalance > 0 ? tenant.rentBalance : tenant.monthlyRent;
+    const dueDateStr = dueYmd || tenant.dueDate || nairobiToday;
 
     const isExplicitlyOverdue =
-      tenant.status === "Overdue" ||
-      unpaidPayments.some((p) => p.status === "Overdue") ||
-      (daysToDue !== null && daysToDue < 0);
+      (daysToDue !== null && daysToDue < 0) ||
+      (daysToDue === null && (tenant.status === "Overdue" || unpaidPayments.some((p) => p.status === "Overdue")));
 
     const isDueToday = daysToDue === 0;
-    const isUpcoming3d =
+    const isUpcomingAdvance =
       !isExplicitlyOverdue &&
       !isDueToday &&
-      ((daysToDue !== null && daysToDue >= 1 && daysToDue <= 3) ||
-        tenant.status === "Pending" ||
-        unpaidPayments.some((p) => p.status === "Pending"));
+      daysToDue !== null &&
+      daysToDue >= 1 &&
+      daysToDue <= advanceDays;
 
     if (isDueToday) {
       const res = await dispatchTenantEmailNotification({
@@ -2969,7 +3869,9 @@ async function runAutomatedEmailReminders(actorName = "Automated Email Scheduler
         unitNumber: tenant.unitNumber,
         triggerType: "rent_due_today",
         amountDue,
-        dueDate: rawDueDate,
+        dueDate: dueDateStr,
+        billingPeriodStart: primaryUnpaid?.billingPeriodStart,
+        billingPeriodEnd: primaryUnpaid?.billingPeriodEnd,
         paymentId: primaryUnpaid?.id,
         sentBy: actorName,
       });
@@ -2988,7 +3890,9 @@ async function runAutomatedEmailReminders(actorName = "Automated Email Scheduler
         unitNumber: tenant.unitNumber,
         triggerType: "rent_overdue",
         amountDue,
-        dueDate: rawDueDate,
+        dueDate: dueDateStr,
+        billingPeriodStart: primaryUnpaid?.billingPeriodStart,
+        billingPeriodEnd: primaryUnpaid?.billingPeriodEnd,
         paymentId: primaryUnpaid?.id,
         sentBy: actorName,
       });
@@ -2997,7 +3901,7 @@ async function runAutomatedEmailReminders(actorName = "Automated Email Scheduler
       else if (res.duplicateSkipped) skippedDuplicates++;
       else if (res.disabledSkipped) skippedPaidOrDisabled++;
       else failedCount++;
-    } else if (isUpcoming3d) {
+    } else if (isUpcomingAdvance) {
       const res = await dispatchTenantEmailNotification({
         tenantId: tenant.id,
         tenantRef: cleanRef,
@@ -3007,7 +3911,10 @@ async function runAutomatedEmailReminders(actorName = "Automated Email Scheduler
         unitNumber: tenant.unitNumber,
         triggerType: "rent_upcoming_3d",
         amountDue,
-        dueDate: rawDueDate,
+        dueDate: dueDateStr,
+        billingPeriodStart: primaryUnpaid?.billingPeriodStart,
+        billingPeriodEnd: primaryUnpaid?.billingPeriodEnd,
+        advanceDays: daysToDue || advanceDays,
         paymentId: primaryUnpaid?.id,
         sentBy: actorName,
       });
@@ -3021,6 +3928,9 @@ async function runAutomatedEmailReminders(actorName = "Automated Email Scheduler
 
   return {
     nairobiDate: nairobiToday,
+    advanceReminderDays: advanceDays,
+    invoicesGenerated: billingRun.generatedCount,
+    invoicesMarkedOverdue: billingRun.overdueUpdatedCount,
     upcoming3dSent,
     dueTodaySent,
     overdueSent,
@@ -3317,11 +4227,71 @@ async function fetchFullDatabaseState(forceRefresh = false) {
       portal: resolvedRole === "tenant" ? "tenant" : "management",
     };
   });
+  const nairobiTodayYmd = getNairobiDateString();
+  const leaseByTenantRef = /* @__PURE__ */ new Map();
+  const leaseByTenantId = /* @__PURE__ */ new Map();
+  for (const l of leasesRows) {
+    if (l.tenant_ref) leaseByTenantRef.set(String(l.tenant_ref).trim().toUpperCase(), l);
+    if (l.tenant_id) leaseByTenantId.set(String(l.tenant_id), l);
+  }
+
   const payments = paymentsRows.map((r) => {
-    const amt = Number(r.amount || r.amount_due || r.amount_paid || 0);
+    const cleanRef = String(r.tenant_ref || "").trim().toUpperCase();
+    const matchedLease = leaseByTenantId.get(String(r.tenant_id || "")) || leaseByTenantRef.get(cleanRef);
+    const moveInAnchor = matchedLease?.lease_start || r.billing_period_start || r.due_date;
+    const extractedPeriod = extractBillingPeriodFromPayment(r, moveInAnchor);
+    const amountDue = Number(r.amount_due ?? r.amount ?? matchedLease?.monthly_rent ?? 0);
+    const rawAmountPaid = r.amount_paid !== undefined && r.amount_paid !== null ? Number(r.amount_paid) : undefined;
+    const dueYmd = parseBillingDateToYmd(r.due_date) || extractedPeriod?.periodStart || null;
+    const fin = computeInvoiceFinancials({
+      amountDue,
+      amountPaid: rawAmountPaid,
+      amount: Number(r.amount ?? amountDue),
+      monthlyRent: Number(matchedLease?.monthly_rent ?? amountDue),
+      dueDate: dueYmd,
+      storedStatus: r.status || "Pending",
+      referenceYmd: nairobiTodayYmd,
+    });
+    const periodStart = extractedPeriod?.periodStart || dueYmd || void 0;
+    const periodEnd = extractedPeriod?.periodEnd || void 0;
+    const anniversaryDay =
+      Number(r.billing_anniversary_day || matchedLease?.billing_anniversary_day || 0) ||
+      (moveInAnchor ? getBillingAnniversaryDay(moveInAnchor, nairobiTodayYmd) : void 0);
+    const invoiceDate =
+      parseBillingDateToYmd(r.invoice_date) ||
+      periodStart ||
+      parseBillingDateToYmd(r.created_at) ||
+      dueYmd ||
+      void 0;
     const confirmerProfile = r.confirmed_by ? profilesById.get(r.confirmed_by) : null;
-    return { id: r.id, paymentId: r.payment_code, tenantRef: r.tenant_ref, tenantName: r.tenant_name, avatarBg: r.avatar_bg || "#D8F3E5", property: r.property_name, unitType: r.unit_type || "Deluxe", unitNumber: r.unit_number, paymentNote: r.payment_note || "Rent Payment", leaseTerm: r.lease_term || "12 months", dueDate: r.due_date, paidDate: r.paid_date, amount: amt, status: r.status || "Pending", confirmedBy: confirmerProfile?.full_name || r.confirmed_by || void 0, confirmedAt: r.confirmed_at || void 0, createdAt: r.created_at };
+    return {
+      id: r.id,
+      paymentId: r.payment_code,
+      tenantRef: r.tenant_ref,
+      tenantName: r.tenant_name,
+      avatarBg: r.avatar_bg || "#D8F3E5",
+      property: r.property_name,
+      unitType: r.unit_type || "Deluxe",
+      unitNumber: r.unit_number,
+      paymentNote: r.payment_note || (periodStart && periodEnd ? formatBillingPeriodNote(periodStart, periodEnd) : "Rent Payment"),
+      leaseTerm: r.lease_term || "12 months",
+      dueDate: dueYmd || r.due_date,
+      paidDate: r.paid_date || "-",
+      invoiceDate,
+      billingPeriodStart: periodStart,
+      billingPeriodEnd: periodEnd,
+      billingPeriodKey: r.billing_period_key || (periodStart && periodEnd ? buildBillingPeriodKey(cleanRef, periodStart, periodEnd) : void 0),
+      billingAnniversaryDay: anniversaryDay,
+      amount: fin.amountDue,
+      amountPaid: fin.amountPaid,
+      balanceDue: fin.outstandingBalance,
+      status: fin.status,
+      confirmedBy: confirmerProfile?.full_name || r.confirmed_by || void 0,
+      confirmedAt: r.confirmed_at || void 0,
+      createdAt: r.created_at,
+    };
   });
+
   const tenants = tenantsRows.map((t) => {
     const lease = leasesRows.find((l) => l.tenant_id === t.id || l.tenant_ref === t.tenant_ref) || {};
     const propObj = (t.property_id ? propsById.get(t.property_id) : void 0) || (lease.property_name ? propsByName.get(String(lease.property_name).trim().toLowerCase()) : void 0) || (t.property_name ? propsByName.get(String(t.property_name).trim().toLowerCase()) : void 0);
@@ -3332,8 +4302,8 @@ async function fetchFullDatabaseState(forceRefresh = false) {
     const resolvedUnitNumber = unitObj?.unit_number || lease.unit_number || "Unit 101";
     const resolvedUnitType = lease.unit_type || unitObj?.unit_type_name || "Deluxe";
     const myPayments = payments.filter((p) => p.tenantRef.toUpperCase() === String(t.tenant_ref).toUpperCase());
-    const totalPaid = myPayments.filter((p) => p.status === "Paid").reduce((s, p) => s + Number(p.amount), 0);
-    const rentBalance = myPayments.filter((p) => p.status !== "Paid").reduce((s, p) => s + Number(p.amount), 0);
+    const totalPaid = myPayments.reduce((s, p) => s + Number(p.amountPaid ?? (p.status === "Paid" ? p.amount : 0)), 0);
+    const rentBalance = myPayments.reduce((s, p) => s + Number(p.balanceDue ?? (p.status === "Paid" ? 0 : p.amount)), 0);
     const hasOverdue = myPayments.some((p) => p.status === "Overdue");
     const hasPending = myPayments.some((p) => p.status === "Pending");
     const derivedStatus = hasOverdue ? "Overdue" : hasPending ? "Pending" : "Paid";
@@ -3342,10 +4312,82 @@ async function fetchFullDatabaseState(forceRefresh = false) {
     const utilityPackage = Number(lease.utility_package || 0);
     const maintenanceFee = Number(lease.maintenance_fee || 0);
     const parkingFee = Number(lease.parking_fee || 0);
-    const activePayForDue = myPayments.find((p) => p.status !== "Paid") || myPayments[0];
-    const resolvedDueDate = t.due_date || lease.due_date || activePayForDue?.dueDate || lease.lease_start || formatShortDate(new Date(t.created_at));
-    const paymentHistory = myPayments.map((p) => ({ id: p.paymentId, paymentDate: p.paidDate, unitType: p.unitType, unitNumber: p.unitNumber, periodStart: p.dueDate, periodEnd: p.paidDate, occupants: lease.occupants || "1 Resident", amount: p.amount, status: p.status, variant: p.unitType === "Suite" ? "suite" : p.unitType === "Standard" ? "standard" : "deluxe" }));
-    return { id: t.id, propertyId: resolvedPropertyId, unitId: resolvedUnitId, tenantRef: t.tenant_ref, name: t.full_name, phone: t.phone, email: t.email, dob: t.dob || "Not specified", gender: t.gender || "Resident", nationality: t.nationality || "Kenyan", idNumber: t.id_number, tier: t.tier || "Verified Tenant", onTimeStreak: t.on_time_streak || "Active Lease", securityDeposit: Number(t.security_deposit || 0), vehicleInfo: t.vehicle_info || "None", leaseId: lease.lease_code || `LS-${t.tenant_ref}`, leaseCreatedDate: lease.created_at ? formatShortDate(new Date(lease.created_at)) : formatShortDate(new Date(t.created_at)), unitType: resolvedUnitType, unitNumber: resolvedUnitNumber, property: resolvedPropertyName, monthlyRent, dueDate: resolvedDueDate, rentBalance, totalPaid, occupants: lease.occupants || "1 Adult", leaseDuration: lease.lease_duration || "12 Months", leaseStart: lease.lease_start || formatShortDate(new Date(t.created_at)), leaseEnd: lease.lease_end || "Active", leaseNotes: lease.lease_notes || "Standard residential lease agreement.", perks: Array.isArray(lease.perks) ? lease.perks : [], baseRent, utilityPackage, maintenanceFee, parkingFee, paymentMethod: lease.payment_method || "M-Pesa / Bank Transfer", status: derivedStatus, avatarBg: t.avatar_bg || "#D8F3E5", paymentHistory };
+
+    // Anniversary-based billing cycle strictly anchored to tenant's actual move-in date (lease_start)
+    const rawLeaseStart = lease.lease_start || formatShortDate(new Date(t.created_at));
+    const moveInYmd = parseBillingDateToYmd(rawLeaseStart) || parseBillingDateToYmd(t.created_at) || nairobiTodayYmd;
+    const billingAnniversaryDay = getBillingAnniversaryDay(moveInYmd, nairobiTodayYmd);
+    const activeCycle = getBillingCycleForDate(moveInYmd, nairobiTodayYmd) || getBillingCycleForIndex(moveInYmd, 0);
+    const issuedDueDates = myPayments.map((p) => p.billingPeriodStart || p.dueDate).filter(Boolean);
+    const nextBillingDate = getNextBillingDate(moveInYmd, nairobiTodayYmd, issuedDueDates) || activeCycle?.nextBillingDate || moveInYmd;
+
+    const unpaidPayments = myPayments.filter((p) => p.status !== "Paid");
+    const oldestUnpaid = unpaidPayments[unpaidPayments.length - 1] || unpaidPayments[0];
+    const resolvedDueDate =
+      (oldestUnpaid?.dueDate ? parseBillingDateToYmd(oldestUnpaid.dueDate) || oldestUnpaid.dueDate : null) ||
+      nextBillingDate ||
+      activeCycle?.dueDate ||
+      moveInYmd;
+
+    const paymentHistory = myPayments.map((p) => ({
+      id: p.paymentId,
+      paymentDate: p.paidDate,
+      unitType: p.unitType,
+      unitNumber: p.unitNumber,
+      periodStart: p.billingPeriodStart || p.dueDate,
+      periodEnd: p.billingPeriodEnd || p.paidDate,
+      occupants: lease.occupants || "1 Resident",
+      amount: p.amount,
+      status: p.status,
+      variant: p.unitType === "Suite" ? "suite" : p.unitType === "Standard" ? "standard" : "deluxe",
+    }));
+
+    return {
+      id: t.id,
+      propertyId: resolvedPropertyId,
+      unitId: resolvedUnitId,
+      tenantRef: t.tenant_ref,
+      name: t.full_name,
+      phone: t.phone,
+      email: t.email,
+      dob: t.dob || "Not specified",
+      gender: t.gender || "Resident",
+      nationality: t.nationality || "Kenyan",
+      idNumber: t.id_number,
+      tier: t.tier || "Verified Tenant",
+      onTimeStreak: t.on_time_streak || "Active Lease",
+      securityDeposit: Number(t.security_deposit || 0),
+      vehicleInfo: t.vehicle_info || "None",
+      leaseId: lease.lease_code || `LS-${t.tenant_ref}`,
+      leaseCreatedDate: lease.created_at ? formatShortDate(new Date(lease.created_at)) : formatShortDate(new Date(t.created_at)),
+      unitType: resolvedUnitType,
+      unitNumber: resolvedUnitNumber,
+      property: resolvedPropertyName,
+      monthlyRent,
+      dueDate: resolvedDueDate,
+      moveInDate: moveInYmd,
+      billingAnniversaryDay,
+      currentBillingPeriodStart: activeCycle?.periodStart || moveInYmd,
+      currentBillingPeriodEnd: activeCycle?.periodEnd || moveInYmd,
+      nextBillingDate,
+      rentBalance,
+      balanceDue: rentBalance,
+      totalPaid,
+      occupants: lease.occupants || "1 Adult",
+      leaseDuration: lease.lease_duration || "12 Months",
+      leaseStart: rawLeaseStart,
+      leaseEnd: lease.lease_end || "Active",
+      leaseNotes: lease.lease_notes || "Standard residential lease agreement.",
+      perks: Array.isArray(lease.perks) ? lease.perks : [],
+      baseRent,
+      utilityPackage,
+      maintenanceFee,
+      parkingFee,
+      paymentMethod: lease.payment_method || "M-Pesa / Bank Transfer",
+      status: derivedStatus,
+      avatarBg: t.avatar_bg || "#D8F3E5",
+      paymentHistory,
+    };
   });
   const properties = propsRows.map((p) => {
     const prefix = String(p.code_prefix || "A").trim();
@@ -3646,7 +4688,9 @@ async function resolveUserMiddleware(req, res, next) {
       return next();
     }
     if (
-      (req.path === "/api/sms/run-automated-checks" || req.path === "/api/email/run-automated-checks") &&
+      (req.path === "/api/sms/run-automated-checks" ||
+        req.path === "/api/email/run-automated-checks" ||
+        req.path === "/api/billing/run-anniversary-cycle") &&
       (req.headers["x-vercel-cron"] ||
         (process.env.CRON_SECRET && req.headers.authorization === `Bearer ${process.env.CRON_SECRET}`))
     ) {
@@ -5851,37 +6895,59 @@ async function createApp() {
       const util2 = Math.round(rentNum * 0.06);
       const maint2 = Math.round(rentNum * 0.04);
       const park2 = Math.max(0, rentNum - base2 - util2 - maint2);
-      const startStr2 = leaseStart || formatShortDate(/* @__PURE__ */ new Date());
-      const resolvedDueDate2 = dueDate && String(dueDate).trim() ? String(dueDate).trim() : startStr2;
+      const nairobiToday2 = getNairobiDateString();
+      const moveInYmd2 = parseBillingDateToYmd(leaseStart) || nairobiToday2;
+      const startStr2 = leaseStart && String(leaseStart).trim() ? String(leaseStart).trim() : moveInYmd2;
+      const cycle0Supa = getBillingCycleForIndex(moveInYmd2, 0)!;
+      const explicitDueYmd2 = parseBillingDateToYmd(dueDate);
+      const resolvedDueDate2 = explicitDueYmd2 || cycle0Supa.dueDate;
+      const periodStart2 = cycle0Supa.periodStart;
+      const periodEnd2 = cycle0Supa.periodEnd;
+      const periodKey2 = buildBillingPeriodKey(generatedRef2, periodStart2, periodEnd2);
+      const periodNote2 = formatBillingPeriodNote(periodStart2, periodEnd2);
+      const nextBilling2 = cycle0Supa.nextBillingDate;
       const nextYear2 = /* @__PURE__ */ new Date();
       nextYear2.setFullYear(nextYear2.getFullYear() + 1);
       const endStr2 = leaseEnd || formatShortDate(nextYear2);
       const resolvedUnitType = unitType || unitRow?.unit_type_name || "Deluxe";
-      const { data: newLease, error: leaseErr } = await supabaseAdmin.from("leases").insert({ lease_code: leaseCode2, tenant_id: newTenant2.id, tenant_ref: generatedRef2, unit_id: unitRow?.id || null, unit_number: cleanUnitNumber, unit_type: resolvedUnitType, property_name: propRow2.name, monthly_rent: rentNum, base_rent: base2, utility_package: util2, maintenance_fee: maint2, parking_fee: park2, occupants: occupants || "1 Adult", lease_duration: leaseDuration || "12 Months", lease_start: startStr2, lease_end: endStr2, lease_notes: leaseNotes || "Standard residential lease agreement.", perks: ["Resident portal access", "Assigned unit mailbox"], payment_method: paymentMethod || "M-Pesa / Bank Transfer", is_active: true }).select("*").single();
+      const baseLeaseInsert2 = { lease_code: leaseCode2, tenant_id: newTenant2.id, tenant_ref: generatedRef2, unit_id: unitRow?.id || null, unit_number: cleanUnitNumber, unit_type: resolvedUnitType, property_name: propRow2.name, monthly_rent: rentNum, base_rent: base2, utility_package: util2, maintenance_fee: maint2, parking_fee: park2, occupants: occupants || "1 Adult", lease_duration: leaseDuration || "12 Months", lease_start: startStr2, lease_end: endStr2, lease_notes: leaseNotes || "Standard residential lease agreement.", perks: ["Resident portal access", "Assigned unit mailbox"], payment_method: paymentMethod || "M-Pesa / Bank Transfer", is_active: true };
+      let leaseRes2 = await supabaseAdmin.from("leases").insert({ ...baseLeaseInsert2, billing_anniversary_day: cycle0Supa.anniversaryDay, next_billing_date: nextBilling2 }).select("*").single();
+      if (leaseRes2.error) {
+        leaseRes2 = await supabaseAdmin.from("leases").insert(baseLeaseInsert2).select("*").single();
+      }
+      const { data: newLease, error: leaseErr } = leaseRes2;
       if (leaseErr) {
         return res.status(400).json({ error: `Tenant created (${generatedRef2}), but lease creation failed: ${leaseErr.message}` });
       }
       const nowIso = (/* @__PURE__ */ new Date()).toISOString();
-      const { data: createdPayRow, error: payErr } = await supabaseAdmin.from("rent_payments").insert({ payment_code: leaseCode2, lease_id: newLease?.id || null, tenant_id: newTenant2.id, tenant_ref: generatedRef2, tenant_name: newTenant2.full_name, avatar_bg: "#D8F3E5", property_name: propRow2.name, unit_type: resolvedUnitType, unit_number: cleanUnitNumber, payment_note: "Lease Rent Invoice", lease_term: leaseDuration || "12 Months", due_date: resolvedDueDate2, paid_date: startStr2, amount_due: rentNum, amount_paid: payStatus2 === "Paid" ? rentNum : 0, status: payStatus2, confirmed_by: validConfirmerId, confirmed_at: payStatus2 === "Paid" ? nowIso : null }).select("*").single();
+      const basePayInsert2 = { payment_code: buildAnniversaryInvoiceCode(generatedRef2, periodStart2), lease_id: newLease?.id || null, tenant_id: newTenant2.id, tenant_ref: generatedRef2, tenant_name: newTenant2.full_name, avatar_bg: "#D8F3E5", property_name: propRow2.name, unit_type: resolvedUnitType, unit_number: cleanUnitNumber, payment_note: periodNote2, lease_term: leaseDuration || "12 Months", due_date: resolvedDueDate2, paid_date: payStatus2 === "Paid" ? nairobiToday2 : "-", amount_due: rentNum, amount_paid: payStatus2 === "Paid" ? rentNum : 0, status: payStatus2 === "Paid" ? "Paid" : resolvedDueDate2 < nairobiToday2 ? "Overdue" : "Pending", confirmed_by: validConfirmerId, confirmed_at: payStatus2 === "Paid" ? nowIso : null };
+      let payRes2 = await supabaseAdmin.from("rent_payments").insert({ ...basePayInsert2, invoice_date: periodStart2, billing_period_start: periodStart2, billing_period_end: periodEnd2, billing_period_key: periodKey2, billing_anniversary_day: cycle0Supa.anniversaryDay }).select("*").single();
+      if (payRes2.error) {
+        payRes2 = await supabaseAdmin.from("rent_payments").insert(basePayInsert2).select("*").single();
+      }
+      const { data: createdPayRow, error: payErr } = payRes2;
       if (payErr) {
         return res.status(400).json({ error: `Tenant & Lease saved (${generatedRef2}), but initial rent invoice failed: ${payErr.message}` });
       }
       const actorName = req.currentUser?.fullName || "ARabella agency System";
       void (async () => {
         try {
-          await logActivity("lease", `New Tenant Onboarded (${generatedRef2})`, `${newTenant2.full_name} assigned to ${cleanUnitNumber} at ${propRow2.name} (KSh ${rentNum.toLocaleString()}/mo, Due: ${resolvedDueDate2}).`, req.currentUser?.fullName || "Manager", generatedRef2, "lime");
-          await dispatchSmsNotification({ tenantId: newTenant2.id, tenantRef: generatedRef2, tenantName: newTenant2.full_name, recipientPhone: newTenant2.phone, propertyName: propRow2.name, unitNumber: cleanUnitNumber, triggerType: "tenant_registered", messageBody: `Welcome ${newTenant2.full_name}! Your tenancy at ${propRow2.name}, Apartment ${cleanUnitNumber} (Tenant Ref: ${generatedRef2}) has been registered. Monthly rent: KSh ${rentNum.toLocaleString()} (Due: ${resolvedDueDate2}). Thank you for choosing ARabella agency.`, sentBy: actorName });
+          await logActivity("lease", `New Tenant Onboarded (${generatedRef2})`, `${newTenant2.full_name} assigned to ${cleanUnitNumber} at ${propRow2.name} (KSh ${rentNum.toLocaleString()}/mo, Billing Cycle: ${cycle0Supa.periodRangeLabel}, Due: ${formatYmdShort(resolvedDueDate2)}).`, req.currentUser?.fullName || "Manager", generatedRef2, "lime");
+          await dispatchSmsNotification({ tenantId: newTenant2.id, tenantRef: generatedRef2, tenantName: newTenant2.full_name, recipientPhone: newTenant2.phone, propertyName: propRow2.name, unitNumber: cleanUnitNumber, triggerType: "tenant_registered", messageBody: `Welcome ${newTenant2.full_name}! Your tenancy at ${propRow2.name}, Apartment ${cleanUnitNumber} (Tenant Ref: ${generatedRef2}) has been registered. Monthly rent: KSh ${rentNum.toLocaleString()} (Billing Period: ${cycle0Supa.periodRangeLabel}, Due: ${formatYmdShort(resolvedDueDate2)}). Thank you for choosing ARabella agency.`, sentBy: actorName });
           if (payStatus2 === "Paid" && createdPayRow?.id) {
             await Promise.allSettled([
-              dispatchSmsNotification({ tenantId: newTenant2.id, tenantRef: generatedRef2, tenantName: newTenant2.full_name, recipientPhone: newTenant2.phone, propertyName: propRow2.name, unitNumber: cleanUnitNumber, triggerType: "payment_confirmed", paymentId: createdPayRow.id, paymentVerified: true, messageBody: `Dear ${newTenant2.full_name}, we confirm receipt of your rent payment of KSh ${rentNum.toLocaleString()} for ${propRow2.name}, Apartment ${cleanUnitNumber} (Ref: ${generatedRef2}, Receipt: ${leaseCode2}). Thank you!`, sentBy: actorName }),
-              dispatchTenantEmailNotification({ tenantId: newTenant2.id, tenantRef: generatedRef2, tenantName: newTenant2.full_name, recipientEmail: cleanEmail, propertyName: propRow2.name, unitNumber: cleanUnitNumber, triggerType: "payment_confirmed", amountDue: rentNum, dueDate: resolvedDueDate2, paymentId: createdPayRow.id, paymentVerified: true, sentBy: actorName })
+              dispatchSmsNotification({ tenantId: newTenant2.id, tenantRef: generatedRef2, tenantName: newTenant2.full_name, recipientPhone: newTenant2.phone, propertyName: propRow2.name, unitNumber: cleanUnitNumber, triggerType: "payment_confirmed", paymentId: createdPayRow.id, paymentVerified: true, messageBody: `Dear ${newTenant2.full_name}, we confirm receipt of your rent payment of KSh ${rentNum.toLocaleString()} for ${propRow2.name}, Apartment ${cleanUnitNumber} (Ref: ${generatedRef2}, Receipt: ${createdPayRow.payment_code}). Next billing date: ${cycle0Supa.nextBillingLabel}. Thank you!`, sentBy: actorName }),
+              dispatchTenantEmailNotification({ tenantId: newTenant2.id, tenantRef: generatedRef2, tenantName: newTenant2.full_name, recipientEmail: cleanEmail, propertyName: propRow2.name, unitNumber: cleanUnitNumber, triggerType: "payment_confirmed", amountDue: rentNum, dueDate: resolvedDueDate2, billingPeriodStart: periodStart2, billingPeriodEnd: periodEnd2, receiptNo: createdPayRow.payment_code, paymentId: createdPayRow.id, paymentVerified: true, sentBy: actorName })
             ]);
           }
         } catch {
         }
       })();
-      const initialPaymentObj = { id: createdPayRow.id, paymentId: createdPayRow.payment_code, tenantRef: generatedRef2, tenantName: newTenant2.full_name, avatarBg: "#D8F3E5", property: propRow2.name, unitType: resolvedUnitType, unitNumber: cleanUnitNumber, paymentNote: "Lease Rent Invoice", leaseTerm: leaseDuration || "12 Months", dueDate: resolvedDueDate2, paidDate: startStr2, amount: rentNum, status: payStatus2, confirmedBy: payStatus2 === "Paid" ? req.currentUser?.fullName : void 0, confirmedAt: createdPayRow.confirmed_at || void 0, createdAt: createdPayRow.created_at };
-      const createdProfile2 = { id: newTenant2.id, propertyId: propRow2.id, unitId: unitRow?.id, tenantRef: generatedRef2, name: newTenant2.full_name, phone: newTenant2.phone, email: newTenant2.email, dob: newTenant2.dob || "Not specified", gender: newTenant2.gender || "Resident", nationality: newTenant2.nationality || "Kenyan", idNumber: newTenant2.id_number, tier: newTenant2.tier || "Verified Tenant", onTimeStreak: newTenant2.on_time_streak || "Active Lease", securityDeposit: Number(newTenant2.security_deposit || 0), vehicleInfo: newTenant2.vehicle_info || "None", leaseId: leaseCode2, leaseCreatedDate: formatShortDate(new Date(newLease.created_at || Date.now())), unitType: resolvedUnitType, unitNumber: cleanUnitNumber, property: propRow2.name, monthlyRent: rentNum, dueDate: resolvedDueDate2, rentBalance: payStatus2 === "Paid" ? 0 : rentNum, totalPaid: payStatus2 === "Paid" ? rentNum : 0, occupants: newLease.occupants || "1 Adult", leaseDuration: newLease.lease_duration || "12 Months", leaseStart: startStr2, leaseEnd: endStr2, leaseNotes: newLease.lease_notes || "Standard residential lease agreement.", perks: Array.isArray(newLease.perks) ? newLease.perks : [], baseRent: base2, utilityPackage: util2, maintenanceFee: maint2, parkingFee: park2, paymentMethod: newLease.payment_method || "M-Pesa / Bank Transfer", status: payStatus2, avatarBg: newTenant2.avatar_bg || "#D8F3E5", paymentHistory: [{ id: leaseCode2, paymentDate: startStr2, unitType: resolvedUnitType, unitNumber: cleanUnitNumber, periodStart: resolvedDueDate2, periodEnd: startStr2, occupants: newLease.occupants || "1 Resident", amount: rentNum, status: payStatus2, variant: resolvedUnitType === "Suite" ? "suite" : resolvedUnitType === "Standard" ? "standard" : "deluxe" }], initialPayment: initialPaymentObj };
+      const effectivePayStatus2 = createdPayRow.status || payStatus2;
+      const initialPaymentObj = { id: createdPayRow.id, paymentId: createdPayRow.payment_code, tenantRef: generatedRef2, tenantName: newTenant2.full_name, avatarBg: "#D8F3E5", property: propRow2.name, unitType: resolvedUnitType, unitNumber: cleanUnitNumber, paymentNote: periodNote2, leaseTerm: leaseDuration || "12 Months", dueDate: resolvedDueDate2, paidDate: createdPayRow.paid_date || "-", invoiceDate: periodStart2, billingPeriodStart: periodStart2, billingPeriodEnd: periodEnd2, billingPeriodKey: periodKey2, billingAnniversaryDay: cycle0Supa.anniversaryDay, amount: rentNum, amountPaid: payStatus2 === "Paid" ? rentNum : 0, balanceDue: payStatus2 === "Paid" ? 0 : rentNum, status: effectivePayStatus2, confirmedBy: payStatus2 === "Paid" ? req.currentUser?.fullName : void 0, confirmedAt: createdPayRow.confirmed_at || void 0, createdAt: createdPayRow.created_at };
+      const createdProfile2 = { id: newTenant2.id, propertyId: propRow2.id, unitId: unitRow?.id, tenantRef: generatedRef2, name: newTenant2.full_name, phone: newTenant2.phone, email: newTenant2.email, dob: newTenant2.dob || "Not specified", gender: newTenant2.gender || "Resident", nationality: newTenant2.nationality || "Kenyan", idNumber: newTenant2.id_number, tier: newTenant2.tier || "Verified Tenant", onTimeStreak: newTenant2.on_time_streak || "Active Lease", securityDeposit: Number(newTenant2.security_deposit || 0), vehicleInfo: newTenant2.vehicle_info || "None", leaseId: leaseCode2, leaseCreatedDate: formatShortDate(new Date(newLease.created_at || Date.now())), unitType: resolvedUnitType, unitNumber: cleanUnitNumber, property: propRow2.name, monthlyRent: rentNum, dueDate: payStatus2 === "Paid" ? nextBilling2 : resolvedDueDate2, moveInDate: moveInYmd2, billingAnniversaryDay: cycle0Supa.anniversaryDay, currentBillingPeriodStart: periodStart2, currentBillingPeriodEnd: periodEnd2, nextBillingDate: nextBilling2, rentBalance: payStatus2 === "Paid" ? 0 : rentNum, balanceDue: payStatus2 === "Paid" ? 0 : rentNum, totalPaid: payStatus2 === "Paid" ? rentNum : 0, occupants: newLease.occupants || "1 Adult", leaseDuration: newLease.lease_duration || "12 Months", leaseStart: startStr2, leaseEnd: endStr2, leaseNotes: newLease.lease_notes || "Standard residential lease agreement.", perks: Array.isArray(newLease.perks) ? newLease.perks : [], baseRent: base2, utilityPackage: util2, maintenanceFee: maint2, parkingFee: park2, paymentMethod: newLease.payment_method || "M-Pesa / Bank Transfer", status: effectivePayStatus2, avatarBg: newTenant2.avatar_bg || "#D8F3E5", paymentHistory: [{ id: createdPayRow.payment_code, paymentDate: createdPayRow.paid_date || "-", unitType: resolvedUnitType, unitNumber: cleanUnitNumber, periodStart: periodStart2, periodEnd: periodEnd2, occupants: newLease.occupants || "1 Resident", amount: rentNum, status: effectivePayStatus2, variant: resolvedUnitType === "Suite" ? "suite" : resolvedUnitType === "Standard" ? "standard" : "deluxe" }], initialPayment: initialPaymentObj };
+      cachedFullDatabaseState = null;
+      cachedFullDatabaseStateExpiresAt = 0;
       return res.status(201).json(createdProfile2);
     }
     let propRes = await pg.query(`SELECT * FROM public.properties WHERE LOWER(name) = LOWER($1) LIMIT 1;`, [String(property).trim()]);
@@ -5903,28 +6969,47 @@ async function createApp() {
     const util = Math.round(rentNum * 0.06);
     const maint = Math.round(rentNum * 0.04);
     const park = Math.max(0, rentNum - base - util - maint);
-    const startStr = leaseStart || formatShortDate(/* @__PURE__ */ new Date());
-    const resolvedDueDate = dueDate && String(dueDate).trim() ? String(dueDate).trim() : startStr;
+    const nairobiTodayPg = getNairobiDateString();
+    const moveInYmdPg = parseBillingDateToYmd(leaseStart) || nairobiTodayPg;
+    const startStr = leaseStart && String(leaseStart).trim() ? String(leaseStart).trim() : moveInYmdPg;
+    const cycle0Pg = getBillingCycleForIndex(moveInYmdPg, 0)!;
+    const resolvedDueDate = parseBillingDateToYmd(dueDate) || cycle0Pg.dueDate;
+    const periodStartPg = cycle0Pg.periodStart;
+    const periodEndPg = cycle0Pg.periodEnd;
+    const periodKeyPg = buildBillingPeriodKey(generatedRef, periodStartPg, periodEndPg);
+    const periodNotePg = formatBillingPeriodNote(periodStartPg, periodEndPg);
+    const nextBillingPg = cycle0Pg.nextBillingDate;
     const nextYear = /* @__PURE__ */ new Date();
     nextYear.setFullYear(nextYear.getFullYear() + 1);
     const endStr = leaseEnd || formatShortDate(nextYear);
     const resolvedUnitType = unitType || "Deluxe";
     await pg.query(`INSERT INTO public.leases
-          (lease_code, tenant_id, tenant_ref, unit_number, unit_type, property_name, monthly_rent, base_rent, utility_package, maintenance_fee, parking_fee, occupants, lease_duration, lease_start, lease_end, lease_notes, perks, payment_method, is_active)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17::jsonb, $18, TRUE);`, [leaseCode, newTenant.id, generatedRef, cleanUnitNumber, resolvedUnitType, propRow.name, rentNum, base, util, maint, park, occupants || "1 Adult", leaseDuration || "12 Months", startStr, endStr, leaseNotes || "Standard residential lease agreement.", JSON.stringify(["Resident portal access", "Assigned unit mailbox"]), paymentMethod || "M-Pesa / Bank Transfer"]);
-    const payStatus = initialPaymentStatus === "Paid" ? "Paid" : "Pending";
+          (lease_code, tenant_id, tenant_ref, unit_number, unit_type, property_name, monthly_rent, base_rent, utility_package, maintenance_fee, parking_fee, occupants, lease_duration, lease_start, lease_end, lease_notes, perks, payment_method, billing_anniversary_day, next_billing_date, is_active)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17::jsonb, $18, $19, $20, TRUE);`, [leaseCode, newTenant.id, generatedRef, cleanUnitNumber, resolvedUnitType, propRow.name, rentNum, base, util, maint, park, occupants || "1 Adult", leaseDuration || "12 Months", startStr, endStr, leaseNotes || "Standard residential lease agreement.", JSON.stringify(["Resident portal access", "Assigned unit mailbox"]), paymentMethod || "M-Pesa / Bank Transfer", cycle0Pg.anniversaryDay, nextBillingPg]).catch(async () => {
+      await pg.query(`INSERT INTO public.leases
+            (lease_code, tenant_id, tenant_ref, unit_number, unit_type, property_name, monthly_rent, base_rent, utility_package, maintenance_fee, parking_fee, occupants, lease_duration, lease_start, lease_end, lease_notes, perks, payment_method, is_active)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17::jsonb, $18, TRUE);`, [leaseCode, newTenant.id, generatedRef, cleanUnitNumber, resolvedUnitType, propRow.name, rentNum, base, util, maint, park, occupants || "1 Adult", leaseDuration || "12 Months", startStr, endStr, leaseNotes || "Standard residential lease agreement.", JSON.stringify(["Resident portal access", "Assigned unit mailbox"]), paymentMethod || "M-Pesa / Bank Transfer"]);
+    });
+    const payStatus = initialPaymentStatus === "Paid" ? "Paid" : resolvedDueDate < nairobiTodayPg ? "Overdue" : "Pending";
+    const invCodePg = buildAnniversaryInvoiceCode(generatedRef, periodStartPg);
     const payRes = await pg.query(`INSERT INTO public.rent_payments
-          (payment_code, tenant_id, tenant_ref, tenant_name, avatar_bg, property_name, unit_type, unit_number, payment_note, lease_term, due_date, paid_date, amount, status, confirmed_by, confirmed_at)
-         VALUES ($1, $2, $3, $4, '#D8F3E5', $5, $6, $7, 'Lease Rent Invoice', $8, $9, $10, $11, $12, $13, $14) RETURNING *;`, [leaseCode, newTenant.id, generatedRef, newTenant.full_name, propRow.name, resolvedUnitType, cleanUnitNumber, leaseDuration || "12 months", resolvedDueDate, startStr, rentNum, payStatus, payStatus === "Paid" ? req.currentUser?.fullName || "Owner" : null, payStatus === "Paid" ? (/* @__PURE__ */ new Date()).toISOString() : null]);
+          (payment_code, tenant_id, tenant_ref, tenant_name, avatar_bg, property_name, unit_type, unit_number, payment_note, lease_term, due_date, paid_date, invoice_date, billing_period_start, billing_period_end, billing_period_key, billing_anniversary_day, amount, amount_due, amount_paid, status, confirmed_by, confirmed_at)
+         VALUES ($1, $2, $3, $4, '#D8F3E5', $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $17, $18, $19, $20, $21) RETURNING *;`, [invCodePg, newTenant.id, generatedRef, newTenant.full_name, propRow.name, resolvedUnitType, cleanUnitNumber, periodNotePg, leaseDuration || "12 months", resolvedDueDate, payStatus === "Paid" ? nairobiTodayPg : "-", periodStartPg, periodStartPg, periodEndPg, periodKeyPg, cycle0Pg.anniversaryDay, rentNum, payStatus === "Paid" ? rentNum : 0, payStatus, payStatus === "Paid" ? req.currentUser?.fullName || "Owner" : null, payStatus === "Paid" ? (/* @__PURE__ */ new Date()).toISOString() : null]).catch(async () => {
+      return await pg.query(`INSERT INTO public.rent_payments
+            (payment_code, tenant_id, tenant_ref, tenant_name, avatar_bg, property_name, unit_type, unit_number, payment_note, lease_term, due_date, paid_date, amount, status, confirmed_by, confirmed_at)
+           VALUES ($1, $2, $3, $4, '#D8F3E5', $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING *;`, [invCodePg, newTenant.id, generatedRef, newTenant.full_name, propRow.name, resolvedUnitType, cleanUnitNumber, periodNotePg, leaseDuration || "12 months", resolvedDueDate, payStatus === "Paid" ? nairobiTodayPg : "-", rentNum, payStatus, payStatus === "Paid" ? req.currentUser?.fullName || "Owner" : null, payStatus === "Paid" ? (/* @__PURE__ */ new Date()).toISOString() : null]);
+    });
     const createdPayRow = payRes.rows[0];
-    void logActivity("lease", `New Tenant Onboarded (${generatedRef})`, `${newTenant.full_name} assigned to ${cleanUnitNumber} at ${propRow.name} (KSh ${rentNum.toLocaleString()}/mo, Due: ${resolvedDueDate}).`, req.currentUser?.fullName || "Manager", generatedRef, "lime");
-    void dispatchSmsNotification({ tenantId: newTenant.id, tenantRef: generatedRef, tenantName: newTenant.full_name, recipientPhone: newTenant.phone, propertyName: propRow.name, unitNumber: cleanUnitNumber, triggerType: "tenant_registered", messageBody: `Welcome ${newTenant.full_name}! Your tenancy at ${propRow.name}, Apartment ${cleanUnitNumber} (Tenant Ref: ${generatedRef}) has been registered. Monthly rent: KSh ${rentNum.toLocaleString()} (Due: ${resolvedDueDate}). Thank you for choosing ARabella agency.`, sentBy: req.currentUser?.fullName || "ARabella agency System" });
-    const initialPaymentObj = createdPayRow ? { id: createdPayRow.id, paymentId: createdPayRow.payment_code, tenantRef: generatedRef, tenantName: newTenant.full_name, avatarBg: "#D8F3E5", property: propRow.name, unitType: resolvedUnitType, unitNumber: cleanUnitNumber, paymentNote: "Lease Rent Invoice", leaseTerm: leaseDuration || "12 months", dueDate: resolvedDueDate, paidDate: startStr, amount: rentNum, status: payStatus, confirmedBy: createdPayRow.confirmed_by || void 0, confirmedAt: createdPayRow.confirmed_at || void 0 } : void 0;
-    const createdProfile = { id: newTenant.id, propertyId: propRow.id, tenantRef: generatedRef, name: newTenant.full_name, phone: newTenant.phone, email: newTenant.email, dob: newTenant.dob || "Not specified", gender: newTenant.gender || "Resident", nationality: newTenant.nationality || "Kenyan", idNumber: newTenant.id_number, tier: newTenant.tier || "Verified Tenant", onTimeStreak: newTenant.on_time_streak || "Active Lease", securityDeposit: depositNum, vehicleInfo: newTenant.vehicle_info || "None", leaseId: leaseCode, leaseCreatedDate: startStr, unitType: resolvedUnitType, unitNumber: cleanUnitNumber, property: propRow.name, monthlyRent: rentNum, dueDate: resolvedDueDate, rentBalance: payStatus === "Paid" ? 0 : rentNum, totalPaid: payStatus === "Paid" ? rentNum : 0, occupants: occupants || "1 Adult", leaseDuration: leaseDuration || "12 Months", leaseStart: startStr, leaseEnd: endStr, leaseNotes: leaseNotes || "Standard residential lease agreement.", perks: ["Resident portal access", "Assigned unit mailbox"], baseRent: base, utilityPackage: util, maintenanceFee: maint, parkingFee: park, paymentMethod: paymentMethod || "M-Pesa / Bank Transfer", status: payStatus, avatarBg: "#D8F3E5", paymentHistory: [{ id: leaseCode, paymentDate: startStr, unitType: resolvedUnitType, unitNumber: cleanUnitNumber, periodStart: resolvedDueDate, periodEnd: startStr, occupants: occupants || "1 Resident", amount: rentNum, status: payStatus, variant: resolvedUnitType === "Suite" ? "suite" : resolvedUnitType === "Standard" ? "standard" : "deluxe" }], initialPayment: initialPaymentObj };
+    void logActivity("lease", `New Tenant Onboarded (${generatedRef})`, `${newTenant.full_name} assigned to ${cleanUnitNumber} at ${propRow.name} (KSh ${rentNum.toLocaleString()}/mo, Billing Cycle: ${cycle0Pg.periodRangeLabel}, Due: ${formatYmdShort(resolvedDueDate)}).`, req.currentUser?.fullName || "Manager", generatedRef, "lime");
+    void dispatchSmsNotification({ tenantId: newTenant.id, tenantRef: generatedRef, tenantName: newTenant.full_name, recipientPhone: newTenant.phone, propertyName: propRow.name, unitNumber: cleanUnitNumber, triggerType: "tenant_registered", messageBody: `Welcome ${newTenant.full_name}! Your tenancy at ${propRow.name}, Apartment ${cleanUnitNumber} (Tenant Ref: ${generatedRef}) has been registered. Monthly rent: KSh ${rentNum.toLocaleString()} (Billing Period: ${cycle0Pg.periodRangeLabel}, Due: ${formatYmdShort(resolvedDueDate)}). Thank you for choosing ARabella agency.`, sentBy: req.currentUser?.fullName || "ARabella agency System" });
+    const initialPaymentObj = createdPayRow ? { id: createdPayRow.id, paymentId: createdPayRow.payment_code, tenantRef: generatedRef, tenantName: newTenant.full_name, avatarBg: "#D8F3E5", property: propRow.name, unitType: resolvedUnitType, unitNumber: cleanUnitNumber, paymentNote: periodNotePg, leaseTerm: leaseDuration || "12 months", dueDate: resolvedDueDate, paidDate: createdPayRow.paid_date || "-", invoiceDate: periodStartPg, billingPeriodStart: periodStartPg, billingPeriodEnd: periodEndPg, billingPeriodKey: periodKeyPg, billingAnniversaryDay: cycle0Pg.anniversaryDay, amount: rentNum, amountPaid: payStatus === "Paid" ? rentNum : 0, balanceDue: payStatus === "Paid" ? 0 : rentNum, status: payStatus, confirmedBy: createdPayRow.confirmed_by || void 0, confirmedAt: createdPayRow.confirmed_at || void 0 } : void 0;
+    const createdProfile = { id: newTenant.id, propertyId: propRow.id, tenantRef: generatedRef, name: newTenant.full_name, phone: newTenant.phone, email: newTenant.email, dob: newTenant.dob || "Not specified", gender: newTenant.gender || "Resident", nationality: newTenant.nationality || "Kenyan", idNumber: newTenant.id_number, tier: newTenant.tier || "Verified Tenant", onTimeStreak: newTenant.on_time_streak || "Active Lease", securityDeposit: depositNum, vehicleInfo: newTenant.vehicle_info || "None", leaseId: leaseCode, leaseCreatedDate: startStr, unitType: resolvedUnitType, unitNumber: cleanUnitNumber, property: propRow.name, monthlyRent: rentNum, dueDate: payStatus === "Paid" ? nextBillingPg : resolvedDueDate, moveInDate: moveInYmdPg, billingAnniversaryDay: cycle0Pg.anniversaryDay, currentBillingPeriodStart: periodStartPg, currentBillingPeriodEnd: periodEndPg, nextBillingDate: nextBillingPg, rentBalance: payStatus === "Paid" ? 0 : rentNum, balanceDue: payStatus === "Paid" ? 0 : rentNum, totalPaid: payStatus === "Paid" ? rentNum : 0, occupants: occupants || "1 Adult", leaseDuration: leaseDuration || "12 Months", leaseStart: startStr, leaseEnd: endStr, leaseNotes: leaseNotes || "Standard residential lease agreement.", perks: ["Resident portal access", "Assigned unit mailbox"], baseRent: base, utilityPackage: util, maintenanceFee: maint, parkingFee: park, paymentMethod: paymentMethod || "M-Pesa / Bank Transfer", status: payStatus, avatarBg: "#D8F3E5", paymentHistory: [{ id: invCodePg, paymentDate: payStatus === "Paid" ? nairobiTodayPg : "-", unitType: resolvedUnitType, unitNumber: cleanUnitNumber, periodStart: periodStartPg, periodEnd: periodEndPg, occupants: occupants || "1 Resident", amount: rentNum, status: payStatus, variant: resolvedUnitType === "Suite" ? "suite" : resolvedUnitType === "Standard" ? "standard" : "deluxe" }], initialPayment: initialPaymentObj };
+    cachedFullDatabaseState = null;
+    cachedFullDatabaseStateExpiresAt = 0;
     return res.status(201).json(createdProfile);
   });
   app.put("/api/tenants/:id", requireRole(["owner", "property_manager"]), async (req, res) => {
-    const { name, phone, email, dob, gender, nationality, idNumber, securityDeposit, vehicleInfo, propertyId, property, leaseNotes, unitNumber, unitType, monthlyRent, dueDate, leaseDuration, occupants, paymentMethod } = req.body;
+    const { name, phone, email, dob, gender, nationality, idNumber, securityDeposit, vehicleInfo, propertyId, property, leaseNotes, unitNumber, unitType, monthlyRent, dueDate, leaseStart, leaseEnd, leaseDuration, occupants, paymentMethod } = req.body;
     const paramId = req.params.id;
     if (supabaseAdmin && !isSupabaseQuotaRestricted()) {
       let tenantQuery = supabaseAdmin.from("tenants").select("*");
@@ -5965,7 +7050,9 @@ async function createApp() {
       const newRent = monthlyRent !== void 0 ? Number(monthlyRent) : Number(existingLease?.monthly_rent || updatedDeposit || 0);
       const resolvedUnitNumber = unitNumber !== void 0 ? String(unitNumber).trim() : existingLease?.unit_number || "Unit 101";
       const resolvedUnitType = unitType ?? existingLease?.unit_type ?? "Deluxe";
-      const cleanDueDatePatch = dueDate !== void 0 && String(dueDate).trim() ? String(dueDate).trim() : void 0;
+      const cleanDueDatePatch = dueDate !== void 0 && String(dueDate).trim() ? (parseBillingDateToYmd(dueDate) || String(dueDate).trim()) : void 0;
+      const cleanLeaseStartPatch = leaseStart !== void 0 && String(leaseStart).trim() ? String(leaseStart).trim() : void 0;
+      const cleanLeaseEndPatch = leaseEnd !== void 0 && String(leaseEnd).trim() ? String(leaseEnd).trim() : void 0;
 
       // Update public.tenants (with automatic fallback if extended columns are not yet migrated in Supabase Cloud)
       const baseTenantPatch: Record<string, any> = {
@@ -6016,12 +7103,18 @@ async function createApp() {
       const resolvedDuration = leaseDuration ?? existingLease?.lease_duration ?? "12 Months";
       const resolvedNotes = leaseNotes ?? existingLease?.lease_notes ?? "Standard residential lease agreement.";
       const resolvedPayMethod = paymentMethod ?? existingLease?.payment_method ?? "M-Pesa / Bank Transfer";
-      const paymentPatch: Record<string, any> = {};
-      if (name !== void 0) paymentPatch.tenant_name = updatedFullName;
-      if (resolvedPropertyName) paymentPatch.property_name = resolvedPropertyName;
-      if (unitNumber !== void 0) paymentPatch.unit_number = resolvedUnitNumber;
-      if (unitType !== void 0) paymentPatch.unit_type = resolvedUnitType;
-      if (cleanDueDatePatch) paymentPatch.due_date = cleanDueDatePatch;
+      const resolvedLeaseStart = cleanLeaseStartPatch || existingLease?.lease_start || formatShortDate(new Date(t2.created_at));
+      const resolvedLeaseEnd = cleanLeaseEndPatch || existingLease?.lease_end || "Active";
+      const moveInYmdUpd = parseBillingDateToYmd(resolvedLeaseStart) || getNairobiDateString();
+      const anniversaryDayUpd = getBillingAnniversaryDay(moveInYmdUpd);
+      const nextBillUpd = getNextBillingDate(moveInYmdUpd, getNairobiDateString());
+
+      // Never mutate historical Paid invoices' due_date or amount — only sync metadata or unpaid invoices
+      const paymentMetaPatch: Record<string, any> = {};
+      if (name !== void 0) paymentMetaPatch.tenant_name = updatedFullName;
+      if (resolvedPropertyName) paymentMetaPatch.property_name = resolvedPropertyName;
+      if (unitNumber !== void 0) paymentMetaPatch.unit_number = resolvedUnitNumber;
+      if (unitType !== void 0) paymentMetaPatch.unit_type = resolvedUnitType;
       const baseLeasePatch: Record<string, any> = {
         ...(resolvedUnitId ? { unit_id: resolvedUnitId } : {}),
         unit_number: resolvedUnitNumber,
@@ -6032,6 +7125,8 @@ async function createApp() {
         utility_package: util,
         maintenance_fee: maint,
         parking_fee: park,
+        lease_start: resolvedLeaseStart,
+        lease_end: resolvedLeaseEnd,
         lease_notes: resolvedNotes,
         lease_duration: resolvedDuration,
         occupants: resolvedOccupants,
@@ -6040,14 +7135,20 @@ async function createApp() {
       await Promise.all([
         existingLease
           ? (async () => {
-              const extLeasePatch = cleanDueDatePatch ? { ...baseLeasePatch, due_date: cleanDueDatePatch } : baseLeasePatch;
+              const extLeasePatch = {
+                ...baseLeasePatch,
+                billing_anniversary_day: anniversaryDayUpd,
+                ...(nextBillUpd ? { next_billing_date: nextBillUpd } : {}),
+                ...(cleanDueDatePatch ? { due_date: cleanDueDatePatch } : {}),
+              };
               const { error: lErr } = await supabaseAdmin.from("leases").update(extLeasePatch).eq("id", existingLease.id);
-              if (lErr && cleanDueDatePatch) {
+              if (lErr) {
                 await supabaseAdmin.from("leases").update(baseLeasePatch).eq("id", existingLease.id);
               }
             })()
           : Promise.resolve(),
-        Object.keys(paymentPatch).length > 0 ? supabaseAdmin.from("rent_payments").update(paymentPatch).or(`tenant_id.eq.${t2.id},tenant_ref.ilike.${t2.tenant_ref}`) : Promise.resolve(),
+        Object.keys(paymentMetaPatch).length > 0 ? supabaseAdmin.from("rent_payments").update(paymentMetaPatch).or(`tenant_id.eq.${t2.id},tenant_ref.ilike.${t2.tenant_ref}`) : Promise.resolve(),
+        cleanDueDatePatch ? supabaseAdmin.from("rent_payments").update({ due_date: cleanDueDatePatch }).or(`tenant_id.eq.${t2.id},tenant_ref.ilike.${t2.tenant_ref}`).neq("status", "Paid") : Promise.resolve(),
         monthlyRent !== void 0 ? supabaseAdmin.from("rent_payments").update({ amount_due: newRent }).eq("tenant_id", t2.id).neq("status", "Paid") : Promise.resolve(),
         pg
           ? pg
@@ -6060,19 +7161,12 @@ async function createApp() {
               .catch(() => {})
           : Promise.resolve(),
       ]);
-      const { data: myPayRows } = await supabaseAdmin.from("rent_payments").select("*").or(`tenant_id.eq.${t2.id},tenant_ref.ilike.${t2.tenant_ref}`).order("created_at", { ascending: false });
-      const myPayments = (myPayRows || []).map((r) => ({ id: r.id, paymentId: r.payment_code, tenantRef: r.tenant_ref, tenantName: r.tenant_name, avatarBg: r.avatar_bg || "#D8F3E5", property: r.property_name, unitType: r.unit_type || "Deluxe", unitNumber: r.unit_number, paymentNote: r.payment_note || "Rent Payment", leaseTerm: r.lease_term || "12 months", dueDate: r.due_date, paidDate: r.paid_date, amount: Number(r.amount_due ?? r.amount_paid ?? r.amount ?? 0), status: r.status || "Pending" }));
-      const totalPaid = myPayments.filter((p) => p.status === "Paid").reduce((s, p) => s + Number(p.amount), 0);
-      const rentBalance = myPayments.filter((p) => p.status !== "Paid").reduce((s, p) => s + Number(p.amount), 0);
-      const hasOverdue = myPayments.some((p) => p.status === "Overdue");
-      const hasPending = myPayments.some((p) => p.status === "Pending");
-      const derivedStatus = hasOverdue ? "Overdue" : hasPending ? "Pending" : "Paid";
-      const activePayForDue = myPayments.find((p) => p.status !== "Paid") || myPayments[0];
-      const resolvedDueDate = (dueDate && String(dueDate).trim()) || activePayForDue?.dueDate || existingLease?.lease_start || formatShortDate(new Date(t2.created_at));
-      const paymentHistory = myPayments.map((p) => ({ id: p.paymentId, paymentDate: p.paidDate, unitType: p.unitType, unitNumber: p.unitNumber, periodStart: p.dueDate, periodEnd: p.paidDate, occupants: resolvedOccupants, amount: p.amount, status: p.status, variant: p.unitType === "Suite" ? "suite" : p.unitType === "Standard" ? "standard" : "deluxe" }));
+      cachedFullDatabaseState = null;
+      cachedFullDatabaseStateExpiresAt = 0;
+      const refreshedState = await fetchFullDatabaseState(true);
+      const updatedProfile = refreshedState.tenants.find((item) => item.id === t2.id || item.tenantRef.toUpperCase() === String(t2.tenant_ref).toUpperCase());
       void logActivity("lease", `Tenant Profile Updated (${t2.tenant_ref})`, `${updatedFullName} (${t2.tenant_ref}) updated in Supabase.`, req.currentUser?.fullName || "Manager", t2.tenant_ref, "mint");
-      const updatedProfile = { id: t2.id, propertyId: resolvedPropertyId, unitId: resolvedUnitId, tenantRef: t2.tenant_ref, name: updatedFullName, phone: updatedPhone, email: updatedEmail, dob: updatedDob || "Not specified", gender: updatedGender || "Resident", nationality: updatedNationality || "Kenyan", idNumber: updatedIdNumber, tier: t2.tier || "Verified Tenant", onTimeStreak: t2.on_time_streak || "Active Lease", securityDeposit: updatedDeposit, vehicleInfo: updatedVehicle || "None", leaseId: existingLease?.lease_code || `LS-${t2.tenant_ref}`, leaseCreatedDate: existingLease?.created_at ? formatShortDate(new Date(existingLease.created_at)) : formatShortDate(new Date(t2.created_at)), unitType: resolvedUnitType, unitNumber: resolvedUnitNumber, property: resolvedPropertyName, monthlyRent: newRent, dueDate: resolvedDueDate, rentBalance, totalPaid, occupants: resolvedOccupants, leaseDuration: resolvedDuration, leaseStart: existingLease?.lease_start || formatShortDate(new Date(t2.created_at)), leaseEnd: existingLease?.lease_end || "Active", leaseNotes: resolvedNotes, perks: Array.isArray(existingLease?.perks) ? existingLease.perks : [], baseRent: base, utilityPackage: util, maintenanceFee: maint, parkingFee: park, paymentMethod: resolvedPayMethod, status: derivedStatus, avatarBg: t2.avatar_bg || "#D8F3E5", paymentHistory };
-      return res.json(updatedProfile);
+      return res.json(updatedProfile || { id: t2.id, tenantRef: t2.tenant_ref, name: updatedFullName });
     }
     const findRes = await pg.query(`SELECT * FROM public.tenants WHERE id::text = $1 OR UPPER(tenant_ref) = UPPER($1) LIMIT 1;`, [paramId]);
     if (findRes.rows.length === 0) {
@@ -6096,12 +7190,16 @@ async function createApp() {
              unit_type = COALESCE($3, unit_type),
              monthly_rent = COALESCE($4, monthly_rent),
              lease_duration = COALESCE($5, lease_duration),
-             payment_method = COALESCE($6, payment_method)
-         WHERE tenant_id = $7 OR tenant_ref = $8;`, [leaseNotes ?? null, unitNumber ?? null, unitType ?? null, monthlyRent !== void 0 ? Number(monthlyRent) : null, leaseDuration ?? null, paymentMethod ?? null, t.id, t.tenant_ref]);
+             payment_method = COALESCE($6, payment_method),
+             lease_start = COALESCE($7, lease_start),
+             lease_end = COALESCE($8, lease_end)
+         WHERE tenant_id = $9 OR tenant_ref = $10;`, [leaseNotes ?? null, unitNumber ?? null, unitType ?? null, monthlyRent !== void 0 ? Number(monthlyRent) : null, leaseDuration ?? null, paymentMethod ?? null, leaseStart ?? null, leaseEnd ?? null, t.id, t.tenant_ref]);
     if (dueDate !== void 0 && String(dueDate).trim()) {
-      await pg.query(`UPDATE public.rent_payments SET due_date = $1 WHERE tenant_id = $2 OR UPPER(tenant_ref) = UPPER($3);`, [String(dueDate).trim(), t.id, t.tenant_ref]);
+      await pg.query(`UPDATE public.rent_payments SET due_date = $1 WHERE (tenant_id = $2 OR UPPER(tenant_ref) = UPPER($3)) AND status <> 'Paid';`, [parseBillingDateToYmd(dueDate) || String(dueDate).trim(), t.id, t.tenant_ref]);
     }
-    const fullState = await fetchFullDatabaseState();
+    cachedFullDatabaseState = null;
+    cachedFullDatabaseStateExpiresAt = 0;
+    const fullState = await fetchFullDatabaseState(true);
     const updated = fullState.tenants.find((item) => item.id === t.id);
     return res.json(updated);
   });
@@ -6152,6 +7250,7 @@ async function createApp() {
     const propName = String(property || "Main Property").trim();
     const amtNum = Math.max(0, Number(amount) || 0);
     const finalStatus = status || "Paid";
+    const todayYmd = getNairobiTodayYmd();
     const todayStr = formatShortDate(/* @__PURE__ */ new Date());
     if (supabaseAdmin && !isSupabaseQuotaRestricted()) {
       let resolvedRef = tenantRef && tenantRef !== "AUTO" ? String(tenantRef).trim().toUpperCase() : "";
@@ -6184,40 +7283,157 @@ async function createApp() {
         tenantRow = createdTenant;
         resolvedRef = tenantRow.tenant_ref;
         const leaseCode = `LS-${resolvedRef.replace("-", "")}-${Date.now().toString().slice(-4)}`;
-        await supabaseAdmin.from("leases").insert({ lease_code: leaseCode, tenant_id: tenantRow.id, tenant_ref: resolvedRef, unit_number: unitNumber || "Unit 101", unit_type: unitType || "Deluxe", property_name: propRow?.name || propName, monthly_rent: amtNum, base_rent: amtNum, utility_package: 0, maintenance_fee: 0, parking_fee: 0, occupants: "1 Adult", lease_duration: leaseTerm || "12 Months", lease_start: todayStr, lease_end: "Active", lease_notes: "Standard residential lease agreement.", perks: [], payment_method: "M-Pesa / Bank Transfer", is_active: true });
+        await supabaseAdmin.from("leases").insert({ lease_code: leaseCode, tenant_id: tenantRow.id, tenant_ref: resolvedRef, unit_number: unitNumber || "Unit 101", unit_type: unitType || "Deluxe", property_name: propRow?.name || propName, monthly_rent: amtNum, base_rent: amtNum, utility_package: 0, maintenance_fee: 0, parking_fee: 0, occupants: "1 Adult", lease_duration: leaseTerm || "12 Months", lease_start: todayYmd, lease_end: "Active", lease_notes: "Standard residential lease agreement.", perks: [], payment_method: "M-Pesa / Bank Transfer", is_active: true });
       }
       const [{ data: activeLease }, validConfirmerId] = await Promise.all([
-        supabaseAdmin.from("leases").select("id").eq("tenant_id", tenantRow.id).maybeSingle(),
+        supabaseAdmin.from("leases").select("id, lease_start").eq("tenant_id", tenantRow.id).maybeSingle(),
         finalStatus === "Paid" ? resolveValidProfileUuid(req.currentUser?.id) : Promise.resolve(null)
       ]);
+      const moveInYmd = parseBillingDateToYmd(activeLease?.lease_start) || parseBillingDateToYmd(dueDate) || todayYmd;
+      const targetDueYmd = parseBillingDateToYmd(dueDate) || todayYmd;
+      const cycle = getBillingCycleForDate(moveInYmd, targetDueYmd);
+      const periodNote = paymentNote
+        ? (String(paymentNote).includes(" - ") ? String(paymentNote) : `${String(paymentNote).trim()} (${formatYmdShort(cycle.periodStart)} - ${formatYmdShort(cycle.periodEnd)})`)
+        : formatBillingPeriodNote(cycle);
       const paymentCode2 = `PAY-${resolvedRef.replace("-", "")}-${Date.now().toString().slice(-4)}`;
-      const { data: r, error: payErr } = await supabaseAdmin.from("rent_payments").insert({ payment_code: paymentCode2, lease_id: activeLease?.id || null, tenant_id: tenantRow.id, tenant_ref: resolvedRef, tenant_name: String(tenantName).trim(), avatar_bg: "#D8F3E5", property_name: propName, unit_type: unitType || "Deluxe", unit_number: unitNumber || "Unit 101", payment_note: paymentNote || "Rent Payment", lease_term: leaseTerm || "12 months", due_date: dueDate || todayStr, paid_date: paidDate || todayStr, amount_due: amtNum, amount_paid: finalStatus === "Paid" ? amtNum : 0, status: finalStatus, confirmed_by: validConfirmerId, confirmed_at: finalStatus === "Paid" ? (/* @__PURE__ */ new Date()).toISOString() : null }).select("*").single();
+      const baseInsertPayload = {
+        payment_code: paymentCode2,
+        lease_id: activeLease?.id || null,
+        tenant_id: tenantRow.id,
+        tenant_ref: resolvedRef,
+        tenant_name: String(tenantName).trim(),
+        avatar_bg: "#D8F3E5",
+        property_name: propName,
+        unit_type: unitType || "Deluxe",
+        unit_number: unitNumber || "Unit 101",
+        payment_note: periodNote,
+        lease_term: leaseTerm || "12 months",
+        due_date: parseBillingDateToYmd(dueDate) || cycle.dueDate,
+        paid_date: finalStatus === "Paid" ? (paidDate || todayStr) : "-",
+        amount_due: amtNum,
+        amount_paid: finalStatus === "Paid" ? amtNum : 0,
+        status: finalStatus,
+        confirmed_by: validConfirmerId,
+        confirmed_at: finalStatus === "Paid" ? (/* @__PURE__ */ new Date()).toISOString() : null
+      };
+      let { data: r, error: payErr } = await supabaseAdmin.from("rent_payments").insert({
+        ...baseInsertPayload,
+        invoice_date: todayYmd,
+        billing_period_start: cycle.periodStart,
+        billing_period_end: cycle.periodEnd,
+        billing_anniversary_day: cycle.anniversaryDay,
+        billing_period_key: buildBillingPeriodKey(tenantRow.id || resolvedRef, cycle.periodStart, cycle.periodEnd)
+      }).select("*").single();
+      if (payErr) {
+        const retry = await supabaseAdmin.from("rent_payments").insert(baseInsertPayload).select("*").single();
+        r = retry.data;
+        payErr = retry.error;
+      }
       if (payErr || !r) {
         return res.status(400).json({ error: payErr?.message || "Failed to save payment in Supabase." });
       }
+      cachedFullDatabaseState = null;
+      cachedFullDatabaseStateExpiresAt = 0;
       void logActivity("payment", `Rent ${finalStatus === "Paid" ? "Payment Recorded" : "Invoice Issued"} (${resolvedRef})`, `KSh ${amtNum.toLocaleString()} ${finalStatus.toLowerCase()} for ${tenantName} (${unitNumber || "Unit 101"}, ${propName}).`, req.currentUser?.fullName || "Owner", resolvedRef, finalStatus === "Paid" ? "mint" : "lime");
       if (finalStatus === "Paid" && r.status === "Paid" && r.id) {
         void dispatchSmsNotification({ tenantId: tenantRow?.id || void 0, tenantRef: r.tenant_ref, tenantName: r.tenant_name || tenantRow?.full_name || String(tenantName).trim(), recipientPhone: tenantRow?.phone || "On file", propertyName: r.property_name, unitNumber: r.unit_number, triggerType: "payment_confirmed", paymentId: r.id, paymentVerified: true, messageBody: `Dear ${r.tenant_name}, thank you! Your rent payment of KSh ${amtNum.toLocaleString()} for ${r.property_name}, Apartment ${r.unit_number} (Tenant Ref: ${r.tenant_ref}, Receipt: ${r.payment_code}) has been verified and recorded.`, sentBy: req.currentUser?.fullName || "Rentify System" });
-        void dispatchTenantEmailNotification({ tenantId: tenantRow?.id || void 0, tenantRef: r.tenant_ref, tenantName: r.tenant_name || tenantRow?.full_name || String(tenantName).trim(), recipientEmail: tenantRow?.email, propertyName: r.property_name, unitNumber: r.unit_number, triggerType: "payment_confirmed", amountDue: amtNum, dueDate: r.paid_date || todayStr, receiptNo: r.payment_code, paymentId: r.id, paymentVerified: true, sentBy: req.currentUser?.fullName || "ARabella agency" });
+        void dispatchTenantEmailNotification({ tenantId: tenantRow?.id || void 0, tenantRef: r.tenant_ref, tenantName: r.tenant_name || tenantRow?.full_name || String(tenantName).trim(), recipientEmail: tenantRow?.email, propertyName: r.property_name, unitNumber: r.unit_number, triggerType: "payment_confirmed", amountDue: amtNum, dueDate: r.due_date || todayYmd, receiptNo: r.payment_code, paymentId: r.id, paymentVerified: true, sentBy: req.currentUser?.fullName || "ARabella agency" });
       }
-      return res.status(201).json({ id: r.id, paymentId: r.payment_code, tenantRef: r.tenant_ref, tenantName: r.tenant_name, avatarBg: r.avatar_bg, property: r.property_name, unitType: r.unit_type, unitNumber: r.unit_number, paymentNote: r.payment_note, leaseTerm: r.lease_term, dueDate: r.due_date, paidDate: r.paid_date, amount: Number(r.amount_due ?? r.amount_paid ?? amtNum), status: r.status, confirmedBy: req.currentUser?.fullName, confirmedAt: r.confirmed_at });
+      return res.status(201).json({
+        id: r.id,
+        paymentId: r.payment_code,
+        tenantRef: r.tenant_ref,
+        tenantName: r.tenant_name,
+        avatarBg: r.avatar_bg,
+        property: r.property_name,
+        unitType: r.unit_type,
+        unitNumber: r.unit_number,
+        paymentNote: r.payment_note,
+        leaseTerm: r.lease_term,
+        dueDate: r.due_date,
+        paidDate: r.paid_date,
+        invoiceDate: r.invoice_date || todayYmd,
+        billingPeriodStart: r.billing_period_start || cycle.periodStart,
+        billingPeriodEnd: r.billing_period_end || cycle.periodEnd,
+        billingAnniversaryDay: Number(r.billing_anniversary_day || cycle.anniversaryDay),
+        amount: Number(r.amount_due ?? r.amount_paid ?? amtNum),
+        amountPaid: Number(r.amount_paid ?? (finalStatus === "Paid" ? amtNum : 0)),
+        balanceDue: Math.max(0, Number(r.amount_due ?? amtNum) - Number(r.amount_paid ?? (finalStatus === "Paid" ? amtNum : 0))),
+        status: r.status,
+        confirmedBy: req.currentUser?.fullName,
+        confirmedAt: r.confirmed_at
+      });
     }
     const paymentCode = `PAY-${Date.now().toString().slice(-4)}`;
+    const pgLeaseRes = await pg.query(`SELECT lease_start FROM public.leases WHERE UPPER(tenant_ref) = UPPER($1) LIMIT 1;`, [tenantRef || "A-001"]);
+    const pgMoveInYmd = parseBillingDateToYmd(pgLeaseRes.rows[0]?.lease_start) || parseBillingDateToYmd(dueDate) || todayYmd;
+    const pgCycle = getBillingCycleForDate(pgMoveInYmd, parseBillingDateToYmd(dueDate) || todayYmd);
+    const pgNote = paymentNote
+      ? (String(paymentNote).includes(" - ") ? String(paymentNote) : `${String(paymentNote).trim()} (${formatYmdShort(pgCycle.periodStart)} - ${formatYmdShort(pgCycle.periodEnd)})`)
+      : formatBillingPeriodNote(pgCycle);
     const insertRes = await pg.query(`INSERT INTO public.rent_payments
-          (payment_code, tenant_ref, tenant_name, avatar_bg, property_name, unit_type, unit_number, payment_note, lease_term, due_date, paid_date, amount, amount_due, amount_paid, status, confirmed_by, confirmed_at)
-         VALUES ($1, $2, $3, '#D8F3E5', $4, $5, $6, $7, $8, $9, $10, $11, $11, $12, $13, $14, $15)
-         RETURNING *;`, [paymentCode, tenantRef || "A-001", String(tenantName).trim(), propName, unitType || "Deluxe", unitNumber || "Unit 101", paymentNote || "Rent Payment", leaseTerm || "12 months", dueDate || todayStr, paidDate || todayStr, amtNum, finalStatus === "Paid" ? amtNum : 0, finalStatus, finalStatus === "Paid" ? req.currentUser?.fullName || "Owner" : null, finalStatus === "Paid" ? (/* @__PURE__ */ new Date()).toISOString() : null]);
+          (payment_code, tenant_ref, tenant_name, avatar_bg, property_name, unit_type, unit_number, payment_note, lease_term, due_date, paid_date, invoice_date, billing_period_start, billing_period_end, billing_anniversary_day, billing_period_key, amount, amount_due, amount_paid, status, confirmed_by, confirmed_at)
+         VALUES ($1, $2, $3, '#D8F3E5', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $16, $17, $18, $19, $20)
+         RETURNING *;`, [
+      paymentCode,
+      tenantRef || "A-001",
+      String(tenantName).trim(),
+      propName,
+      unitType || "Deluxe",
+      unitNumber || "Unit 101",
+      pgNote,
+      leaseTerm || "12 months",
+      parseBillingDateToYmd(dueDate) || pgCycle.dueDate,
+      finalStatus === "Paid" ? (paidDate || todayStr) : "-",
+      todayYmd,
+      pgCycle.periodStart,
+      pgCycle.periodEnd,
+      pgCycle.anniversaryDay,
+      buildBillingPeriodKey(tenantRef || "A-001", pgCycle.periodStart, pgCycle.periodEnd),
+      amtNum,
+      finalStatus === "Paid" ? amtNum : 0,
+      finalStatus,
+      finalStatus === "Paid" ? req.currentUser?.fullName || "Owner" : null,
+      finalStatus === "Paid" ? (/* @__PURE__ */ new Date()).toISOString() : null
+    ]);
     const r = insertRes.rows[0];
+    cachedFullDatabaseState = null;
+    cachedFullDatabaseStateExpiresAt = 0;
     if (finalStatus === "Paid" && r && r.id) {
       void dispatchSmsNotification({ tenantRef: r.tenant_ref, tenantName: r.tenant_name, recipientPhone: "On file", propertyName: r.property_name, unitNumber: r.unit_number, triggerType: "payment_confirmed", paymentId: r.id, paymentVerified: true, messageBody: `Dear ${r.tenant_name}, thank you! Your rent payment of KSh ${amtNum.toLocaleString()} for ${r.property_name}, Apartment ${r.unit_number} (Tenant Ref: ${r.tenant_ref}, Receipt: ${r.payment_code}) has been verified and recorded.`, sentBy: req.currentUser?.fullName || "ARabella agency" });
-      void dispatchTenantEmailNotification({ tenantRef: r.tenant_ref, tenantName: r.tenant_name, propertyName: r.property_name, unitNumber: r.unit_number, triggerType: "payment_confirmed", amountDue: amtNum, dueDate: r.paid_date || todayStr, receiptNo: r.payment_code, paymentId: r.id, paymentVerified: true, sentBy: req.currentUser?.fullName || "ARabella agency" });
+      void dispatchTenantEmailNotification({ tenantRef: r.tenant_ref, tenantName: r.tenant_name, propertyName: r.property_name, unitNumber: r.unit_number, triggerType: "payment_confirmed", amountDue: amtNum, dueDate: r.due_date || todayYmd, receiptNo: r.payment_code, paymentId: r.id, paymentVerified: true, sentBy: req.currentUser?.fullName || "ARabella agency" });
     }
-    return res.status(201).json({ id: r.id, paymentId: r.payment_code, tenantRef: r.tenant_ref, tenantName: r.tenant_name, avatarBg: r.avatar_bg || "#D8F3E5", property: r.property_name, unitType: r.unit_type || "Deluxe", unitNumber: r.unit_number, paymentNote: r.payment_note || "Rent Payment", leaseTerm: r.lease_term || "12 months", dueDate: r.due_date, paidDate: r.paid_date, amount: Number(r.amount || amtNum), status: r.status || finalStatus, confirmedBy: req.currentUser?.fullName, confirmedAt: r.confirmed_at });
+    return res.status(201).json({
+      id: r.id,
+      paymentId: r.payment_code,
+      tenantRef: r.tenant_ref,
+      tenantName: r.tenant_name,
+      avatarBg: r.avatar_bg || "#D8F3E5",
+      property: r.property_name,
+      unitType: r.unit_type || "Deluxe",
+      unitNumber: r.unit_number,
+      paymentNote: r.payment_note || "Rent Payment",
+      leaseTerm: r.lease_term || "12 months",
+      dueDate: r.due_date,
+      paidDate: r.paid_date,
+      invoiceDate: r.invoice_date || todayYmd,
+      billingPeriodStart: r.billing_period_start || pgCycle.periodStart,
+      billingPeriodEnd: r.billing_period_end || pgCycle.periodEnd,
+      billingAnniversaryDay: Number(r.billing_anniversary_day || pgCycle.anniversaryDay),
+      amount: Number(r.amount || amtNum),
+      amountPaid: Number(r.amount_paid ?? (finalStatus === "Paid" ? amtNum : 0)),
+      balanceDue: Math.max(0, Number(r.amount_due ?? r.amount ?? amtNum) - Number(r.amount_paid ?? (finalStatus === "Paid" ? amtNum : 0))),
+      status: r.status || finalStatus,
+      confirmedBy: req.currentUser?.fullName,
+      confirmedAt: r.confirmed_at
+    });
   });
   app.post("/api/payments/:id/confirm", requireRole(["owner", "property_manager"]), async (req, res) => {
+    const todayYmd = getNairobiTodayYmd();
     const todayStr = formatShortDate(/* @__PURE__ */ new Date());
     const confirmedByName = req.currentUser?.fullName || "Owner";
     const paramId = req.params.id;
+    const requestedPartialAmount = req.body?.amountPaid !== undefined ? Math.max(0, Number(req.body.amountPaid) || 0) : null;
     if (supabaseAdmin && !isSupabaseQuotaRestricted()) {
       const validConfirmerId = await resolveValidProfileUuid(req.currentUser?.id);
       let target = null;
@@ -6226,7 +7442,7 @@ async function createApp() {
         target = data;
       }
       if (!target) {
-        const { data } = await supabaseAdmin.from("rent_payments").select("*").ilike("tenant_ref", paramId).neq("status", "Paid").order("created_at", { ascending: false }).limit(1).maybeSingle();
+        const { data } = await supabaseAdmin.from("rent_payments").select("*").ilike("tenant_ref", paramId).neq("status", "Paid").order("due_date", { ascending: true }).order("created_at", { ascending: true }).limit(1).maybeSingle();
         target = data;
       }
       if (!target) {
@@ -6242,52 +7458,166 @@ async function createApp() {
         }
         const { data: l } = await supabaseAdmin.from("leases").select("*").or(`tenant_id.eq.${t.id},tenant_ref.eq.${t.tenant_ref}`).maybeSingle();
         const rentAmt = Number(l?.monthly_rent || t.security_deposit || 35e3);
+        const moveInYmd = parseBillingDateToYmd(l?.lease_start) || todayYmd;
+        const cycle = getBillingCycleForDate(moveInYmd, todayYmd);
         const code = `PAY-${t.tenant_ref.replace("-", "")}-${Date.now().toString().slice(-4)}`;
-        const { data: createdPay, error: cErr } = await supabaseAdmin.from("rent_payments").insert({ payment_code: code, lease_id: l?.id || null, tenant_id: t.id, tenant_ref: t.tenant_ref, tenant_name: t.full_name, avatar_bg: t.avatar_bg || "#D8F3E5", property_name: l?.property_name || "Main Property", unit_type: l?.unit_type || "Deluxe", unit_number: l?.unit_number || "Unit 101", payment_note: "Verified Rent Payment", lease_term: l?.lease_duration || "12 Months", due_date: todayStr, paid_date: todayStr, amount_due: rentAmt, amount_paid: rentAmt, status: "Paid", confirmed_by: validConfirmerId, confirmed_at: (/* @__PURE__ */ new Date()).toISOString() }).select("*").single();
+        const paidNow = requestedPartialAmount && requestedPartialAmount > 0 ? Math.min(rentAmt, requestedPartialAmount) : rentAmt;
+        const fin = computeInvoiceFinancials({ amountDue: rentAmt, amountPaid: paidNow, dueDate: cycle.dueDate, referenceYmd: todayYmd });
+        const baseCreate = {
+          payment_code: code,
+          lease_id: l?.id || null,
+          tenant_id: t.id,
+          tenant_ref: t.tenant_ref,
+          tenant_name: t.full_name,
+          avatar_bg: t.avatar_bg || "#D8F3E5",
+          property_name: l?.property_name || "Main Property",
+          unit_type: l?.unit_type || "Deluxe",
+          unit_number: l?.unit_number || "Unit 101",
+          payment_note: formatBillingPeriodNote(cycle),
+          lease_term: l?.lease_duration || "12 Months",
+          due_date: cycle.dueDate,
+          paid_date: todayStr,
+          amount_due: rentAmt,
+          amount_paid: paidNow,
+          status: fin.status,
+          confirmed_by: validConfirmerId,
+          confirmed_at: (/* @__PURE__ */ new Date()).toISOString()
+        };
+        let { data: createdPay, error: cErr } = await supabaseAdmin.from("rent_payments").insert({
+          ...baseCreate,
+          invoice_date: todayYmd,
+          billing_period_start: cycle.periodStart,
+          billing_period_end: cycle.periodEnd,
+          billing_anniversary_day: cycle.anniversaryDay,
+          billing_period_key: buildBillingPeriodKey(t.id || t.tenant_ref, cycle.periodStart, cycle.periodEnd)
+        }).select("*").single();
+        if (cErr) {
+          const retry = await supabaseAdmin.from("rent_payments").insert(baseCreate).select("*").single();
+          createdPay = retry.data;
+          cErr = retry.error;
+        }
         if (cErr) {
           return res.status(400).json({ error: cErr.message });
         }
-        void logActivity("payment", `Rent Payment Confirmed (${t.tenant_ref})`, `${t.full_name} paid KSh ${rentAmt.toLocaleString()} for ${l?.unit_number || "Unit"}. Confirmed by ${confirmedByName}.`, confirmedByName, t.tenant_ref, "mint");
+        cachedFullDatabaseState = null;
+        cachedFullDatabaseStateExpiresAt = 0;
+        void logActivity("payment", `Rent Payment Confirmed (${t.tenant_ref})`, `${t.full_name} paid KSh ${paidNow.toLocaleString()} for ${l?.unit_number || "Unit"}. Confirmed by ${confirmedByName}.`, confirmedByName, t.tenant_ref, "mint");
         if (createdPay && createdPay.status === "Paid") {
-          void dispatchSmsNotification({ tenantId: t.id, tenantRef: t.tenant_ref, tenantName: t.full_name, recipientPhone: t.phone || "On file", propertyName: createdPay.property_name || l?.property_name || "Main Property", unitNumber: createdPay.unit_number || l?.unit_number || "Unit 101", triggerType: "payment_confirmed", paymentId: createdPay.id, paymentVerified: true, messageBody: `Dear ${t.full_name}, thank you! Your rent payment of KSh ${rentAmt.toLocaleString()} for ${createdPay.property_name || l?.property_name || "Main Property"}, Apartment ${createdPay.unit_number || l?.unit_number || "Unit 101"} (Ref: ${t.tenant_ref}, Receipt: ${createdPay.payment_code}) has been verified and confirmed.`, sentBy: confirmedByName });
-          void dispatchTenantEmailNotification({ tenantId: t.id, tenantRef: t.tenant_ref, tenantName: t.full_name, recipientEmail: t.email, propertyName: createdPay.property_name || l?.property_name || "Main Property", unitNumber: createdPay.unit_number || l?.unit_number || "Unit 101", triggerType: "payment_confirmed", amountDue: rentAmt, dueDate: todayStr, receiptNo: createdPay.payment_code, paymentId: createdPay.id, paymentVerified: true, sentBy: confirmedByName });
+          void dispatchSmsNotification({ tenantId: t.id, tenantRef: t.tenant_ref, tenantName: t.full_name, recipientPhone: t.phone || "On file", propertyName: createdPay.property_name || l?.property_name || "Main Property", unitNumber: createdPay.unit_number || l?.unit_number || "Unit 101", triggerType: "payment_confirmed", paymentId: createdPay.id, paymentVerified: true, messageBody: `Dear ${t.full_name}, thank you! Your rent payment of KSh ${paidNow.toLocaleString()} for ${createdPay.property_name || l?.property_name || "Main Property"}, Apartment ${createdPay.unit_number || l?.unit_number || "Unit 101"} (Ref: ${t.tenant_ref}, Receipt: ${createdPay.payment_code}) has been verified and confirmed.`, sentBy: confirmedByName });
+          void dispatchTenantEmailNotification({ tenantId: t.id, tenantRef: t.tenant_ref, tenantName: t.full_name, recipientEmail: t.email, propertyName: createdPay.property_name || l?.property_name || "Main Property", unitNumber: createdPay.unit_number || l?.unit_number || "Unit 101", triggerType: "payment_confirmed", amountDue: paidNow, dueDate: createdPay.due_date || todayYmd, receiptNo: createdPay.payment_code, paymentId: createdPay.id, paymentVerified: true, sentBy: confirmedByName });
         }
-        return res.json({ id: createdPay.id, paymentId: createdPay.payment_code, tenantRef: createdPay.tenant_ref, tenantName: createdPay.tenant_name, avatarBg: createdPay.avatar_bg || "#D8F3E5", property: createdPay.property_name, unitType: createdPay.unit_type || "Deluxe", unitNumber: createdPay.unit_number, paymentNote: createdPay.payment_note || "Verified Rent Payment", leaseTerm: createdPay.lease_term || "12 Months", dueDate: createdPay.due_date, paidDate: createdPay.paid_date, amount: rentAmt, status: "Paid", confirmedBy: confirmedByName, confirmedAt: createdPay.confirmed_at, createdAt: createdPay.created_at });
+        return res.json({
+          id: createdPay.id,
+          paymentId: createdPay.payment_code,
+          tenantRef: createdPay.tenant_ref,
+          tenantName: createdPay.tenant_name,
+          avatarBg: createdPay.avatar_bg || "#D8F3E5",
+          property: createdPay.property_name,
+          unitType: createdPay.unit_type || "Deluxe",
+          unitNumber: createdPay.unit_number,
+          paymentNote: createdPay.payment_note || "Verified Rent Payment",
+          leaseTerm: createdPay.lease_term || "12 Months",
+          dueDate: createdPay.due_date,
+          paidDate: createdPay.paid_date,
+          billingPeriodStart: createdPay.billing_period_start || cycle.periodStart,
+          billingPeriodEnd: createdPay.billing_period_end || cycle.periodEnd,
+          amount: rentAmt,
+          amountPaid: paidNow,
+          balanceDue: fin.outstandingBalance,
+          status: fin.status,
+          confirmedBy: confirmedByName,
+          confirmedAt: createdPay.confirmed_at,
+          createdAt: createdPay.created_at
+        });
       }
       const amtDue = Number(target.amount_due ?? target.amount ?? 0);
-      const { data: updated2, error: uErr } = await supabaseAdmin.from("rent_payments").update({ status: "Paid", paid_date: todayStr, amount_paid: amtDue, confirmed_by: validConfirmerId, confirmed_at: (/* @__PURE__ */ new Date()).toISOString() }).eq("id", target.id).select("*").single();
+      const existingPaid = Number(target.amount_paid ?? 0);
+      const nextPaid = requestedPartialAmount !== null && requestedPartialAmount > 0
+        ? Math.min(amtDue, existingPaid + requestedPartialAmount)
+        : amtDue;
+      const targetDueYmd = parseBillingDateToYmd(target.due_date) || todayYmd;
+      const fin = computeInvoiceFinancials({ amountDue: amtDue, amountPaid: nextPaid, dueDate: targetDueYmd, referenceYmd: todayYmd });
+      const { data: updated2, error: uErr } = await supabaseAdmin.from("rent_payments").update({
+        status: fin.status,
+        paid_date: todayStr,
+        amount_paid: nextPaid,
+        confirmed_by: validConfirmerId,
+        confirmed_at: (/* @__PURE__ */ new Date()).toISOString()
+      }).eq("id", target.id).select("*").single();
       if (uErr) {
         return res.status(400).json({ error: uErr.message });
       }
-      void logActivity("payment", `Rent Payment Confirmed (${target.tenant_ref})`, `KSh ${amtDue.toLocaleString()} confirmed for ${target.tenant_name} (${target.unit_number}).`, confirmedByName, target.tenant_ref, "mint");
+      cachedFullDatabaseState = null;
+      cachedFullDatabaseStateExpiresAt = 0;
+      void logActivity("payment", `Rent Payment ${fin.status === "Paid" ? "Confirmed" : "Recorded (Partial)"} (${target.tenant_ref})`, `KSh ${nextPaid.toLocaleString()} of KSh ${amtDue.toLocaleString()} confirmed for ${target.tenant_name} (${target.unit_number}).`, confirmedByName, target.tenant_ref, "mint");
       if (updated2 && updated2.status === "Paid") {
         void (async () => {
           try {
             const { data: tenantLookup } = await supabaseAdmin.from("tenants").select("id, phone, email").ilike("tenant_ref", updated2.tenant_ref).maybeSingle();
             await Promise.allSettled([
               dispatchSmsNotification({ tenantId: tenantLookup?.id || updated2.tenant_id || void 0, tenantRef: updated2.tenant_ref, tenantName: updated2.tenant_name, recipientPhone: tenantLookup?.phone || "On file", propertyName: updated2.property_name, unitNumber: updated2.unit_number, triggerType: "payment_confirmed", paymentId: updated2.id, paymentVerified: true, messageBody: `Dear ${updated2.tenant_name}, thank you! Your rent payment of KSh ${amtDue.toLocaleString()} for ${updated2.property_name}, Apartment ${updated2.unit_number} (Tenant Ref: ${updated2.tenant_ref}, Receipt: ${updated2.payment_code}) has been verified and confirmed.`, sentBy: confirmedByName }),
-              dispatchTenantEmailNotification({ tenantId: tenantLookup?.id || updated2.tenant_id || void 0, tenantRef: updated2.tenant_ref, tenantName: updated2.tenant_name, recipientEmail: tenantLookup?.email, propertyName: updated2.property_name, unitNumber: updated2.unit_number, triggerType: "payment_confirmed", amountDue: amtDue, dueDate: todayStr, receiptNo: updated2.payment_code, paymentId: updated2.id, paymentVerified: true, sentBy: confirmedByName })
+              dispatchTenantEmailNotification({ tenantId: tenantLookup?.id || updated2.tenant_id || void 0, tenantRef: updated2.tenant_ref, tenantName: updated2.tenant_name, recipientEmail: tenantLookup?.email, propertyName: updated2.property_name, unitNumber: updated2.unit_number, triggerType: "payment_confirmed", amountDue: amtDue, dueDate: updated2.due_date || todayYmd, receiptNo: updated2.payment_code, paymentId: updated2.id, paymentVerified: true, sentBy: confirmedByName })
             ]);
           } catch {
           }
         })();
       }
-      return res.json({ id: updated2.id, paymentId: updated2.payment_code, tenantRef: updated2.tenant_ref, tenantName: updated2.tenant_name, avatarBg: updated2.avatar_bg || "#D8F3E5", property: updated2.property_name, unitType: updated2.unit_type || "Deluxe", unitNumber: updated2.unit_number, paymentNote: updated2.payment_note || "Rent Payment", leaseTerm: updated2.lease_term || "12 months", dueDate: updated2.due_date, paidDate: updated2.paid_date, amount: amtDue, status: "Paid", confirmedBy: confirmedByName, confirmedAt: updated2.confirmed_at, createdAt: updated2.created_at });
+      return res.json({
+        id: updated2.id,
+        paymentId: updated2.payment_code,
+        tenantRef: updated2.tenant_ref,
+        tenantName: updated2.tenant_name,
+        avatarBg: updated2.avatar_bg || "#D8F3E5",
+        property: updated2.property_name,
+        unitType: updated2.unit_type || "Deluxe",
+        unitNumber: updated2.unit_number,
+        paymentNote: updated2.payment_note || "Rent Payment",
+        leaseTerm: updated2.lease_term || "12 months",
+        dueDate: updated2.due_date,
+        paidDate: updated2.paid_date,
+        billingPeriodStart: updated2.billing_period_start,
+        billingPeriodEnd: updated2.billing_period_end,
+        amount: amtDue,
+        amountPaid: nextPaid,
+        balanceDue: fin.outstandingBalance,
+        status: fin.status,
+        confirmedBy: confirmedByName,
+        confirmedAt: updated2.confirmed_at,
+        createdAt: updated2.created_at
+      });
     }
+    const existingPgRes = await pg.query(`SELECT * FROM public.rent_payments WHERE id::text = $1 OR (UPPER(tenant_ref) = UPPER($1) AND status <> 'Paid') OR UPPER(payment_code) = UPPER($1) ORDER BY due_date ASC, created_at ASC LIMIT 1;`, [paramId]);
+    const existingPgRow = existingPgRes.rows[0];
+    if (!existingPgRow) {
+      return res.status(404).json({ error: "Payment record not found." });
+    }
+    const pgAmtDue = Number(existingPgRow.amount_due || existingPgRow.amount || 35000);
+    const pgPrevPaid = Number(existingPgRow.amount_paid || 0);
+    const pgNextPaid = requestedPartialAmount !== null && requestedPartialAmount > 0
+      ? Math.min(pgAmtDue, pgPrevPaid + requestedPartialAmount)
+      : pgAmtDue;
+    const pgFin = computeInvoiceFinancials({
+      amountDue: pgAmtDue,
+      amountPaid: pgNextPaid,
+      dueDate: parseBillingDateToYmd(existingPgRow.due_date) || todayYmd,
+      referenceYmd: todayYmd
+    });
     const updated = await pg.query(`UPDATE public.rent_payments
-         SET status = 'Paid',
-             paid_date = $1,
-             amount_paid = COALESCE(NULLIF(amount_due, 0), NULLIF(amount, 0), 35000),
-             amount = COALESCE(NULLIF(amount, 0), NULLIF(amount_due, 0), 35000),
-             confirmed_by = $2,
-             confirmed_at = $3
-         WHERE id::text = $4 OR UPPER(tenant_ref) = UPPER($4) OR UPPER(payment_code) = UPPER($4)
-         RETURNING *;`, [todayStr, confirmedByName, (/* @__PURE__ */ new Date()).toISOString(), paramId]);
+         SET status = $1,
+             paid_date = $2,
+             amount_paid = $3,
+             amount = COALESCE(NULLIF(amount, 0), NULLIF(amount_due, 0), $4),
+             confirmed_by = $5,
+             confirmed_at = $6
+         WHERE id = $7
+         RETURNING *;`, [pgFin.status, todayStr, pgNextPaid, pgAmtDue, confirmedByName, (/* @__PURE__ */ new Date()).toISOString(), existingPgRow.id]);
     const updatedRow = updated.rows[0];
     if (!updatedRow) {
       return res.status(404).json({ error: "Payment record not found." });
     }
-    const resolvedAmt = Number(updatedRow.amount || updatedRow.amount_due || updatedRow.amount_paid || 0);
+    cachedFullDatabaseState = null;
+    cachedFullDatabaseStateExpiresAt = 0;
+    const resolvedAmt = Number(updatedRow.amount_due || updatedRow.amount || updatedRow.amount_paid || 0);
     if (updatedRow.status === "Paid") {
       void (async () => {
         try {
@@ -6683,7 +8013,7 @@ async function createApp() {
     }
     const resolvedTrigger = triggerType || "admin_announcement";
     const dispatchResults = await Promise.all(recipients.map((t) => {
-      const personalized = String(messageTemplate).replace(/\{tenantName\}/gi, t.name).replace(/\{name\}/gi, t.name).replace(/\{property\}/gi, t.property).replace(/\{unitNumber\}/gi, t.unitNumber).replace(/\{unit\}/gi, t.unitNumber).replace(/\{tenantRef\}/gi, t.tenantRef).replace(/\{ref\}/gi, t.tenantRef).replace(/\{amount\}/gi, `KSh ${(t.rentBalance > 0 ? t.rentBalance : t.monthlyRent).toLocaleString()}`).replace(/\{dueDate\}/gi, t.dueDate || "5th of this month").replace(/\{balance\}/gi, `KSh ${(t.rentBalance || t.monthlyRent).toLocaleString()}`).replace(/\{rent\}/gi, `KSh ${t.monthlyRent.toLocaleString()}`);
+      const personalized = String(messageTemplate).replace(/\{tenantName\}/gi, t.name).replace(/\{name\}/gi, t.name).replace(/\{property\}/gi, t.property).replace(/\{unitNumber\}/gi, t.unitNumber).replace(/\{unit\}/gi, t.unitNumber).replace(/\{tenantRef\}/gi, t.tenantRef).replace(/\{ref\}/gi, t.tenantRef).replace(/\{amount\}/gi, `KSh ${(t.rentBalance > 0 ? t.rentBalance : t.monthlyRent).toLocaleString()}`).replace(/\{dueDate\}/gi, formatYmdShort(t.dueDate || t.nextBillingDate || t.leaseStart)).replace(/\{balance\}/gi, `KSh ${(t.rentBalance || t.monthlyRent).toLocaleString()}`).replace(/\{rent\}/gi, `KSh ${t.monthlyRent.toLocaleString()}`);
       return dispatchSmsNotification({ tenantId: t.id, tenantRef: t.tenantRef, tenantName: t.name, recipientPhone: t.phone || "On file", propertyName: t.property, unitNumber: t.unitNumber, triggerType: resolvedTrigger, messageBody: personalized, sentBy: req.currentUser?.fullName || "Administrator", forceSend: Boolean(forceSend), syncToThread: true });
     }));
     const logs = [];
@@ -6909,7 +8239,32 @@ async function createApp() {
         success: true,
         ...summary,
         totalSent,
-        message: `Automated email check complete (${summary.nairobiDate} EAT): ${totalSent} email reminder(s) sent via Resend (${summary.skippedDuplicates} duplicates prevented).`,
+        message: `Automated anniversary billing & email check complete (${summary.nairobiDate} EAT): ${summary.invoicesGenerated || 0} invoice(s) generated, ${totalSent} email reminder(s) sent via Resend (${summary.skippedDuplicates} duplicates prevented).`,
+      });
+    });
+  });
+
+  app.all("/api/billing/run-anniversary-cycle", async (req, res) => {
+    const isVercelCron = Boolean(
+      req.headers["x-vercel-cron"] ||
+      (process.env.CRON_SECRET && req.headers.authorization === `Bearer ${process.env.CRON_SECRET}`)
+    );
+
+    if (isVercelCron) {
+      const summary = await ensureAnniversaryInvoicesForAllTenants(undefined, "Vercel Scheduled Cron Engine");
+      return res.json({ success: true, ...summary, source: "vercel_cron" });
+    }
+
+    return requireRole(["owner", "property_manager", "accountant"])(req, res, async () => {
+      const refDate = req.body?.referenceDate ? String(req.body.referenceDate) : undefined;
+      const summary = await ensureAnniversaryInvoicesForAllTenants(
+        refDate,
+        req.currentUser?.fullName || "Anniversary Billing Engine"
+      );
+      return res.json({
+        success: true,
+        ...summary,
+        message: `Anniversary billing cycle synced (${summary.nairobiDate} EAT): ${summary.generatedCount} new invoice(s) issued, ${summary.overdueUpdatedCount} marked overdue, ${summary.skippedDuplicateCount} existing billing period(s) preserved without duplicates.`,
       });
     });
   });
@@ -7674,79 +9029,111 @@ async function createApp() {
       reconciliationStatus = amt >= expectedAmt ? "Reconciled" : "Partial Payment";
 
       if (sys.payment.autoConfirmOnCallback || input.source === "Manual C2B Entry") {
-        // Check if there is an unpaid rent_payment row for this tenant
-        const existingPending = state.payments.find(
+        // Check for oldest unpaid anniversary invoice for this tenant (preserving all historical invoices)
+        const unpaidList = state.payments.filter(
           (p: any) =>
             String(p.tenantRef || "").toUpperCase() === matchedTenant.tenantRef.toUpperCase() &&
             p.status !== "Paid"
         );
+        const existingPending = unpaidList[unpaidList.length - 1] || unpaidList[0];
 
         const paymentCode = `${sys.invoice.receiptPrefix || "PAY-"}${matchedTenant.tenantRef.replace("-", "")}-${receiptNo.slice(-4)}`;
+        const prevPaid = Number(existingPending?.amountPaid || 0);
+        const existingDue = Number(existingPending?.amount || matchedTenant.monthlyRent || 0);
+        const cumulativePaid = prevPaid + amt;
+        const nextStatus = existingPending
+          ? cumulativePaid >= existingDue
+            ? "Paid"
+            : existingPending.status === "Overdue"
+            ? "Overdue"
+            : "Pending"
+          : "Paid";
+        const preservedPeriodLabel =
+          existingPending?.billingPeriodStart && existingPending?.billingPeriodEnd
+            ? ` (${formatYmdShort(existingPending.billingPeriodStart)} - ${formatYmdShort(existingPending.billingPeriodEnd)})`
+            : "";
+        const payHeroNote = `PayHero M-Pesa (${cleanPaybill}) • Receipt ${receiptNo}${preservedPeriodLabel}`;
 
         if (supabaseAdmin && !isSupabaseQuotaRestricted()) {
           try {
-            if (existingPending && amt >= Number(existingPending.amount || 0)) {
+            if (existingPending) {
               const { data: upd } = await supabaseAdmin
                 .from("rent_payments")
                 .update({
-                  status: "Paid",
+                  status: nextStatus,
                   paid_date: todayStr,
-                  amount_paid: amt,
-                  payment_note: `PayHero M-Pesa (${cleanPaybill}) • Receipt ${receiptNo}`,
-                  confirmed_at: new Date().toISOString()
+                  amount_paid: cumulativePaid,
+                  payment_note: payHeroNote,
+                  confirmed_at: nextStatus === "Paid" ? new Date().toISOString() : null
                 })
                 .eq("id", existingPending.id)
                 .select("*")
                 .maybeSingle();
               if (upd?.id) createdOrUpdatedPaymentId = upd.id;
             } else {
-              const { data: ins } = await supabaseAdmin
-                .from("rent_payments")
-                .insert({
-                  payment_code: paymentCode,
-                  tenant_id: matchedTenant.id,
-                  tenant_ref: matchedTenant.tenantRef,
-                  tenant_name: matchedTenant.name,
-                  avatar_bg: matchedTenant.avatarBg || "#D8F3E5",
-                  property_name: matchedTenant.property,
-                  unit_type: matchedTenant.unitType || "Deluxe",
-                  unit_number: matchedTenant.unitNumber,
-                  payment_note: `PayHero M-Pesa (${cleanPaybill}) • Receipt ${receiptNo}`,
-                  lease_term: matchedTenant.leaseDuration || "12 Months",
-                  due_date: matchedTenant.dueDate || todayStr,
-                  paid_date: todayStr,
-                  amount: amt,
-                  amount_due: amt,
-                  amount_paid: amt,
-                  status: "Paid",
-                  confirmed_at: new Date().toISOString()
-                })
-                .select("*")
-                .maybeSingle();
-              if (ins?.id) createdOrUpdatedPaymentId = ins.id;
+              const moveInAnchor = matchedTenant.moveInDate || matchedTenant.leaseStart || getNairobiDateString();
+              const activeCycle = getBillingCycleForDate(moveInAnchor, getNairobiDateString());
+              const baseIns = {
+                payment_code: paymentCode,
+                tenant_id: matchedTenant.id,
+                tenant_ref: matchedTenant.tenantRef,
+                tenant_name: matchedTenant.name,
+                avatar_bg: matchedTenant.avatarBg || "#D8F3E5",
+                property_name: matchedTenant.property,
+                unit_type: matchedTenant.unitType || "Deluxe",
+                unit_number: matchedTenant.unitNumber,
+                payment_note: activeCycle
+                  ? `PayHero M-Pesa (${cleanPaybill}) • Receipt ${receiptNo} (${formatYmdShort(activeCycle.periodStart)} - ${formatYmdShort(activeCycle.periodEnd)})`
+                  : payHeroNote,
+                lease_term: matchedTenant.leaseDuration || "12 Months",
+                due_date: activeCycle?.dueDate || matchedTenant.dueDate || todayStr,
+                paid_date: todayStr,
+                amount: amt,
+                amount_due: amt,
+                amount_paid: amt,
+                status: "Paid",
+                confirmed_at: new Date().toISOString()
+              };
+              const extIns = activeCycle
+                ? {
+                    ...baseIns,
+                    invoice_date: activeCycle.periodStart,
+                    billing_period_start: activeCycle.periodStart,
+                    billing_period_end: activeCycle.periodEnd,
+                    billing_anniversary_day: activeCycle.anniversaryDay,
+                  }
+                : baseIns;
+              let insRes = await supabaseAdmin.from("rent_payments").insert(extIns).select("*").maybeSingle();
+              if (insRes.error) {
+                insRes = await supabaseAdmin.from("rent_payments").insert(baseIns).select("*").maybeSingle();
+              }
+              if (insRes.data?.id) createdOrUpdatedPaymentId = insRes.data.id;
             }
           } catch {}
         }
 
         if (pg && !createdOrUpdatedPaymentId) {
           try {
-            if (existingPending && amt >= Number(existingPending.amount || 0)) {
+            if (existingPending) {
               const uRes = await pg.query(
                 `UPDATE public.rent_payments
-                 SET status = 'Paid', paid_date = $1, amount_paid = $2,
-                     payment_note = $3, confirmed_at = $4, confirmed_by = $5
-                 WHERE id = $6 RETURNING id;`,
+                 SET status = $1, paid_date = $2, amount_paid = $3,
+                     payment_note = $4, confirmed_at = $5, confirmed_by = $6
+                 WHERE id = $7 RETURNING id;`,
                 [
+                  nextStatus,
                   todayStr,
-                  amt,
-                  `PayHero M-Pesa (${cleanPaybill}) • Receipt ${receiptNo}`,
-                  new Date().toISOString(),
+                  cumulativePaid,
+                  payHeroNote,
+                  nextStatus === "Paid" ? new Date().toISOString() : null,
                   input.processedBy,
                   existingPending.id
                 ]
               );
               createdOrUpdatedPaymentId = uRes.rows?.[0]?.id || existingPending.id;
             } else {
+              const moveInAnchor = matchedTenant.moveInDate || matchedTenant.leaseStart || getNairobiDateString();
+              const activeCycle = getBillingCycleForDate(moveInAnchor, getNairobiDateString());
               const iRes = await pg.query(
                 `INSERT INTO public.rent_payments
                   (payment_code, tenant_id, tenant_ref, tenant_name, avatar_bg, property_name, unit_type, unit_number, payment_note, lease_term, due_date, paid_date, amount, amount_due, amount_paid, status, confirmed_by, confirmed_at)
@@ -7761,9 +9148,11 @@ async function createApp() {
                   matchedTenant.property,
                   matchedTenant.unitType || "Deluxe",
                   matchedTenant.unitNumber,
-                  `PayHero M-Pesa (${cleanPaybill}) • Receipt ${receiptNo}`,
+                  activeCycle
+                    ? `PayHero M-Pesa (${cleanPaybill}) • Receipt ${receiptNo} (${formatYmdShort(activeCycle.periodStart)} - ${formatYmdShort(activeCycle.periodEnd)})`
+                    : payHeroNote,
                   matchedTenant.leaseDuration || "12 Months",
-                  matchedTenant.dueDate || todayStr,
+                  activeCycle?.dueDate || matchedTenant.dueDate || todayStr,
                   todayStr,
                   amt,
                   input.processedBy,
@@ -7774,6 +9163,9 @@ async function createApp() {
             }
           } catch {}
         }
+
+        cachedFullDatabaseState = null;
+        cachedFullDatabaseStateExpiresAt = 0;
 
         // Dispatch automatic SMS & Email Receipt if enabled
         if (sys.payment.autoReceiptOnConfirm) {

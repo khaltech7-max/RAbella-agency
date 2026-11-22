@@ -24,6 +24,7 @@ import {
   SlidersHorizontal,
   Layers,
   Sparkles,
+  Download,
 } from 'lucide-react';
 import {
   TenantProfile,
@@ -32,6 +33,23 @@ import {
   UnitTypeItem,
 } from '../data/rentalData';
 import { AvatarBadge, UnitIllustration } from './UnitIllustration';
+import { InvoicePreviewModal } from './InvoicePreviewModal';
+import {
+  InvoiceDocumentData,
+  buildInvoiceDataFromPayment,
+  downloadDesignedInvoiceFile,
+  downloadDesignedInvoicePng,
+} from '../lib/invoiceGenerator';
+import {
+  formatOrdinalDay,
+  formatYmdShort,
+  getBillingAnniversaryDay,
+  getBillingCycleForDate,
+  getBillingCycleForIndex,
+  getNairobiTodayYmd,
+  getNextBillingDate,
+  parseBillingDateToYmd,
+} from '../lib/anniversaryBilling';
 
 interface TenantProfilePageProps {
   tenants: TenantProfile[];
@@ -50,6 +68,7 @@ interface TenantProfilePageProps {
     unitType: 'Standard' | 'Deluxe' | 'Suite' | 'Family' | 'Single';
     monthlyRent: number;
     dueDate?: string;
+    leaseStart?: string;
     leaseDuration?: string;
     leaseNotes?: string;
     dob?: string;
@@ -114,6 +133,74 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
   const [editingTenant, setEditingTenant] = useState<TenantProfile | null>(null);
   const [profileModalTenant, setProfileModalTenant] =
     useState<TenantProfile | null>(null);
+  const [previewInvoice, setPreviewInvoice] = useState<InvoiceDocumentData | null>(null);
+
+  const handleDownloadTenantInvoiceLedger = (tenant: TenantProfile) => {
+    const todayYmd = getNairobiTodayYmd();
+    const moveInYmd = parseBillingDateToYmd(tenant.moveInDate || tenant.leaseStart) || todayYmd;
+    const activeCycle = getBillingCycleForDate(moveInYmd, todayYmd);
+    const activeStart = activeCycle?.periodStart || moveInYmd;
+    const activeEnd = activeCycle?.periodEnd || moveInYmd;
+    const activeDue = activeCycle?.dueDate || moveInYmd;
+    const syntheticPayments = (tenant.paymentHistory || []).map((p, idx) => {
+      const pStart = parseBillingDateToYmd(p.periodStart) || activeStart;
+      const pEnd = parseBillingDateToYmd(p.periodEnd) || getBillingCycleForDate(moveInYmd, pStart)?.periodEnd || activeEnd;
+      const amt = Number(p.amount || tenant.monthlyRent || 0);
+      return {
+        id: p.id || `pay-${idx}`,
+        paymentId: p.id || `INV-${tenant.tenantRef}-${idx + 1}`,
+        tenantName: tenant.name,
+        tenantRef: tenant.tenantRef,
+        avatarBg: tenant.avatarBg,
+        unitNumber: p.unitNumber || tenant.unitNumber,
+        property: tenant.property,
+        unitType: tenant.unitType,
+        paymentNote: `Monthly Rent (${formatYmdShort(pStart)} - ${formatYmdShort(pEnd)})`,
+        leaseTerm: tenant.leaseDuration || '12 Months',
+        dueDate: pStart,
+        paidDate: p.paymentDate || '-',
+        invoiceDate: pStart,
+        billingPeriodStart: pStart,
+        billingPeriodEnd: pEnd,
+        amount: amt,
+        amountPaid: p.status === 'Paid' ? amt : 0,
+        balanceDue: p.status === 'Paid' ? 0 : amt,
+        status: (p.status === 'Paid' ? 'Paid' : p.status === 'Overdue' ? 'Overdue' : 'Pending') as 'Paid' | 'Pending' | 'Overdue',
+      };
+    });
+    const fallbackAmount = Number(tenant.monthlyRent || tenant.rentBalance || 0);
+    const fallbackBalance = Number(tenant.rentBalance ?? (tenant.status === 'Paid' ? 0 : fallbackAmount));
+    const fallbackPaid = Math.max(0, fallbackAmount - fallbackBalance);
+    const primaryRecord = syntheticPayments[0] || {
+      id: `inv-${tenant.id}`,
+      paymentId: `INV-${new Date().getFullYear()}-${tenant.tenantRef}`,
+      tenantName: tenant.name,
+      tenantRef: tenant.tenantRef,
+      avatarBg: tenant.avatarBg,
+      unitNumber: tenant.unitNumber,
+      property: tenant.property,
+      unitType: tenant.unitType,
+      paymentNote: `Monthly Rent (${formatYmdShort(activeStart)} - ${formatYmdShort(activeEnd)})`,
+      leaseTerm: tenant.leaseDuration || '12 Months',
+      dueDate: parseBillingDateToYmd(tenant.dueDate) || activeDue,
+      paidDate: tenant.status === 'Paid' ? todayYmd : '-',
+      invoiceDate: activeStart,
+      billingPeriodStart: tenant.currentBillingPeriodStart || activeStart,
+      billingPeriodEnd: tenant.currentBillingPeriodEnd || activeEnd,
+      amount: fallbackAmount,
+      amountPaid: fallbackPaid,
+      balanceDue: fallbackBalance,
+      status: (tenant.status === 'Paid' ? 'Paid' : tenant.status === 'Overdue' ? 'Overdue' : 'Pending') as 'Paid' | 'Pending' | 'Overdue',
+    };
+    const docData = buildInvoiceDataFromPayment(
+      primaryRecord,
+      primaryRecord.paymentId,
+      syntheticPayments,
+      tenant
+    );
+    setPreviewInvoice(docData);
+    downloadDesignedInvoiceFile(docData, 'Invoice');
+  };
   const [prefixModalProperty, setPrefixModalProperty] =
     useState<PropertyRecord | null>(null);
   const [newPrefixValue, setNewPrefixValue] = useState('');
@@ -432,7 +519,7 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
       return;
     }
 
-    const resolvedDueDate = newDueDate.trim() || getDefaultNairobiDateInput();
+    const resolvedMoveInDate = newDueDate.trim() || getDefaultNairobiDateInput();
 
     setSaving(true);
     setFormError(null);
@@ -446,7 +533,8 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
         unitNumber: newUnitNumber.trim() || 'Unit 101',
         unitType: newUnitType,
         monthlyRent: Number(newRent),
-        dueDate: resolvedDueDate,
+        leaseStart: resolvedMoveInDate,
+        dueDate: resolvedMoveInDate,
         securityDeposit: Number(newDeposit),
         occupants: newOccupants,
         leaseDuration: newDuration,
@@ -462,7 +550,7 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
       setNewEmail('');
       setNewDueDate(getDefaultNairobiDateInput());
       showToast(
-        `Tenant ${created.name} registered (Due: ${resolvedDueDate}) and assigned to ${propName} (Ref: ${created.tenantRef})`
+        `Tenant ${created.name} registered (Move-in Anniversary: ${formatYmdShort(resolvedMoveInDate)}) and assigned to ${propName} (Ref: ${created.tenantRef})`
       );
     } catch (err: any) {
       setFormError(err?.message || 'Failed to save tenant to Supabase.');
@@ -488,7 +576,7 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
     setEditDeposit(t.securityDeposit);
     setEditDueDate(
       toDateInputValue(
-        t.dueDate || t.paymentHistory?.[0]?.periodStart || t.leaseStart
+        t.moveInDate || t.leaseStart || t.dueDate || t.paymentHistory?.[0]?.periodStart
       )
     );
     setEditDuration(t.leaseDuration);
@@ -511,6 +599,7 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
     setFormError(null);
     try {
       const chosenProp = properties.find((p) => p.id === editPropertyId);
+      const cleanMoveIn = editDueDate.trim() || editingTenant.moveInDate || editingTenant.leaseStart;
       await onUpdateTenant(editingTenant.id, {
         name: editName.trim() || editingTenant.name,
         phone: editPhone.trim() || editingTenant.phone,
@@ -520,7 +609,8 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
         unitNumber: editUnitNumber.trim() || editingTenant.unitNumber,
         unitType: editUnitType,
         monthlyRent: Number(editRent),
-        dueDate: editDueDate.trim() || editingTenant.dueDate,
+        leaseStart: cleanMoveIn,
+        dueDate: cleanMoveIn,
         securityDeposit: Number(editDeposit),
         leaseDuration: editDuration,
         occupants: editOccupants,
@@ -926,7 +1016,7 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
                                   </div>
                                 </td>
 
-                                {/* Monthly Rent */}
+                                {/* Monthly Rent & Anniversary Billing */}
                                 <td className="py-3.5 px-3 whitespace-nowrap tabular-nums">
                                   <p className="font-bold text-[#172B25]">
                                     KSh {t.monthlyRent.toLocaleString()}
@@ -934,9 +1024,24 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
                                   <p className="text-[10px] text-[#7B8983]">
                                     Paid: KSh {t.totalPaid.toLocaleString()}
                                   </p>
-                                  <p className="text-[10px] font-medium text-[#145338]">
-                                    Due: {t.dueDate || t.paymentHistory?.[0]?.periodStart || t.leaseStart}
-                                  </p>
+                                  {(() => {
+                                    const moveInYmd = parseBillingDateToYmd(t.moveInDate || t.leaseStart);
+                                    const annivDay = t.billingAnniversaryDay || (moveInYmd ? getBillingAnniversaryDay(moveInYmd) : null);
+                                    const nextYmd = t.nextBillingDate || (moveInYmd ? getNextBillingDate(moveInYmd, getNairobiTodayYmd()) : null);
+                                    const dueYmd = parseBillingDateToYmd(t.dueDate);
+                                    return (
+                                      <>
+                                        <p className="text-[10px] font-semibold text-[#145338]">
+                                          Due: {dueYmd ? formatYmdShort(dueYmd) : t.dueDate || (nextYmd ? formatYmdShort(nextYmd) : '—')}
+                                        </p>
+                                        {annivDay && (
+                                          <p className="text-[9.5px] text-[#7B8983]">
+                                            {formatOrdinalDay(annivDay)} Monthly • Next: {nextYmd ? formatYmdShort(nextYmd) : '—'}
+                                          </p>
+                                        )}
+                                      </>
+                                    );
+                                  })()}
                                 </td>
 
                                 {/* Rent Balance Status Badge */}
@@ -1323,7 +1428,7 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
                   <label className="block font-bold text-[#172B25] mb-1">
-                    Rent Due Date *
+                    Move-in Date (Billing Anniversary) *
                   </label>
                   <input
                     type="date"
@@ -1359,6 +1464,24 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
                   </select>
                 </div>
               </div>
+
+              {(() => {
+                const moveInYmd = parseBillingDateToYmd(newDueDate);
+                if (!moveInYmd) return null;
+                const c0 = getBillingCycleForIndex(moveInYmd, 0);
+                const c1 = getBillingCycleForIndex(moveInYmd, 1);
+                if (!c0 || !c1) return null;
+                return (
+                  <div className="p-3 rounded-xl bg-[#EEF4F1] border border-[#CDE5D8] text-[11px] text-[#145338] flex flex-col gap-0.5">
+                    <span className="font-bold">
+                      Anniversary Billing Cycle ({formatOrdinalDay(c0.anniversaryDay)} of each month)
+                    </span>
+                    <span>
+                      1st Period: <strong>{formatYmdShort(c0.periodStart)} – {formatYmdShort(c0.periodEnd)}</strong> • Next Payment Due: <strong>{formatYmdShort(c1.dueDate)}</strong>
+                    </span>
+                  </div>
+                );
+              })()}
             </div>
 
             <div className="pt-3 flex justify-end gap-2.5 border-t border-[#E7ECE9]">
@@ -1496,7 +1619,7 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
                 </div>
                 <div>
                   <label className="block font-bold text-[#172B25] mb-1">
-                    Rent Due Date *
+                    Move-in Date (Anniversary) *
                   </label>
                   <input
                     type="date"
@@ -1619,32 +1742,51 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
                 </div>
               </div>
 
-              {/* Card 2: Lease Details */}
+              {/* Card 2: Lease & Anniversary Billing Details */}
               <div className="p-4 rounded-2xl bg-[#F5F7F6] border border-[#E7ECE9] space-y-3 text-xs">
                 <h4 className="font-bold text-[#172B25] flex items-center gap-1.5">
                   <Calendar className="w-3.5 h-3.5 text-[#145338]" />
-                  Lease Agreement
+                  Lease &amp; Billing Cycle
                 </h4>
-                <div className="space-y-1.5 text-[#172B25]">
-                  <div>
-                    <span className="text-[#7B8983]">Lease ID:</span>{' '}
-                    <span className="font-mono font-bold">
-                      {profileModalTenant.leaseId}
-                    </span>
-                  </div>
-                  <div>
-                    <span className="text-[#7B8983]">Duration:</span> {profileModalTenant.leaseDuration}
-                  </div>
-                  <div>
-                    <span className="text-[#7B8983]">Term:</span> {profileModalTenant.leaseStart} to {profileModalTenant.leaseEnd}
-                  </div>
-                  <div>
-                    <span className="text-[#7B8983]">Occupants:</span> {profileModalTenant.occupants}
-                  </div>
-                  <div>
-                    <span className="text-[#7B8983]">Deposit:</span> KSh {profileModalTenant.securityDeposit.toLocaleString()} Held
-                  </div>
-                </div>
+                {(() => {
+                  const todayYmd = getNairobiTodayYmd();
+                  const moveInYmd = parseBillingDateToYmd(profileModalTenant.moveInDate || profileModalTenant.leaseStart) || todayYmd;
+                  const cycle = getBillingCycleForDate(moveInYmd, todayYmd);
+                  const nextYmd = profileModalTenant.nextBillingDate || getNextBillingDate(moveInYmd, todayYmd) || undefined;
+                  const periodStart = profileModalTenant.currentBillingPeriodStart || cycle?.periodStart || moveInYmd;
+                  const periodEnd = profileModalTenant.currentBillingPeriodEnd || cycle?.periodEnd || moveInYmd;
+                  const annivDay = profileModalTenant.billingAnniversaryDay || cycle?.anniversaryDay || getBillingAnniversaryDay(moveInYmd) || 1;
+                  return (
+                    <div className="space-y-1.5 text-[#172B25]">
+                      <div>
+                        <span className="text-[#7B8983]">Lease ID:</span>{' '}
+                        <span className="font-mono font-bold">
+                          {profileModalTenant.leaseId}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-[#7B8983]">Move-in Date:</span>{' '}
+                        <strong>{formatYmdShort(moveInYmd)}</strong>{' '}
+                        <span className="text-[10.5px] font-semibold text-[#145338]">
+                          ({formatOrdinalDay(annivDay)} Monthly)
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-[#7B8983]">Current Period:</span>{' '}
+                        <span className="font-semibold">
+                          {formatYmdShort(periodStart)} – {formatYmdShort(periodEnd)}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-[#7B8983]">Next Billing Date:</span>{' '}
+                        <strong className="text-[#145338]">{nextYmd ? formatYmdShort(nextYmd) : '—'}</strong>
+                      </div>
+                      <div>
+                        <span className="text-[#7B8983]">Deposit:</span> KSh {profileModalTenant.securityDeposit.toLocaleString()} Held
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
 
               {/* Card 3: Financial Standing */}
@@ -1694,9 +1836,19 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
 
             {/* Payment Transaction History Ledger */}
             <div className="pt-2">
-              <h4 className="text-sm font-bold text-[#172B25] mb-2.5">
-                Payment Transaction History ({profileModalTenant.tenantRef})
-              </h4>
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-2.5">
+                <h4 className="text-sm font-bold text-[#172B25]">
+                  Payment Transaction History ({profileModalTenant.tenantRef})
+                </h4>
+                <button
+                  type="button"
+                  onClick={() => handleDownloadTenantInvoiceLedger(profileModalTenant)}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#D5F267] hover:bg-[#c8e755] text-[#17231E] text-[11px] font-bold cursor-pointer"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Download Invoice &amp; Ledger</span>
+                </button>
+              </div>
               {profileModalTenant.paymentHistory.length === 0 ? (
                 <div className="p-6 text-center bg-[#F5F7F6] rounded-xl text-xs text-[#7B8983]">
                   No recorded payment transactions for {profileModalTenant.name} yet.
@@ -1771,6 +1923,11 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
           </div>
         </div>
       )}
+
+      <InvoicePreviewModal
+        invoiceData={previewInvoice}
+        onClose={() => setPreviewInvoice(null)}
+      />
     </div>
   );
 };

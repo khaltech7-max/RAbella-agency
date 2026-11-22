@@ -62,6 +62,10 @@ import {
   NavPageId,
 } from '../data/rentalData';
 import { settingsApi, emailApi, smsApi } from '../lib/apiClient';
+import {
+  setSystemBrandingForInvoices,
+  setPayHeroInvoiceContext,
+} from '../lib/invoiceGenerator';
 
 export type SettingsCategoryId =
   | 'general'
@@ -300,6 +304,7 @@ export function applyAppearanceToDocument(
     '#17231E';
   root.style.setProperty('--rms-accent', accentColor);
   root.style.setProperty('--rms-primary', primaryColor);
+  setSystemBrandingForInvoices(effectiveSys, effectivePrefs);
 
   // Attach live OS prefers-color-scheme listener once so "system" mode updates automatically
   if (
@@ -474,11 +479,13 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
         }
         if (Array.isArray(res.paybills)) {
           setPaybills(res.paybills);
+          setPayHeroInvoiceContext(res.paybills, res.transactions);
           const defPb = res.paybills.find((p) => p.isDefault) || res.paybills[0];
           if (defPb) setC2bPaybillNumber(defPb.paybillNumber);
         }
         if (Array.isArray(res.transactions)) {
           setPayheroTxs(res.transactions);
+          setPayHeroInvoiceContext(res.paybills, res.transactions);
         }
         if (res.emailSettings) {
           setEmailSettingsDraft(res.emailSettings);
@@ -638,6 +645,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
       });
       if (Array.isArray(res.paybills)) {
         setPaybills(res.paybills);
+        setPayHeroInvoiceContext(res.paybills, null);
       }
       setEditingPaybill(null);
       showNotice(res.message || 'PayHero PayBill mapping saved.');
@@ -653,6 +661,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
       const res = await settingsApi.deletePayHeroPaybill(id);
       if (Array.isArray(res.paybills)) {
         setPaybills(res.paybills);
+        setPayHeroInvoiceContext(res.paybills, null);
       }
       showNotice(res.message || 'PayBill mapping deleted.');
     } catch (err: any) {
@@ -682,6 +691,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
       });
       if (Array.isArray(res.transactions)) {
         setPayheroTxs(res.transactions);
+        setPayHeroInvoiceContext(null, res.transactions);
       }
       setC2bReceiptNumber('');
       setC2bNotes('');

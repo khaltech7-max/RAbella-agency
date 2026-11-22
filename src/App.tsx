@@ -933,6 +933,10 @@ export default function App() {
                 await runMutation(() => rentalApi.deletePayment(id));
               }}
               onSelectTenantRef={handleOpenTenantByRef}
+              onSyncAnniversaryBilling={async () => {
+                const res = await runMutation(() => rentalApi.runAnniversaryBillingCycle());
+                return res?.message || 'Anniversary billing invoices synchronized.';
+              }}
               globalSearch={globalSearch}
               onGlobalSearchChange={setGlobalSearch}
             />
@@ -1264,7 +1268,12 @@ export default function App() {
           {activePage === 'invoices' && (
             <InvoicesPage
               payments={payments}
+              tenants={tenants}
               onSelectTenantRef={handleOpenTenantByRef}
+              onSyncAnniversaryBilling={async () => {
+                const res = await runMutation(() => rentalApi.runAnniversaryBillingCycle());
+                return res?.message || 'Anniversary billing invoices synchronized.';
+              }}
               globalSearch={globalSearch}
               onGlobalSearchChange={setGlobalSearch}
             />

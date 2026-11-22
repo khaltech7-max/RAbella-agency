@@ -24,6 +24,7 @@ import {
   Info,
   DollarSign,
   UserCheck,
+  RefreshCw,
 } from 'lucide-react';
 import {
   RentPaymentRecord,
@@ -31,6 +32,18 @@ import {
   TenantProfile,
 } from '../data/rentalData';
 import { AvatarBadge } from './UnitIllustration';
+import { InvoicePreviewModal } from './InvoicePreviewModal';
+import {
+  InvoiceDocumentData,
+  buildInvoiceDataFromPayment,
+  downloadDesignedInvoiceFile,
+  downloadDesignedInvoicePng,
+} from '../lib/invoiceGenerator';
+import {
+  extractBillingPeriodFromPayment,
+  formatYmdShort,
+  parseBillingDateToYmd,
+} from '../lib/anniversaryBilling';
 
 interface RentPaymentsPageProps {
   payments: RentPaymentRecord[];
@@ -40,6 +53,7 @@ interface RentPaymentsPageProps {
   onAddPayment: (record: Partial<RentPaymentRecord>) => Promise<void>;
   onDeletePayment: (id: string) => Promise<void>;
   onSelectTenantRef: (ref: string) => void;
+  onSyncAnniversaryBilling?: () => Promise<string | void>;
   globalSearch: string;
   onGlobalSearchChange?: (val: string) => void;
 }
@@ -52,6 +66,7 @@ export const RentPaymentsPage: React.FC<RentPaymentsPageProps> = ({
   onAddPayment,
   onDeletePayment,
   onSelectTenantRef,
+  onSyncAnniversaryBilling,
   globalSearch,
   onGlobalSearchChange,
 }) => {
@@ -85,6 +100,7 @@ export const RentPaymentsPage: React.FC<RentPaymentsPageProps> = ({
   const [confirmingPayment, setConfirmingPayment] = useState(false);
   const [receiptModalPayment, setReceiptModalPayment] =
     useState<RentPaymentRecord | null>(null);
+  const [syncingBilling, setSyncingBilling] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   // Add Payment Modal Form State (Strictly scoped by Property & Verified Tenant)
@@ -526,52 +542,20 @@ export const RentPaymentsPage: React.FC<RentPaymentsPageProps> = ({
     }
   };
 
-  // Download official receipt statement
+  const [previewInvoice, setPreviewInvoice] = useState<InvoiceDocumentData | null>(null);
+
+  // Download official designed invoice & receipt statement
   const handleDownloadReceipt = (pay: RentPaymentRecord) => {
     const payRefUpper = String(pay.tenantRef || '').trim().toUpperCase();
-    const meta = payRefUpper ? tenantMetaMap.get(payRefUpper) : undefined;
-    const prefix = meta?.prefix || 'A';
-    const dateStr = pay.paidDate || new Date().toISOString().slice(0, 10);
-    const receiptNum = `RCP-${pay.tenantRef}-${dateStr.replace(/-/g, '')}`;
-
-    const receiptContent = `
-==========================================================
-                     RENTIFY PROPERTY MANAGEMENT
-                   OFFICIAL RENT PAYMENT RECEIPT
-==========================================================
-Receipt Number     : ${receiptNum}
-Transaction Ref    : ${pay.paymentId}
-Payment Status     : ${pay.status === 'Paid' ? 'CONFIRMED' : pay.status.toUpperCase()}
-Date Issued        : ${new Date().toLocaleDateString('en-KE', { dateStyle: 'full' })}
-----------------------------------------------------------
-TENANT & PROPERTY DETAILS (STRICT ALLOCATION)
-----------------------------------------------------------
-Tenant Name        : ${pay.tenantName}
-Tenant Account Ref : ${pay.tenantRef} (Prefix ${prefix})
-Apartment Property : ${pay.property}
-Unit Assigned      : ${pay.unitNumber} (${pay.unitType})
-Lease Term         : ${pay.leaseTerm}
-----------------------------------------------------------
-PAYMENT INFORMATION
-----------------------------------------------------------
-Payment Note / Ref : ${pay.paymentNote}
-Amount Paid        : KSh ${Number(pay.amount).toLocaleString()}
-Billing Period     : Due ${pay.dueDate} | Paid ${pay.paidDate}
-Confirmed By       : ${pay.confirmedBy || 'Verified ARabella agency Ledger'}
-Confirmed Date     : ${pay.confirmedAt || pay.paidDate || 'Verified'}
-==========================================================
-    Thank you for your prompt rent payment with ARabella agency!
-==========================================================
-`.trim();
-
-    const blob = new Blob([receiptContent], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `ARabella-Agency-Receipt-${pay.tenantRef}-${pay.paymentId}.txt`;
-    link.click();
-    URL.revokeObjectURL(url);
-    showToast(`Receipt ${receiptNum} downloaded.`);
+    const matchedTenant = tenants.find(
+      (t) => String(t.tenantRef || '').trim().toUpperCase() === payRefUpper
+    );
+    const invoiceCode = pay.paymentId || `INV-${pay.tenantRef}`;
+    const docData = buildInvoiceDataFromPayment(pay, invoiceCode, payments, matchedTenant);
+    setPreviewInvoice(docData);
+    downloadDesignedInvoicePng(docData, 'Invoice');
+    downloadDesignedInvoiceFile(docData, 'Invoice-Ledger');
+    showToast(`Designed Invoice & Ledger (${invoiceCode}) downloaded.`);
   };
 
   return (
@@ -607,6 +591,28 @@ Confirmed Date     : ${pay.confirmedAt || pay.paidDate || 'Verified'}
           </div>
 
           <div className="flex flex-wrap items-center gap-2.5">
+            {onSyncAnniversaryBilling && (
+              <button
+                type="button"
+                disabled={syncingBilling}
+                onClick={async () => {
+                  setSyncingBilling(true);
+                  try {
+                    const msg = await onSyncAnniversaryBilling();
+                    showToast(msg || 'Anniversary billing invoices synchronized.');
+                  } catch (err: any) {
+                    showToast(err?.message || 'Failed to sync anniversary invoices.');
+                  } finally {
+                    setSyncingBilling(false);
+                  }
+                }}
+                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-2xl bg-[#EEF4F1] hover:bg-[#D8F3E5] text-[#145338] text-xs font-bold border border-[#CDE5D8] transition-all cursor-pointer disabled:opacity-50"
+                title="Generate any due monthly anniversary invoices based on each tenant's move-in date"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${syncingBilling ? 'animate-spin' : ''}`} />
+                <span>{syncingBilling ? 'Syncing...' : 'Sync Anniversary Invoices'}</span>
+              </button>
+            )}
             <button
               onClick={() => handleOpenAddPayment(selectedPropertyId !== 'ALL' ? selectedPropertyId : undefined)}
               className="inline-flex items-center gap-2 px-5 py-2.5 rounded-2xl bg-[#BFEF43] hover:bg-[#b0de3a] text-[#172B25] text-xs font-bold transition-all shadow-xs cursor-pointer active:scale-98"
@@ -1031,19 +1037,41 @@ Confirmed Date     : ${pay.confirmedAt || pay.paidDate || 'Verified'}
                         </span>
                       </td>
 
-                      {/* Dates */}
+                      {/* Billing Period & Dates */}
                       <td className="py-3.5 px-3.5 text-[#46544E] tabular-nums">
-                        <div className="text-[11.5px]">
-                          <span className="text-[#7B8983]">Due:</span> {row.dueDate}
-                        </div>
-                        <div className="text-[11px] text-[#145338] font-semibold">
-                          <span className="text-[#7B8983]">Paid:</span> {row.paidDate}
-                        </div>
+                        {(() => {
+                          const period = extractBillingPeriodFromPayment(
+                            row,
+                            tenantMeta?.tenant?.moveInDate || tenantMeta?.tenant?.leaseStart
+                          );
+                          const dueYmd = parseBillingDateToYmd(row.dueDate);
+                          return (
+                            <>
+                              {period && (
+                                <div className="text-[11px] font-bold text-[#172B25]">
+                                  {formatYmdShort(period.periodStart)} – {formatYmdShort(period.periodEnd)}
+                                </div>
+                              )}
+                              <div className="text-[11px]">
+                                <span className="text-[#7B8983]">Due:</span>{' '}
+                                {dueYmd ? formatYmdShort(dueYmd) : row.dueDate}
+                              </div>
+                              <div className="text-[10.5px] text-[#145338] font-semibold">
+                                <span className="text-[#7B8983]">Paid:</span> {row.paidDate || '-'}
+                              </div>
+                            </>
+                          );
+                        })()}
                       </td>
 
                       {/* Amount */}
                       <td className="py-3.5 px-3.5 font-bold text-[#172B25] tabular-nums text-[13px]">
-                        KSh {row.amount.toLocaleString()}
+                        <div>KSh {row.amount.toLocaleString()}</div>
+                        {Number(row.balanceDue ?? 0) > 0 && Number(row.amountPaid ?? 0) > 0 && (
+                          <div className="text-[10px] font-medium text-[#92400E]">
+                            Paid {Number(row.amountPaid).toLocaleString()} • Bal {Number(row.balanceDue).toLocaleString()}
+                          </div>
+                        )}
                       </td>
 
                       {/* Status Badge */}
@@ -1504,6 +1532,11 @@ Confirmed Date     : ${pay.confirmedAt || pay.paidDate || 'Verified'}
           </div>
         </div>
       )}
+
+      <InvoicePreviewModal
+        invoiceData={previewInvoice}
+        onClose={() => setPreviewInvoice(null)}
+      />
     </div>
   );
 };

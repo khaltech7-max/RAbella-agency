@@ -38,6 +38,15 @@ import {
   createDiagnosticError,
   SupabaseIntegrationError,
 } from './supabaseClient';
+import {
+  computeInvoiceFinancials,
+  extractBillingPeriodFromPayment,
+  getBillingAnniversaryDay,
+  getBillingCycleForDate,
+  getNairobiTodayYmd,
+  getNextBillingDate,
+  parseBillingDateToYmd,
+} from './anniversaryBilling';
 
 const AUTH_STORAGE_KEY = 'rentify_auth_token';
 const AUTH_USER_STORAGE_KEY = 'rentify_auth_user';
@@ -889,8 +898,39 @@ async function fetchBootstrapFromSupabase(): Promise<BootstrapPayload> {
     };
   });
 
+  const todayYmd = getNairobiTodayYmd();
+  const leaseByTenantRef = new Map<string, any>();
+  for (const l of leasesRows) {
+    if (l.tenant_ref) {
+      leaseByTenantRef.set(String(l.tenant_ref).trim().toUpperCase(), l);
+    }
+  }
+
   const payments: RentPaymentRecord[] = paymentsRows.map((r) => {
-    const amt = Number(r.amount_due ?? r.amount_paid ?? r.amount ?? 0);
+    const amt = Number(r.amount_due ?? r.amount ?? r.amount_paid ?? 0);
+    const amtPaidRaw = Number(
+      r.amount_paid !== undefined && r.amount_paid !== null
+        ? r.amount_paid
+        : r.status === 'Paid'
+        ? amt
+        : 0
+    );
+    const matchedLease = r.tenant_ref
+      ? leaseByTenantRef.get(String(r.tenant_ref).trim().toUpperCase())
+      : undefined;
+    const moveInYmd =
+      parseBillingDateToYmd(matchedLease?.lease_start) ||
+      parseBillingDateToYmd(r.due_date) ||
+      todayYmd;
+    const period = extractBillingPeriodFromPayment(r, moveInYmd);
+    const dueYmd = parseBillingDateToYmd(r.due_date) || period?.periodStart || todayYmd;
+    const fin = computeInvoiceFinancials({
+      amountDue: amt,
+      amountPaid: amtPaidRaw,
+      dueDate: dueYmd,
+      referenceYmd: todayYmd,
+      storedStatus: r.status,
+    });
     const confirmerProfile = r.confirmed_by
       ? profilesById.get(r.confirmed_by)
       : null;
@@ -905,10 +945,19 @@ async function fetchBootstrapFromSupabase(): Promise<BootstrapPayload> {
       unitNumber: r.unit_number,
       paymentNote: r.payment_note || 'Rent Payment',
       leaseTerm: r.lease_term || '12 months',
-      dueDate: r.due_date,
-      paidDate: r.paid_date,
+      dueDate: r.due_date || dueYmd,
+      paidDate: r.paid_date || '-',
+      invoiceDate: r.invoice_date || parseBillingDateToYmd(r.created_at) || dueYmd,
+      billingPeriodStart: period?.periodStart,
+      billingPeriodEnd: period?.periodEnd,
+      billingPeriodKey: r.billing_period_key || undefined,
+      billingAnniversaryDay: Number(
+        r.billing_anniversary_day || getBillingAnniversaryDay(moveInYmd)
+      ),
       amount: amt,
-      status: r.status || 'Pending',
+      amountPaid: fin.amountPaid,
+      balanceDue: fin.outstandingBalance,
+      status: fin.status,
       confirmedBy: confirmerProfile?.full_name || r.confirmed_by || undefined,
       confirmedAt: r.confirmed_at || undefined,
       createdAt: r.created_at,
@@ -953,19 +1002,36 @@ async function fetchBootstrapFromSupabase(): Promise<BootstrapPayload> {
         String(p.tenantRef || '').toUpperCase() ===
         String(t.tenant_ref || '').toUpperCase()
     );
-    const totalPaid = myPayments
-      .filter((p) => p.status === 'Paid')
-      .reduce((s, p) => s + Number(p.amount), 0);
-    const rentBalance = myPayments
-      .filter((p) => p.status !== 'Paid')
-      .reduce((s, p) => s + Number(p.amount), 0);
+    const moveInYmd =
+      parseBillingDateToYmd(lease.lease_start) ||
+      parseBillingDateToYmd(t.created_at) ||
+      todayYmd;
+    const currentCycle = getBillingCycleForDate(moveInYmd, todayYmd);
+    const nextBillingYmd = getNextBillingDate(moveInYmd, todayYmd);
+    const totalPaid = myPayments.reduce(
+      (s, p) => s + Number(p.amountPaid ?? (p.status === 'Paid' ? p.amount : 0)),
+      0
+    );
+    const rentBalance = myPayments.reduce(
+      (s, p) => s + Number(p.balanceDue ?? (p.status === 'Paid' ? 0 : p.amount)),
+      0
+    );
+    const unpaidPayments = myPayments
+      .filter((p) => p.status !== 'Paid' && Number(p.balanceDue ?? p.amount) > 0)
+      .sort((a, b) =>
+        (parseBillingDateToYmd(a.dueDate) || '9999-12-31').localeCompare(
+          parseBillingDateToYmd(b.dueDate) || '9999-12-31'
+        )
+      );
     const hasOverdue = myPayments.some((p) => p.status === 'Overdue');
     const hasPending = myPayments.some((p) => p.status === 'Pending');
     const derivedStatus = hasOverdue
       ? 'Overdue'
-      : hasPending
+      : hasPending || rentBalance > 0
       ? 'Pending'
       : 'Paid';
+    const activeDueDate =
+      unpaidPayments[0]?.dueDate || nextBillingYmd || currentCycle?.dueDate || moveInYmd;
     const monthlyRent = Number(
       lease.monthly_rent ?? unitObj?.monthly_rent ?? t.security_deposit ?? 0
     );
@@ -978,8 +1044,8 @@ async function fetchBootstrapFromSupabase(): Promise<BootstrapPayload> {
       paymentDate: p.paidDate,
       unitType: p.unitType,
       unitNumber: p.unitNumber,
-      periodStart: p.dueDate,
-      periodEnd: p.paidDate,
+      periodStart: p.billingPeriodStart || p.dueDate,
+      periodEnd: p.billingPeriodEnd || p.paidDate,
       occupants: lease.occupants || '1 Resident',
       amount: p.amount,
       status: p.status,
@@ -1016,11 +1082,15 @@ async function fetchBootstrapFromSupabase(): Promise<BootstrapPayload> {
       monthlyRent,
       rentBalance,
       totalPaid,
+      dueDate: activeDueDate,
+      moveInDate: moveInYmd,
+      billingAnniversaryDay: currentCycle?.anniversaryDay ?? getBillingAnniversaryDay(moveInYmd) ?? undefined,
+      currentBillingPeriodStart: currentCycle?.periodStart,
+      currentBillingPeriodEnd: currentCycle?.periodEnd,
+      nextBillingDate: nextBillingYmd || undefined,
       occupants: lease.occupants || '1 Adult',
       leaseDuration: lease.lease_duration || '12 Months',
-      leaseStart:
-        lease.lease_start ||
-        formatShortDate(new Date(t.created_at || Date.now())),
+      leaseStart: moveInYmd,
       leaseEnd: lease.lease_end || 'Active',
       leaseNotes:
         lease.lease_notes || 'Standard residential lease agreement.',
@@ -3596,6 +3666,7 @@ export const rentalApi = {
     unitType: 'Standard' | 'Deluxe' | 'Suite' | 'Family' | 'Single';
     monthlyRent: number;
     dueDate?: string;
+    leaseStart?: string;
     leaseDuration?: string;
     leaseNotes?: string;
     dob?: string;
@@ -3856,11 +3927,20 @@ export const rentalApi = {
         .update(patch)
         .or(`id.eq.${id},tenant_ref.eq.${id}`);
 
+      const moveInUpdate = parseBillingDateToYmd(data.leaseStart || data.moveInDate);
+      if (moveInUpdate) {
+        await supabase
+          .from('leases')
+          .update({ lease_start: moveInUpdate })
+          .or(`tenant_id.eq.${id},tenant_ref.eq.${id}`);
+      }
+
       if (data.dueDate && String(data.dueDate).trim()) {
         await supabase
           .from('rent_payments')
           .update({ due_date: String(data.dueDate).trim() })
-          .or(`tenant_id.eq.${id},tenant_ref.eq.${id}`);
+          .or(`tenant_id.eq.${id},tenant_ref.eq.${id}`)
+          .neq('status', 'Paid');
       }
 
       const state = await fetchBootstrapFromSupabase();
@@ -5182,6 +5262,20 @@ export const rentalApi = {
       message: string;
     }>('/api/email/run-automated-checks', {
       method: 'POST',
+    });
+  },
+
+  runAnniversaryBillingCycle: async (referenceDate?: string) => {
+    return await apiRequest<{
+      success: boolean;
+      referenceDate: string;
+      generatedCount: number;
+      overdueUpdatedCount: number;
+      skippedDuplicateCount: number;
+      message: string;
+    }>('/api/billing/run-anniversary-cycle', {
+      method: 'POST',
+      body: JSON.stringify(referenceDate ? { referenceDate } : {}),
     });
   },
 

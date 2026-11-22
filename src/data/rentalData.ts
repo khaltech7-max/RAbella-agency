@@ -155,6 +155,11 @@ export interface TenantProfile {
   rentBalance: number; // Calculated dynamically from unpaid database rent_payments rows
   balanceDue?: number;
   dueDate?: string;
+  moveInDate?: string;
+  billingAnniversaryDay?: number;
+  currentBillingPeriodStart?: string;
+  currentBillingPeriodEnd?: string;
+  nextBillingDate?: string;
   totalPaid: number; // Calculated dynamically from Paid database rent_payments rows
   occupants: string;
   leaseDuration: string;
@@ -185,7 +190,14 @@ export interface RentPaymentRecord {
   leaseTerm: string;
   dueDate: string;
   paidDate: string;
+  invoiceDate?: string;
+  billingPeriodStart?: string;
+  billingPeriodEnd?: string;
+  billingPeriodKey?: string;
+  billingAnniversaryDay?: number;
   amount: number;
+  amountPaid?: number;
+  balanceDue?: number;
   status: 'Paid' | 'Pending' | 'Overdue';
   confirmedBy?: string;
   confirmedAt?: string;
@@ -381,6 +393,7 @@ export interface EmailNotificationSettings {
   fromEmail: string;
   paymentInstructions: string;
   preventDuplicatesHours: number;
+  advanceReminderDays?: number;
   apiKeyConfigured: boolean;
   updatedBy?: string;
   updatedAt?: string;

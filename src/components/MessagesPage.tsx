@@ -50,6 +50,7 @@ import {
 } from '../data/rentalData';
 import { realtimeSmsClient } from '../lib/realtimeSms';
 import { smsApi, emailApi } from '../lib/apiClient';
+import { formatYmdShort, parseBillingDateToYmd } from '../lib/anniversaryBilling';
 
 interface MessagesPageProps {
   threads: ChatThread[];
@@ -239,6 +240,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
   const [emailSettingsDraft, setEmailSettingsDraft] = useState<EmailNotificationSettings>({
     masterEnabled: true,
     autoRentUpcoming3d: true,
+    advanceReminderDays: 3,
     autoRentDueToday: true,
     autoRentOverdue: true,
     autoPaymentConfirmed: true,
@@ -422,7 +424,10 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
         rentBalance: Number(t.rentBalance !== undefined ? t.rentBalance : (t as any).balanceDue || 0),
         totalPaid: Number(t.totalPaid || 0),
         status: t.status || 'Pending',
-        dueDate: t.dueDate || '5th of this month',
+        dueDate: (() => {
+          const ymd = parseBillingDateToYmd(t.dueDate || t.nextBillingDate || t.moveInDate || t.leaseStart);
+          return ymd ? formatYmdShort(ymd) : t.dueDate || 'Anniversary Due Date';
+        })(),
         paymentHistory: t.paymentHistory || [],
         thread: matchedThread,
         latestSms,
@@ -454,7 +459,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
           rentBalance: 0,
           totalPaid: 0,
           status: 'Pending',
-          dueDate: '5th of this month',
+          dueDate: 'Anniversary Due Date',
           paymentHistory: [],
           thread: th,
           latestSms,
@@ -819,7 +824,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
       .replace(/\{unitNumber\}/gi, sample.unitNumber)
       .replace(/\{amount\}/gi, amt)
       .replace(/\{balance\}/gi, amt)
-      .replace(/\{dueDate\}/gi, sample.dueDate || '5th of this month')
+      .replace(/\{dueDate\}/gi, sample.dueDate || 'Anniversary Due Date')
       .replace(/\{tenantRef\}/gi, sample.tenantRef);
   }, [bulkMessageText, selectedTenantsData.eligible, combinedDirectory]);
 
@@ -947,7 +952,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
               singleReminderTenant.rentBalance > 0
                 ? singleReminderTenant.rentBalance
                 : singleReminderTenant.monthlyRent,
-            dueDate: singleReminderTenant.dueDate || '5th of this month',
+            dueDate: singleReminderTenant.dueDate || '',
             customBody: singleMessageText.trim(),
             forceSend: true,
           });
@@ -2363,6 +2368,24 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
               />
             </div>
 
+            {(singleReminderChannel === 'email' || singleReminderChannel === 'both') && (
+              <div className="p-3 rounded-xl bg-[#EEF6F8] border border-[#B8D8E0] text-[#0F4C64] text-[11.5px] space-y-1">
+                <div className="font-extrabold flex items-center justify-between">
+                  <span>📄 PDF Invoice Attached Beneath Reminder Letter</span>
+                  <span className="px-2 py-0.5 rounded-full bg-[#104E68] text-white text-[10px] font-bold">
+                    PDF ONLY
+                  </span>
+                </div>
+                <p className="text-[11px] text-[#1D546B] leading-snug">
+                  This Resend email places only the PDF Invoice directly beneath the reminder letter and attaches{' '}
+                  <code className="font-mono font-bold">
+                    Invoice-{singleReminderTenant.tenantRef}.pdf
+                  </code>
+                  .
+                </p>
+              </div>
+            )}
+
             <div className="flex items-center justify-end gap-2.5 pt-2">
               <button
                 type="button"
@@ -2823,14 +2846,40 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
                   Reminder Types (Enable / Disable)
                 </span>
 
+                {/* Configurable Advance Reminder Lead Time */}
+                <div className="p-3 rounded-xl bg-[#FAFBFB] border border-[#E5EAE7] flex items-center justify-between gap-3">
+                  <div>
+                    <span className="font-bold text-[#17231E] block text-[12px]">
+                      Advance Reminder Lead Time (Days Before Anniversary Due Date)
+                    </span>
+                    <span className="text-[11px] text-[#697B71]">
+                      Reminders automatically trigger per tenant&apos;s move-in billing anniversary.
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <input
+                      type="number"
+                      min={1}
+                      max={14}
+                      value={emailSettingsDraft.advanceReminderDays ?? 3}
+                      onChange={(e) => {
+                        const val = Math.max(1, Math.min(14, Math.floor(Number(e.target.value) || 3)));
+                        setEmailSettingsDraft((prev) => ({ ...prev, advanceReminderDays: val }));
+                      }}
+                      className="w-16 px-2.5 py-1.5 rounded-lg bg-white border border-[#DFE5E1] text-xs font-bold text-[#17231E] text-center tabular-nums"
+                    />
+                    <span className="text-[11px] font-semibold text-[#697B71]">days</span>
+                  </div>
+                </div>
+
                 {[
                   {
                     key: 'autoRentUpcoming3d',
-                    label: 'Upcoming rent payment reminders (3 days before due date)',
+                    label: `Upcoming rent payment reminders (${emailSettingsDraft.advanceReminderDays ?? 3} days before tenant anniversary due date)`,
                   },
                   {
                     key: 'autoRentDueToday',
-                    label: 'Rent due today notifications (on due date)',
+                    label: 'Rent due today notifications (on tenant monthly anniversary due date)',
                   },
                   {
                     key: 'autoRentOverdue',
@@ -2910,9 +2959,9 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
           MODAL: BRANDED HTML EMAIL PREVIEW
          ========================================================================= */}
       {previewEmailRecord && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
-          <div className="bg-white rounded-3xl max-w-2xl w-full max-h-[90vh] flex flex-col shadow-2xl border border-[#DFE5E1] overflow-hidden my-auto">
-            <div className="px-6 py-4 bg-[#FAFBFB] border-b border-[#EAEFEA] flex items-center justify-between">
+        <div className="fixed inset-0 z-[9999] bg-black/65 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4 overflow-y-auto">
+          <div className="bg-white rounded-3xl max-w-3xl w-full max-h-[95vh] flex flex-col shadow-2xl border border-[#DFE5E1] overflow-hidden my-auto">
+            <div className="px-6 py-3.5 bg-[#FAFBFB] border-b border-[#EAEFEA] flex items-center justify-between shrink-0">
               <div>
                 <h3 className="text-sm font-bold text-[#17231E]">{previewEmailRecord.subject}</h3>
                 <p className="text-[11.5px] text-[#697B71]">
@@ -2926,7 +2975,7 @@ export const MessagesPage: React.FC<MessagesPageProps> = ({
                 <X className="w-4 h-4" />
               </button>
             </div>
-            <div className="p-6 overflow-y-auto bg-[#F4F7F5]">
+            <div className="p-4 sm:p-6 overflow-y-auto flex-1 bg-[#F4F7F5]">
               <div
                 dangerouslySetInnerHTML={{
                   __html: previewEmailRecord.htmlBody || previewEmailRecord.bodyHtml || '',
