@@ -768,7 +768,7 @@ export default function App() {
     );
   }
 
-  const dueTenantsCount = tenants.filter((t) => t.rentBalance > 0).length;
+  const dueTenantsCount = tenants.filter((t) => t.tenancyStatus !== 'Vacated' && t.rentBalance > 0).length;
   const unreadMessagesCount =
     dueTenantsCount || chatThreads.reduce((sum, t) => sum + t.unread, 0);
   const pendingPaymentsCount = payments.filter((p) => p.status !== 'Paid').length;
@@ -1011,6 +1011,7 @@ export default function App() {
               unitTypes={unitTypes}
               selectedTenantRef={selectedTenantRef}
               onSelectTenantRef={setSelectedTenantRef}
+              currentUserRole={currentUser.role}
               onAddTenant={async (data) => {
                 const created = await runMutation(async () => {
                   const res: any = await rentalApi.createTenant(data);
@@ -1042,6 +1043,27 @@ export default function App() {
                     );
                   }
                 });
+              }}
+              onVacateTenant={async (id, payload) => {
+                return await runMutation(async () => {
+                  const res = await rentalApi.vacateTenant(id, payload);
+                  if (res?.tenant) {
+                    setTenants((prev) =>
+                      prev.map((t) =>
+                        t.id === res.tenant.id || t.tenantRef === res.tenant.tenantRef
+                          ? res.tenant
+                          : t
+                      )
+                    );
+                  }
+                  if (res?.expense && res.expense.id) {
+                    setTransactions((prev) => [
+                      res.expense!,
+                      ...prev.filter((tx) => tx.id !== res.expense!.id),
+                    ]);
+                  }
+                  return res;
+                }, { awaitSync: true });
               }}
               onDeleteTenant={async (id) => {
                 setTenants((prev) =>

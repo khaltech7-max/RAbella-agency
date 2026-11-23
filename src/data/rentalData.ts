@@ -145,6 +145,14 @@ export interface TenantProfile {
   tier: 'Platinum Tenant' | 'Verified Tenant' | 'New Resident';
   onTimeStreak: string;
   securityDeposit: number;
+  tenancyStatus?: 'Active' | 'Vacated';
+  vacatedAt?: string;
+  depositStatus?: 'Held' | 'Returned' | 'Partially Returned' | 'Forfeited' | 'Not Paid';
+  depositReturnedAmount?: number;
+  depositDeductionAmount?: number;
+  depositDamageNotes?: string;
+  depositSettledAt?: string;
+  depositSettledBy?: string;
   vehicleInfo: string;
   leaseId: string;
   leaseCreatedDate: string;

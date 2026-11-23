@@ -274,11 +274,12 @@ function computeRealAnalytics(
   maintenance: MaintenanceItem[],
   reviews: PropertyReviewRecord[]
 ): DashboardAnalytics {
+  const activeTenants = tenants.filter((t) => t.tenancyStatus !== 'Vacated');
   const paidPayments = payments.filter((p) => p.status === 'Paid');
   const pendingOrOverdue = payments.filter((p) => p.status !== 'Paid');
   const paidRentSum = paidPayments.reduce((s, p) => s + Number(p.amount || 0), 0);
   const totalExpensesSum = expenses.reduce((s, e) => s + Number(e.amount || 0), 0);
-  const activeLeasesCount = tenants.length;
+  const activeLeasesCount = activeTenants.length;
   const rentCollectedCount = paidPayments.length;
   const pendingRentCount = pendingOrOverdue.length;
   const totalRentRevenue = paidRentSum;
@@ -291,10 +292,10 @@ function computeRealAnalytics(
       : 0;
   const propTotalUnits = properties.reduce((s, p) => s + Number(p.totalUnits || 0), 0);
   const unitTypeTotalUnits = unitTypes.reduce((s, u) => s + Number(u.totalCount || 0), 0);
-  const totalUnits = Math.max(propTotalUnits, unitTypeTotalUnits, tenants.length);
+  const totalUnits = Math.max(propTotalUnits, unitTypeTotalUnits, activeTenants.length);
   const propOccupied = properties.reduce((s, p) => s + Number(p.occupiedUnits || 0), 0);
   const unitTypeOccupied = unitTypes.reduce((s, u) => s + Number(u.occupiedCount || 0), 0);
-  const occupied = Math.max(propOccupied, unitTypeOccupied, tenants.length);
+  const occupied = Math.max(propOccupied, unitTypeOccupied, activeTenants.length);
   const notReady = maintenance.filter((m) => m.maintenanceStatus !== 'Completed').length;
   const reserved = pendingOrOverdue.length;
   const available = Math.max(0, totalUnits - occupied - notReady);
@@ -305,7 +306,7 @@ function computeRealAnalytics(
   const now = new Date();
   const currentYear = now.getFullYear();
   const currentMonthIdx = now.getMonth();
-  const activeLeaseMonthlyTarget = tenants.reduce(
+  const activeLeaseMonthlyTarget = activeTenants.reduce(
     (s, t) => s + Number(t.monthlyRent || 0),
     0
   );
@@ -1108,6 +1109,47 @@ async function fetchBootstrapFromSupabase(): Promise<BootstrapPayload> {
         : 'deluxe') as 'standard' | 'deluxe' | 'suite',
     }));
 
+    const rawLeaseNotes = String(
+      lease.lease_notes || 'Standard residential lease agreement.'
+    );
+    const settleMarkerPrefix = '[DEPOSIT_SETTLEMENT:';
+    const markerIdx = rawLeaseNotes.indexOf(settleMarkerPrefix);
+    let embeddedSettlement: Record<string, any> | null = null;
+    let cleanLeaseNotes = rawLeaseNotes;
+    if (markerIdx !== -1) {
+      const endBracketIdx = rawLeaseNotes.indexOf(']', markerIdx);
+      if (endBracketIdx !== -1) {
+        const jsonPart = rawLeaseNotes.slice(
+          markerIdx + settleMarkerPrefix.length,
+          endBracketIdx
+        );
+        try {
+          embeddedSettlement = JSON.parse(jsonPart);
+        } catch {}
+        cleanLeaseNotes =
+          (
+            rawLeaseNotes.slice(0, markerIdx) +
+            rawLeaseNotes.slice(endBracketIdx + 1)
+          ).trim() || 'Standard residential lease agreement.';
+      }
+    }
+    const isVacated =
+      t.tenancy_status === 'Vacated' ||
+      embeddedSettlement?.tenancyStatus === 'Vacated' ||
+      lease.is_active === false;
+    const securityDepositNum = Number(t.security_deposit || 0);
+    const resolvedDepositStatus = (t.deposit_status ||
+      embeddedSettlement?.depositStatus ||
+      (isVacated
+        ? Number(embeddedSettlement?.depositReturnedAmount || 0) > 0
+          ? Number(embeddedSettlement?.depositDeductionAmount || 0) > 0
+            ? 'Partially Returned'
+            : 'Returned'
+          : 'Forfeited'
+        : securityDepositNum > 0
+        ? 'Held'
+        : 'Not Paid')) as TenantProfile['depositStatus'];
+
     return {
       id: t.id,
       propertyId: resolvedPropertyId,
@@ -1121,8 +1163,27 @@ async function fetchBootstrapFromSupabase(): Promise<BootstrapPayload> {
       nationality: t.nationality || 'Kenyan',
       idNumber: t.id_number,
       tier: t.tier || 'Verified Tenant',
-      onTimeStreak: t.on_time_streak || 'Active Lease',
-      securityDeposit: Number(t.security_deposit || 0),
+      onTimeStreak: isVacated ? 'Vacated' : (t.on_time_streak || 'Active Lease'),
+      securityDeposit: securityDepositNum,
+      tenancyStatus: isVacated ? 'Vacated' : 'Active',
+      vacatedAt: t.vacated_at || embeddedSettlement?.vacatedAt || undefined,
+      depositStatus: resolvedDepositStatus,
+      depositReturnedAmount: Number(
+        t.deposit_returned_amount ??
+          embeddedSettlement?.depositReturnedAmount ??
+          0
+      ),
+      depositDeductionAmount: Number(
+        t.deposit_deduction_amount ??
+          embeddedSettlement?.depositDeductionAmount ??
+          0
+      ),
+      depositDamageNotes:
+        t.deposit_damage_notes ?? embeddedSettlement?.depositDamageNotes ?? '',
+      depositSettledAt:
+        t.deposit_settled_at || embeddedSettlement?.depositSettledAt || undefined,
+      depositSettledBy:
+        t.deposit_settled_by || embeddedSettlement?.depositSettledBy || undefined,
       vehicleInfo: t.vehicle_info || 'None',
       leaseId: lease.lease_code || `LS-${t.tenant_ref}`,
       leaseCreatedDate: lease.created_at
@@ -1144,8 +1205,7 @@ async function fetchBootstrapFromSupabase(): Promise<BootstrapPayload> {
       leaseDuration: lease.lease_duration || '12 Months',
       leaseStart: moveInYmd,
       leaseEnd: lease.lease_end || 'Active',
-      leaseNotes:
-        lease.lease_notes || 'Standard residential lease agreement.',
+      leaseNotes: cleanLeaseNotes,
       perks: Array.isArray(lease.perks) ? lease.perks : [],
       baseRent,
       utilityPackage,
@@ -1168,8 +1228,9 @@ async function fetchBootstrapFromSupabase(): Promise<BootstrapPayload> {
     );
     const propTenants = tenants.filter(
       (t) =>
-        t.propertyId === p.id ||
-        String(t.property).trim().toLowerCase() === propNameLower
+        t.tenancyStatus !== 'Vacated' &&
+        (t.propertyId === p.id ||
+          String(t.property).trim().toLowerCase() === propNameLower)
     );
     const propOccupiedUnits = unitsRows.filter(
       (un) => un.property_id === p.id && un.status === 'Occupied'
@@ -3757,6 +3818,7 @@ export const rentalApi = {
     nationality?: string;
     idNumber?: string;
     securityDeposit?: number;
+    depositStatus?: 'Held' | 'Not Paid' | 'Returned' | 'Partially Returned' | 'Forfeited';
     vehicleInfo?: string;
     occupants?: string;
     initialPaymentStatus?: 'Paid' | 'Pending';
@@ -3783,9 +3845,11 @@ export const rentalApi = {
       const cleanUnitNumber = String(data.unitNumber).trim();
       const rentNum = Math.max(0, Number(data.monthlyRent) || 0);
       const depositNum =
-        data.securityDeposit !== undefined
-          ? Number(data.securityDeposit)
-          : rentNum;
+        data.securityDeposit !== undefined && data.securityDeposit !== null
+          ? Math.max(0, Number(data.securityDeposit) || 0)
+          : 0;
+      const resolvedDepositStatus =
+        data.depositStatus || (depositNum > 0 ? 'Held' : 'Not Paid');
 
       let propRow: any = null;
       if (data.propertyId) {
@@ -4001,14 +4065,25 @@ export const rentalApi = {
       if (data.gender !== undefined) patch.gender = data.gender;
       if (data.nationality !== undefined) patch.nationality = data.nationality;
       if (data.idNumber !== undefined) patch.id_number = data.idNumber;
-      if (data.securityDeposit !== undefined)
-        patch.security_deposit = Number(data.securityDeposit);
+      if (data.securityDeposit !== undefined) {
+        patch.security_deposit = Math.max(0, Number(data.securityDeposit) || 0);
+      }
+      if (data.depositStatus !== undefined) {
+        patch.deposit_status = data.depositStatus;
+      }
       if (data.vehicleInfo !== undefined) patch.vehicle_info = data.vehicleInfo;
 
-      await supabase
+      const { error: supaUpdErr } = await supabase
         .from('tenants')
         .update(patch)
         .or(`id.eq.${id},tenant_ref.eq.${id}`);
+      if (supaUpdErr && patch.deposit_status !== undefined) {
+        delete patch.deposit_status;
+        await supabase
+          .from('tenants')
+          .update(patch)
+          .or(`id.eq.${id},tenant_ref.eq.${id}`);
+      }
 
       const moveInUpdate = parseBillingDateToYmd(data.leaseStart || data.moveInDate);
       if (moveInUpdate) {
@@ -4046,6 +4121,160 @@ export const rentalApi = {
       method: 'PUT',
       body: JSON.stringify(data),
     });
+  },
+
+  vacateTenant: async (
+    id: string,
+    payload: {
+      vacatedAt?: string;
+      depositReturned: boolean;
+      depositStatus?: 'Returned' | 'Partially Returned' | 'Forfeited' | 'Not Paid';
+      depositReturnedAmount: number;
+      hasDamages: boolean;
+      damageAmount: number;
+      damageNotes?: string;
+      recordDamageAsExpense: boolean;
+      expenseCategory?: ExpenseTransaction['category'];
+      expenseTitle?: string;
+    }
+  ): Promise<{ tenant: TenantProfile; expense?: ExpenseTransaction | null }> => {
+    try {
+      return await apiRequest<{ tenant: TenantProfile; expense?: ExpenseTransaction | null }>(
+        `/api/tenants/${id}/vacate`,
+        {
+          method: 'POST',
+          body: JSON.stringify(payload),
+        }
+      );
+    } catch (backendErr: any) {
+      if (backendErr?.statusCode === 400 || backendErr?.statusCode === 403 || !isSupabaseConfigured || !supabase) {
+        throw backendErr;
+      }
+    }
+
+    if (isSupabaseConfigured && supabase) {
+      const cleanVacatedAt = payload.vacatedAt || new Date().toISOString().slice(0, 10);
+      const returnedNum = Math.max(0, Number(payload.depositReturnedAmount) || 0);
+      const damageNum = payload.hasDamages ? Math.max(0, Number(payload.damageAmount) || 0) : 0;
+      const cleanNotes = String(payload.damageNotes || '').trim();
+      const settledAtIso = new Date().toISOString();
+      const finalDepositStatus =
+        payload.depositStatus ||
+        (!payload.depositReturned && returnedNum <= 0
+          ? 'Forfeited'
+          : damageNum > 0
+          ? 'Partially Returned'
+          : 'Returned');
+
+      const { data: target } = await supabase
+        .from('tenants')
+        .select('*')
+        .or(`id.eq.${id},tenant_ref.eq.${id}`)
+        .maybeSingle();
+
+      if (!target) {
+        throw new Error('Tenant record not found.');
+      }
+
+      const { data: leaseRow } = await supabase
+        .from('leases')
+        .select('*')
+        .or(`tenant_id.eq.${target.id},tenant_ref.eq.${target.tenant_ref}`)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      const cleanUnit = leaseRow?.unit_number || target.unit_number || 'Unit 101';
+      const cleanProp = leaseRow?.property_name || target.property_name || 'Main Property';
+      const baseRawNotes = String(leaseRow?.lease_notes || 'Standard residential lease agreement.')
+        .replace(/\[DEPOSIT_SETTLEMENT:[\s\S]*?\]/g, '')
+        .trim();
+      const settlementMarker = `[DEPOSIT_SETTLEMENT:${JSON.stringify({
+        tenancyStatus: 'Vacated',
+        vacatedAt: cleanVacatedAt,
+        depositStatus: finalDepositStatus,
+        depositReturnedAmount: returnedNum,
+        depositDeductionAmount: damageNum,
+        depositDamageNotes: cleanNotes,
+        depositSettledAt: settledAtIso,
+        depositSettledBy: currentEmail || 'Admin',
+      })}]`;
+
+      const { error: tUpdErr } = await supabase
+        .from('tenants')
+        .update({
+          on_time_streak: 'Vacated',
+          tenancy_status: 'Vacated',
+          vacated_at: cleanVacatedAt,
+          deposit_status: finalDepositStatus,
+          deposit_returned_amount: returnedNum,
+          deposit_deduction_amount: damageNum,
+          deposit_damage_notes: cleanNotes,
+          deposit_settled_at: settledAtIso,
+          deposit_settled_by: currentEmail || 'Admin',
+        })
+        .eq('id', target.id);
+      if (tUpdErr) {
+        await supabase.from('tenants').update({ on_time_streak: 'Vacated' }).eq('id', target.id);
+      }
+
+      if (leaseRow) {
+        await supabase
+          .from('leases')
+          .update({
+            is_active: false,
+            lease_end: cleanVacatedAt,
+            lease_notes: `${baseRawNotes}${baseRawNotes ? ' ' : ''}${settlementMarker}`,
+          })
+          .eq('id', leaseRow.id);
+      }
+
+      let createdExpense: ExpenseTransaction | null = null;
+      if (payload.recordDamageAsExpense && damageNum > 0) {
+        const expTitle =
+          String(payload.expenseTitle || '').trim() ||
+          `Tenant Damage Repair — ${target.full_name} (${target.tenant_ref}, ${cleanUnit})${cleanNotes ? `: ${cleanNotes}` : ''}`;
+        const { data: expCreated } = await supabase
+          .from('expenses')
+          .insert({
+            expense_title: expTitle.slice(0, 220),
+            category: payload.expenseCategory || 'Maintenance and Repairs',
+            property_name: cleanProp,
+            quantity: 1,
+            amount: damageNum,
+            expense_date: formatShortDate(new Date(cleanVacatedAt)),
+            status: 'Completed',
+          })
+          .select('*')
+          .maybeSingle();
+        if (expCreated) {
+          createdExpense = {
+            id: expCreated.id,
+            expense: expCreated.expense_title,
+            category: expCreated.category,
+            property: expCreated.property_name,
+            quantity: Number(expCreated.quantity || 1),
+            amount: Number(expCreated.amount || 0),
+            date: expCreated.expense_date,
+            status: expCreated.status || 'Completed',
+            createdAt: expCreated.created_at,
+          };
+        }
+      }
+
+      const state = await fetchBootstrapFromSupabase();
+      const updated = state.tenants.find((t) => t.id === target.id || t.tenantRef === target.tenant_ref);
+      if (!updated) throw new Error('Tenant not found after vacate.');
+      return { tenant: updated, expense: createdExpense };
+    }
+
+    return await apiRequest<{ tenant: TenantProfile; expense?: ExpenseTransaction | null }>(
+      `/api/tenants/${id}/vacate`,
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      }
+    );
   },
 
   deleteTenant: async (id: string): Promise<{ success: boolean }> => {
