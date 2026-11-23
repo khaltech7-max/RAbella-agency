@@ -38,6 +38,7 @@ import {
 } from './lib/apiClient';
 import { supabase, isSupabaseConfigured } from './lib/supabaseClient';
 import { realtimeSmsClient } from './lib/realtimeSms';
+import { isDepositTransaction } from './lib/paymentClassification';
 import { AuthGatePage } from './components/AuthGatePage';
 import { LayoutShell } from './components/LayoutShell';
 import { DashboardPage } from './components/DashboardPage';
@@ -771,7 +772,9 @@ export default function App() {
   const dueTenantsCount = tenants.filter((t) => t.tenancyStatus !== 'Vacated' && t.rentBalance > 0).length;
   const unreadMessagesCount =
     dueTenantsCount || chatThreads.reduce((sum, t) => sum + t.unread, 0);
-  const pendingPaymentsCount = payments.filter((p) => p.status !== 'Paid').length;
+  const pendingPaymentsCount = payments.filter(
+    (p) => !isDepositTransaction(p) && p.status !== 'Paid'
+  ).length;
   const pendingMaintenanceCount = maintenanceItems.filter(
     (m) => m.maintenanceStatus !== 'Completed'
   ).length;
@@ -936,18 +939,20 @@ export default function App() {
                         ? prev.map((p) => (p.id === confirmed.id ? confirmed : p))
                         : [confirmed, ...prev];
                     });
-                    setTenants((prev) =>
-                      prev.map((t) =>
-                        t.tenantRef && confirmed.tenantRef && t.tenantRef.toUpperCase() === confirmed.tenantRef.toUpperCase()
-                          ? {
-                              ...t,
-                              status: 'Paid',
-                              rentBalance: Math.max(0, t.rentBalance - Number(confirmed.amount || 0)),
-                              totalPaid: t.totalPaid + Number(confirmed.amount || 0),
-                            }
-                          : t
-                      )
-                    );
+                    if (!isDepositTransaction(confirmed)) {
+                      setTenants((prev) =>
+                        prev.map((t) =>
+                          t.tenantRef && confirmed.tenantRef && t.tenantRef.toUpperCase() === confirmed.tenantRef.toUpperCase()
+                            ? {
+                                ...t,
+                                status: 'Paid',
+                                rentBalance: Math.max(0, t.rentBalance - Number(confirmed.amount || 0)),
+                                totalPaid: t.totalPaid + Number(confirmed.amount || 0),
+                              }
+                            : t
+                        )
+                      );
+                    }
                   }
                 });
               }}

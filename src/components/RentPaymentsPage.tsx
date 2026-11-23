@@ -44,6 +44,13 @@ import {
   formatYmdShort,
   parseBillingDateToYmd,
 } from '../lib/anniversaryBilling';
+import {
+  classifyPaymentTransaction,
+  formatTransactionDisplayNote,
+  isDepositTransaction,
+  normalizeNewPaymentNote,
+  TransactionType,
+} from '../lib/paymentClassification';
 
 interface RentPaymentsPageProps {
   payments: RentPaymentRecord[];
@@ -77,6 +84,9 @@ export const RentPaymentsPage: React.FC<RentPaymentsPageProps> = ({
   const [search, setSearch] = useState(globalSearch || '');
   const [statusFilter, setStatusFilter] = useState<
     'All' | 'Paid' | 'Pending' | 'Overdue'
+  >('All');
+  const [typeFilter, setTypeFilter] = useState<
+    'All' | 'Rent' | 'Security Deposit'
   >('All');
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 10;
@@ -112,6 +122,7 @@ export const RentPaymentsPage: React.FC<RentPaymentsPageProps> = ({
     'Standard' | 'Deluxe' | 'Suite' | 'Family' | 'Single'
   >('Deluxe');
   const [formAmount, setFormAmount] = useState<number>(35000);
+  const [formTransactionType, setFormTransactionType] = useState<TransactionType>('Rent');
   const [formPaymentNote, setFormPaymentNote] = useState('M-Pesa / Bank Transfer');
   const [formLeaseTerm, setFormLeaseTerm] = useState('12 Months');
   const [formPayStatus, setFormPayStatus] = useState<
@@ -225,11 +236,11 @@ export const RentPaymentsPage: React.FC<RentPaymentsPageProps> = ({
       });
 
       const totalPaid = propPayments
-        .filter((p) => p.status === 'Paid')
+        .filter((p) => !isDepositTransaction(p) && p.status === 'Paid')
         .reduce((sum, p) => sum + Number(p.amount || 0), 0);
 
       const pendingCount = propPayments.filter(
-        (p) => p.status === 'Pending' || p.status === 'Overdue'
+        (p) => !isDepositTransaction(p) && (p.status === 'Pending' || p.status === 'Overdue')
       ).length;
 
       return {
@@ -281,19 +292,23 @@ export const RentPaymentsPage: React.FC<RentPaymentsPageProps> = ({
 
   const filteredPayments = useMemo(() => {
     return scopedData.scopedPayments.filter((item) => {
+      const txType = classifyPaymentTransaction(item);
       const matchesStatus =
         statusFilter === 'All' || item.status === statusFilter;
+      const matchesType =
+        typeFilter === 'All' || txType === typeFilter;
 
-      if (!matchesStatus) return false;
+      if (!matchesStatus || !matchesType) return false;
       if (!query) return true;
 
-      // Search across tenant name, account ref, payment id, unit, unitType, note, property, status, dueDate, and amount
+      // Search across tenant name, account ref, payment id, unit, unitType, note, txType, property, status, dueDate, and amount
       const tenantMatch = item.tenantName.toLowerCase().includes(query);
       const refMatch = item.tenantRef.toLowerCase().includes(query);
       const idMatch = item.paymentId.toLowerCase().includes(query);
       const unitMatch = item.unitNumber.toLowerCase().includes(query);
       const typeMatch = (item.unitType || '').toLowerCase().includes(query);
-      const noteMatch = (item.paymentNote || '').toLowerCase().includes(query);
+      const txTypeMatch = txType.toLowerCase().includes(query);
+      const noteMatch = formatTransactionDisplayNote(item).toLowerCase().includes(query);
       const propMatch = item.property.toLowerCase().includes(query);
       const statusMatch = (item.status || '').toLowerCase().includes(query);
       const dueMatch = (item.dueDate || '').toLowerCase().includes(query);
@@ -305,6 +320,7 @@ export const RentPaymentsPage: React.FC<RentPaymentsPageProps> = ({
         idMatch ||
         unitMatch ||
         typeMatch ||
+        txTypeMatch ||
         noteMatch ||
         propMatch ||
         statusMatch ||
@@ -312,7 +328,7 @@ export const RentPaymentsPage: React.FC<RentPaymentsPageProps> = ({
         amountMatch
       );
     });
-  }, [scopedData.scopedPayments, statusFilter, query]);
+  }, [scopedData.scopedPayments, statusFilter, typeFilter, query]);
 
   // Pagination
   const totalPages = Math.ceil(filteredPayments.length / itemsPerPage) || 1;
@@ -321,21 +337,28 @@ export const RentPaymentsPage: React.FC<RentPaymentsPageProps> = ({
     return filteredPayments.slice(start, start + itemsPerPage);
   }, [filteredPayments, currentPage, itemsPerPage]);
 
-  // Overall Scope Financial KPIs
+  // Overall Scope Financial KPIs (Keep monthly Rent KPIs separated from Security Deposits)
   const kpiStats = useMemo(() => {
-    const totalCollected = scopedData.scopedPayments
+    const rentPaymentsOnly = scopedData.scopedPayments.filter((p) => !isDepositTransaction(p));
+    const depositPaymentsOnly = scopedData.scopedPayments.filter((p) => isDepositTransaction(p));
+
+    const totalCollected = rentPaymentsOnly
       .filter((p) => p.status === 'Paid')
       .reduce((sum, p) => sum + Number(p.amount || 0), 0);
 
-    const pendingTotal = scopedData.scopedPayments
+    const depositsCollected = depositPaymentsOnly
+      .filter((p) => p.status === 'Paid')
+      .reduce((sum, p) => sum + Number(p.amount || 0), 0);
+
+    const pendingTotal = rentPaymentsOnly
       .filter((p) => p.status === 'Pending')
       .reduce((sum, p) => sum + Number(p.amount || 0), 0);
 
-    const overdueTotal = scopedData.scopedPayments
+    const overdueTotal = rentPaymentsOnly
       .filter((p) => p.status === 'Overdue')
       .reduce((sum, p) => sum + Number(p.amount || 0), 0);
 
-    const confirmedCount = scopedData.scopedPayments.filter(
+    const confirmedCount = rentPaymentsOnly.filter(
       (p) => p.status === 'Paid'
     ).length;
 
@@ -349,6 +372,7 @@ export const RentPaymentsPage: React.FC<RentPaymentsPageProps> = ({
 
     return {
       totalCollected,
+      depositsCollected,
       pendingTotal,
       overdueTotal,
       confirmedCount,
@@ -366,6 +390,7 @@ export const RentPaymentsPage: React.FC<RentPaymentsPageProps> = ({
       '';
 
     setFormPropertyId(initialPropId);
+    setFormTransactionType('Rent');
     setSafeguardVerified(false);
     setFormError(null);
 
@@ -423,7 +448,9 @@ export const RentPaymentsPage: React.FC<RentPaymentsPageProps> = ({
       setFormUnitNumber(firstTenant.unitNumber);
       setFormUnitType(firstTenant.unitType);
       setFormAmount(
-        firstTenant.rentBalance > 0
+        formTransactionType === 'Security Deposit'
+          ? firstTenant.securityDeposit || firstTenant.monthlyRent || 35000
+          : firstTenant.rentBalance > 0
           ? firstTenant.rentBalance
           : firstTenant.monthlyRent || 35000
       );
@@ -448,11 +475,34 @@ export const RentPaymentsPage: React.FC<RentPaymentsPageProps> = ({
       setFormUnitNumber(found.unitNumber);
       setFormUnitType(found.unitType);
       setFormAmount(
-        found.rentBalance > 0
+        formTransactionType === 'Security Deposit'
+          ? found.securityDeposit || found.monthlyRent || 35000
+          : found.rentBalance > 0
           ? found.rentBalance
           : found.monthlyRent || 35000
       );
       setFormLeaseTerm(found.leaseDuration || '12 Months');
+    }
+  };
+
+  const handleModalTransactionTypeChange = (nextType: TransactionType) => {
+    setFormTransactionType(nextType);
+    setSafeguardVerified(false);
+    setFormError(null);
+    const currentTenant = tenants.find((t) => t.tenantRef === formTenantRef);
+    if (currentTenant) {
+      setFormAmount(
+        nextType === 'Security Deposit'
+          ? currentTenant.securityDeposit || currentTenant.monthlyRent || 35000
+          : currentTenant.rentBalance > 0
+          ? currentTenant.rentBalance
+          : currentTenant.monthlyRent || 35000
+      );
+    }
+    if (nextType === 'Security Deposit' && (!formPaymentNote.trim() || formPaymentNote === 'M-Pesa / Bank Transfer')) {
+      setFormPaymentNote('Security Deposit — M-Pesa / Bank Transfer');
+    } else if (nextType === 'Rent' && formPaymentNote === 'Security Deposit — M-Pesa / Bank Transfer') {
+      setFormPaymentNote('M-Pesa / Bank Transfer');
     }
   };
 
@@ -508,7 +558,8 @@ export const RentPaymentsPage: React.FC<RentPaymentsPageProps> = ({
         property: propName,
         unitType: formUnitType,
         unitNumber: formUnitNumber.trim() || 'Unit 101',
-        paymentNote: formPaymentNote.trim() || 'Rent Payment',
+        transactionType: formTransactionType,
+        paymentNote: normalizeNewPaymentNote(formTransactionType, formPaymentNote.trim()),
         leaseTerm: formLeaseTerm.trim() || '12 Months',
         amount: Number(formAmount),
         status: formPayStatus,
@@ -516,7 +567,7 @@ export const RentPaymentsPage: React.FC<RentPaymentsPageProps> = ({
 
       setModalOpen(false);
       showToast(
-        `Payment of KSh ${Number(formAmount).toLocaleString()} recorded for ${formTenantName.trim()} (${formTenantRef.toUpperCase()} • ${propName}).`
+        `${formTransactionType} payment of KSh ${Number(formAmount).toLocaleString()} recorded for ${formTenantName.trim()} (${formTenantRef.toUpperCase()} • ${propName}).`
       );
     } catch (err: any) {
       setFormError(err?.message || 'Failed to save payment record.');
@@ -550,12 +601,15 @@ export const RentPaymentsPage: React.FC<RentPaymentsPageProps> = ({
     const matchedTenant = tenants.find(
       (t) => String(t.tenantRef || '').trim().toUpperCase() === payRefUpper
     );
-    const invoiceCode = pay.paymentId || `INV-${pay.tenantRef}`;
+    const isDeposit = isDepositTransaction(pay);
+    const invoiceCode = pay.paymentId || `${isDeposit ? 'DEP' : 'INV'}-${pay.tenantRef}`;
     const docData = buildInvoiceDataFromPayment(pay, invoiceCode, payments, matchedTenant);
     setPreviewInvoice(docData);
-    downloadDesignedInvoicePng(docData, 'Invoice');
-    downloadDesignedInvoiceFile(docData, 'Invoice-Ledger');
-    showToast(`Designed Invoice & Ledger (${invoiceCode}) downloaded.`);
+    downloadDesignedInvoicePng(docData, isDeposit ? 'Security-Deposit' : 'Invoice');
+    downloadDesignedInvoiceFile(docData, isDeposit ? 'Security-Deposit-Receipt' : 'Invoice-Ledger');
+    showToast(
+      `Designed ${isDeposit ? 'Security Deposit Receipt' : 'Invoice & Ledger'} (${invoiceCode}) downloaded.`
+    );
   };
 
   return (
@@ -772,7 +826,7 @@ export const RentPaymentsPage: React.FC<RentPaymentsPageProps> = ({
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="rms-card-hover bg-white rounded-3xl p-5 border border-[#E7ECE9] shadow-xs">
           <div className="flex items-center justify-between text-xs font-semibold text-[#7B8983] mb-2">
-            <span>Confirmed Collections</span>
+            <span>Confirmed Rent Collections</span>
             <span className="w-7 h-7 rounded-xl bg-[#EAF4EE] text-[#145338] flex items-center justify-center font-bold">
               ✓
             </span>
@@ -782,9 +836,13 @@ export const RentPaymentsPage: React.FC<RentPaymentsPageProps> = ({
           </p>
           <div className="mt-2 flex items-center justify-between text-[11px] text-[#7B8983]">
             <span>
-              <AnimatedCounter value={kpiStats.confirmedCount} suffix=" Paid Transactions" />
+              <AnimatedCounter value={kpiStats.confirmedCount} suffix=" Paid Rent" />
             </span>
-            <span className="text-[#145338] font-bold">Verified Ledger</span>
+            <span className="text-[#145338] font-bold">
+              {kpiStats.depositsCollected > 0
+                ? `+ KSh ${kpiStats.depositsCollected.toLocaleString()} Deposits`
+                : 'Verified Ledger'}
+            </span>
           </div>
         </div>
 
@@ -879,6 +937,23 @@ export const RentPaymentsPage: React.FC<RentPaymentsPageProps> = ({
               )}
             </div>
 
+            {/* Transaction Type Filter */}
+            <div className="relative">
+              <select
+                value={typeFilter}
+                onChange={(e) => {
+                  setTypeFilter(e.target.value as any);
+                  setCurrentPage(1);
+                }}
+                className="appearance-none pl-3.5 pr-8 py-2 rounded-2xl bg-[#F5F7F6] border border-[#E7ECE9] text-[#172B25] text-xs font-bold focus:outline-none cursor-pointer"
+              >
+                <option value="All">All Types</option>
+                <option value="Rent">Rent Only</option>
+                <option value="Security Deposit">Security Deposit</option>
+              </select>
+              <ChevronDown className="w-3.5 h-3.5 text-[#7B8983] absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+            </div>
+
             {/* Status Filter */}
             <div className="relative">
               <select
@@ -945,7 +1020,7 @@ export const RentPaymentsPage: React.FC<RentPaymentsPageProps> = ({
                     </span>
                   </th>
                   <th className="py-3 px-3.5">Unit</th>
-                  <th className="py-3 px-3.5">Payment Note</th>
+                  <th className="py-3 px-3.5">Type &amp; Note</th>
                   <th className="py-3 px-3.5">Period &amp; Dates</th>
                   <th className="py-3 px-3.5">Amount (KSh)</th>
                   <th className="py-3 px-3.5">Status</th>
@@ -1027,24 +1102,61 @@ export const RentPaymentsPage: React.FC<RentPaymentsPageProps> = ({
                         </span>
                       </td>
 
-                      {/* Payment Note / Method */}
-                      <td className="py-3.5 px-3.5 text-[#46544E] max-w-[180px]">
-                        <span className="line-clamp-1 font-medium">
-                          {row.paymentNote || 'Rent Payment'}
-                        </span>
-                        <span className="text-[10.5px] text-[#7B8983]">
-                          Term: {row.leaseTerm || '12 Months'}
-                        </span>
+                      {/* Type & Payment Note */}
+                      <td className="py-3.5 px-3.5 text-[#46544E] max-w-[200px]">
+                        {(() => {
+                          const rowType = classifyPaymentTransaction(row);
+                          const isDeposit = rowType === 'Security Deposit';
+                          const displayNote = formatTransactionDisplayNote(row);
+                          return (
+                            <>
+                              <span
+                                className={`inline-block px-2 py-0.5 rounded-md text-[10px] font-bold mb-1 ${
+                                  isDeposit
+                                    ? 'bg-[#E0F2FE] text-[#0369A1] border border-[#BAE6FD]'
+                                    : 'bg-[#EAF4EE] text-[#145338] border border-[#CDE5D8]'
+                                }`}
+                              >
+                                {rowType}
+                              </span>
+                              <span className="block line-clamp-1 font-medium text-[#172B25]">
+                                {displayNote}
+                              </span>
+                              <span className="text-[10.5px] text-[#7B8983]">
+                                {isDeposit
+                                  ? 'Deposit Escrow'
+                                  : `Term: ${row.leaseTerm || '12 Months'}`}
+                              </span>
+                            </>
+                          );
+                        })()}
                       </td>
 
                       {/* Billing Period & Dates */}
                       <td className="py-3.5 px-3.5 text-[#46544E] tabular-nums">
                         {(() => {
+                          const isDeposit = isDepositTransaction(row);
+                          const dueYmd = parseBillingDateToYmd(row.dueDate);
+                          if (isDeposit) {
+                            return (
+                              <>
+                                <div className="text-[11px] font-bold text-[#0369A1]">
+                                  Security Deposit
+                                </div>
+                                <div className="text-[11px]">
+                                  <span className="text-[#7B8983]">Recorded:</span>{' '}
+                                  {dueYmd ? formatYmdShort(dueYmd) : row.dueDate}
+                                </div>
+                                <div className="text-[10.5px] text-[#145338] font-semibold">
+                                  <span className="text-[#7B8983]">Paid:</span> {row.paidDate || '-'}
+                                </div>
+                              </>
+                            );
+                          }
                           const period = extractBillingPeriodFromPayment(
                             row,
                             tenantMeta?.tenant?.moveInDate || tenantMeta?.tenant?.leaseStart
                           );
-                          const dueYmd = parseBillingDateToYmd(row.dueDate);
                           return (
                             <>
                               {period && (
@@ -1355,6 +1467,39 @@ export const RentPaymentsPage: React.FC<RentPaymentsPageProps> = ({
                 </div>
               )}
 
+              {/* TRANSACTION TYPE & PAYMENT DETAILS */}
+              <div>
+                <label className="block font-bold text-[#172B25] mb-1.5">
+                  3. Transaction Type
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  {(['Rent', 'Security Deposit'] as TransactionType[]).map((txOption) => {
+                    const active = formTransactionType === txOption;
+                    return (
+                      <button
+                        key={txOption}
+                        type="button"
+                        onClick={() => handleModalTransactionTypeChange(txOption)}
+                        className={`px-3.5 py-2.5 rounded-2xl text-xs font-bold border transition-all cursor-pointer ${
+                          active
+                            ? txOption === 'Security Deposit'
+                              ? 'bg-[#E0F2FE] text-[#0369A1] border-[#7DD3FC]'
+                              : 'bg-[#172B25] text-[#BFEF43] border-[#172B25]'
+                            : 'bg-[#F5F7F6] text-[#46544E] border-[#E7ECE9] hover:bg-[#EAF4EE]'
+                        }`}
+                      >
+                        {txOption}
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="text-[11px] text-[#7B8983] mt-1">
+                  {formTransactionType === 'Security Deposit'
+                    ? 'Security Deposits are kept separate from monthly rent invoices and rent balances.'
+                    : 'Rent payments apply toward the tenant’s monthly anniversary rent invoices.'}
+                </p>
+              </div>
+
               {/* PAYMENT DETAILS: AMOUNT & NOTES */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
                 <div>
@@ -1417,7 +1562,7 @@ export const RentPaymentsPage: React.FC<RentPaymentsPageProps> = ({
                       Confirm Tenant &amp; Apartment Verification
                     </span>
                     <span className="text-[#46544E] text-[11px] block mt-0.5">
-                      I confirm that this payment of KSh {Number(formAmount).toLocaleString()} is for{' '}
+                      I confirm that this {formTransactionType === 'Security Deposit' ? 'Security Deposit' : 'Rent'} payment of KSh {Number(formAmount).toLocaleString()} is for{' '}
                       <strong>{formTenantName || 'the selected tenant'}</strong> at{' '}
                       <strong>{selectedModalProperty?.name}</strong> (Prefix {selectedModalPrefix}, Unit {formUnitNumber}, Ref: {formTenantRef}).
                     </span>
@@ -1498,9 +1643,15 @@ export const RentPaymentsPage: React.FC<RentPaymentsPageProps> = ({
                 </strong>
               </div>
               <div className="flex justify-between">
+                <span className="text-[#7B8983]">Transaction Type:</span>
+                <strong className={isDepositTransaction(confirmDialogPayment) ? 'text-[#0369A1]' : 'text-[#145338]'}>
+                  {classifyPaymentTransaction(confirmDialogPayment)}
+                </strong>
+              </div>
+              <div className="flex justify-between">
                 <span className="text-[#7B8983]">Payment Note:</span>
                 <span className="text-[#46544E]">
-                  {confirmDialogPayment.paymentNote}
+                  {formatTransactionDisplayNote(confirmDialogPayment)}
                 </span>
               </div>
             </div>

@@ -8,6 +8,7 @@ export interface PdfInvoiceItem {
 }
 
 export interface PdfInvoicePayload {
+  transactionType?: 'Rent' | 'Security Deposit';
   invoiceNumber: string;
   issueDate: string;
   dueDate: string;
@@ -165,12 +166,13 @@ export function buildDesignedInvoicePdfBytes(data: PdfInvoicePayload): Uint8Arra
   cmds.push(`${cBar2} rg ${pdfRoundedRectPath(margin + 6.5, topY(46, 18), 4.2, 18, 2)} f`);
   cmds.push(`${cBar3} rg ${pdfRoundedRectPath(margin + 13, topY(49, 15), 4.2, 15, 2)} f`);
 
+  const isDeposit = data.transactionType === 'Security Deposit';
   addText(companyLabel, margin + 24, 59, 9.8, cSectionLabel, true, 'left');
-  addText('INVOICE', margin, 94, 28, cTitle, true, 'left');
+  addText(isDeposit ? 'SECURITY DEPOSIT' : 'INVOICE', margin, 94, isDeposit ? 22 : 28, cTitle, true, 'left');
 
-  // 3. Top-Right: INVOICE AMOUNT & Status Pill
+  // 3. Top-Right: INVOICE / DEPOSIT AMOUNT & Status Pill
   const invoiceAmountValue = Number(data.monthlyRent || data.subTotal || 0);
-  addText('INVOICE AMOUNT', pageW - margin, 57, 8.8, cSectionLabel, true, 'right');
+  addText(isDeposit ? 'DEPOSIT AMOUNT' : 'INVOICE AMOUNT', pageW - margin, 57, 8.8, cSectionLabel, true, 'right');
   addText(fmt(invoiceAmountValue), pageW - margin, 83, 22, cTitle, true, 'right');
 
   const normStatus = String(data.paymentStatus || 'Pending').trim();
@@ -233,7 +235,7 @@ export function buildDesignedInvoicePdfBytes(data: PdfInvoicePayload): Uint8Arra
   const thTextY = tblHeaderY + 17.5;
   addText('S.NO.', margin + 12, thTextY, 8.4, cBarText, true, 'left');
   addText('DESCRIPTION', margin + 52, thTextY, 8.4, cBarText, true, 'left');
-  addText('MONTHLY RENT', margin + 322, thTextY, 8.4, cBarText, true, 'right');
+  addText(isDeposit ? 'DEPOSIT' : 'MONTHLY RENT', margin + 322, thTextY, 8.4, cBarText, true, 'right');
   addText('PAID', margin + 408, thTextY, 8.4, cBarText, true, 'right');
   addText('BALANCE', pageW - margin - 12, thTextY, 8.4, cBarText, true, 'right');
 
@@ -243,7 +245,9 @@ export function buildDesignedInvoicePdfBytes(data: PdfInvoicePayload): Uint8Arra
       ? data.items
       : [
           {
-            description: `Monthly Rent (${data.billingPeriodStart} - ${data.billingPeriodEnd}) - ${data.unitNumber}`,
+            description: isDeposit
+              ? `Security Deposit - ${data.propertyName} (${data.unitNumber})`
+              : `Monthly Rent (${data.billingPeriodStart} - ${data.billingPeriodEnd}) - ${data.unitNumber}`,
             qty: 1,
             price: data.monthlyRent || data.subTotal,
             total: data.monthlyRent || data.subTotal,
@@ -275,8 +279,8 @@ export function buildDesignedInvoicePdfBytes(data: PdfInvoicePayload): Uint8Arra
   const sumX = pageW - margin - 230;
   const sumW = 230;
 
-  // Row 1: MONTHLY RENT
-  addText('MONTHLY RENT', sumX + 10, bottomY + 4, 8.5, cPrimaryText, true, 'left');
+  // Row 1: MONTHLY RENT / SECURITY DEPOSIT
+  addText(isDeposit ? 'SECURITY DEPOSIT' : 'MONTHLY RENT', sumX + 10, bottomY + 4, 8.5, cPrimaryText, true, 'left');
   addText(fmt(data.monthlyRent || data.subTotal), pageW - margin - 10, bottomY + 4, 9, cPrimaryText, true, 'right');
   drawRule(sumX, pageW - margin, bottomY + 13, 0.65, cRule);
 

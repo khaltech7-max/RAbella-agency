@@ -1,3 +1,5 @@
+import { isDepositTransaction } from './paymentClassification.js';
+
 /**
  * Anniversary-Based Rental Billing Engine
  *
@@ -521,6 +523,10 @@ export function isDuplicateCyclePayment(
     due_date?: string | null;
     paymentNote?: string | null;
     payment_note?: string | null;
+    paymentId?: string | null;
+    payment_code?: string | null;
+    transactionType?: string | null;
+    transaction_type?: string | null;
   }>,
   tenantRef: string,
   cycle: AnniversaryBillingCycle,
@@ -530,6 +536,7 @@ export function isDuplicateCyclePayment(
   const targetKey = buildBillingPeriodKey(cleanRef, cycle.periodStart, cycle.periodEnd);
 
   return existingPayments.some((p) => {
+    if (isDepositTransaction(p)) return false;
     const pRef = String(p.tenantRef || p.tenant_ref || '').trim().toUpperCase();
     if (pRef !== cleanRef) return false;
 

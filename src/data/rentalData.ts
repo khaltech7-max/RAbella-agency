@@ -128,6 +128,8 @@ export interface TenantPaymentHistoryItem {
   amount: number;
   status: 'Paid' | 'Pending' | 'Overdue';
   variant: 'standard' | 'deluxe' | 'suite';
+  transactionType?: 'Rent' | 'Security Deposit';
+  paymentNote?: string;
 }
 
 export interface TenantProfile {
@@ -195,6 +197,7 @@ export interface RentPaymentRecord {
   unitType: 'Standard' | 'Deluxe' | 'Suite' | 'Family' | 'Single';
   unitNumber: string;
   paymentNote: string;
+  transactionType?: 'Rent' | 'Security Deposit';
   leaseTerm: string;
   dueDate: string;
   paidDate: string;

@@ -36,6 +36,12 @@ import {
   diffDaysBetweenYmd,
 } from "./src/lib/anniversaryBilling.js";
 import { buildDesignedInvoicePdfBytes } from "./src/lib/pdfInvoiceBuilder.js";
+import {
+  classifyPaymentTransaction,
+  formatTransactionDisplayNote,
+  isDepositTransaction,
+  normalizeNewPaymentNote,
+} from "./src/lib/paymentClassification.js";
 
 dotenv.config();
 
@@ -123,6 +129,7 @@ const TENANT_EDIT_SYNC_SQL_PATH = path.resolve(process.cwd(), "supabase", "migra
 const COMPLETE_SETTINGS_SQL_PATH = path.resolve(process.cwd(), "supabase", "migrations", "014_complete_settings_and_payhero.sql");
 const ANNIVERSARY_BILLING_SQL_PATH = path.resolve(process.cwd(), "supabase", "migrations", "015_anniversary_billing_cycle.sql");
 const TENANT_DEPOSIT_VACATE_SQL_PATH = path.resolve(process.cwd(), "supabase", "migrations", "016_tenant_deposit_settlement_and_vacate.sql");
+const FIX_TENANT_EDIT_SYNC_SQL_PATH = path.resolve(process.cwd(), "supabase", "migrations", "017_fix_tenant_edit_billing_sync.sql");
 const UPLOADS_DIR = isServerless ? path.resolve('/tmp', 'uploads', 'property-images') : path.resolve(process.cwd(), "public", "uploads", "property-images");
 try {
   fs.mkdirSync(UPLOADS_DIR, { recursive: true });
@@ -864,6 +871,11 @@ async function initPostgresDatabase() {
       `);
     }
 
+    const fixTenantEditSyncSql = safeReadSqlFile(FIX_TENANT_EDIT_SYNC_SQL_PATH);
+    if (fixTenantEditSyncSql) {
+      await executeMigrationSql(fixTenantEditSyncSql);
+    }
+
     await pg.exec(`
       INSERT INTO public.profiles (id, email, password_hash, full_name, role, job_title, assigned_property_name, account_status, avatar_bg)
       VALUES
@@ -1193,6 +1205,7 @@ async function sendEmailViaResend(options: {
 }
 
 function buildDesignedInvoicePdfBuffer(data: {
+  transactionType?: "Rent" | "Security Deposit";
   invoiceNumber: string;
   issueDate: string;
   dueDate: string;
@@ -1221,7 +1234,9 @@ function buildDesignedInvoicePdfBuffer(data: {
   amountPaid: number;
   grandTotal: number;
 }): Buffer {
+  const isDeposit = data.transactionType === "Security Deposit";
   const bytes = buildDesignedInvoicePdfBytes({
+    transactionType: data.transactionType,
     invoiceNumber: data.invoiceNumber,
     issueDate: data.issueDate,
     dueDate: data.dueDate,
@@ -1245,10 +1260,14 @@ function buildDesignedInvoicePdfBuffer(data: {
     website: data.website,
     supportPhone: data.supportPhone,
     supportEmail: data.supportEmail,
-    notes: `Billing Cycle: ${data.billingPeriodStart} to ${data.billingPeriodEnd}. Payment is due on your monthly move-in anniversary (${data.dueDate}). Quote Account Ref ${data.tenantRef} on all M-Pesa PayBill (${data.paybillNumber}) payments.`,
+    notes: isDeposit
+      ? `Security Deposit receipt for ${data.propertyName} (${data.unitNumber}), Account Ref ${data.tenantRef}. Held separately from monthly rent billing.`
+      : `Billing Cycle: ${data.billingPeriodStart} to ${data.billingPeriodEnd}. Payment is due on your monthly move-in anniversary (${data.dueDate}). Quote Account Ref ${data.tenantRef} on all M-Pesa PayBill (${data.paybillNumber}) payments.`,
     items: [
       {
-        description: `Monthly Rent (${data.billingPeriodStart} - ${data.billingPeriodEnd}) - ${data.unitNumber}`,
+        description: isDeposit
+          ? `Security Deposit - ${data.propertyName} (${data.unitNumber})`
+          : `Monthly Rent (${data.billingPeriodStart} - ${data.billingPeriodEnd}) - ${data.unitNumber}`,
         qty: 1,
         price: data.baseRent,
         total: data.baseRent,
@@ -1280,19 +1299,21 @@ async function buildTenantInvoiceAndLedgerBundle(params: {
   const matchedTenant = (state.tenants || []).find(
     (t: any) => String(t.tenantRef || "").trim().toUpperCase() === cleanRef
   );
-  const tenantPayments = (state.payments || []).filter(
+  const allTenantPayments = (state.payments || []).filter(
     (p: any) => String(p.tenantRef || "").trim().toUpperCase() === cleanRef
   );
+  const tenantRentPayments = allTenantPayments.filter((p: any) => !isDepositTransaction(p));
 
-  // Target specific invoice if paymentId/receiptNo matches, else oldest unpaid invoice, else most recent invoice
+  // Target specific invoice if paymentId/receiptNo matches, else oldest unpaid RENT invoice, else most recent RENT invoice
   const targetPayment =
     (params.paymentId
-      ? tenantPayments.find((p: any) => p.id === params.paymentId || p.paymentId === params.paymentId)
+      ? allTenantPayments.find((p: any) => p.id === params.paymentId || p.paymentId === params.paymentId)
       : null) ||
-    (params.receiptNo ? tenantPayments.find((p: any) => p.paymentId === params.receiptNo) : null) ||
-    tenantPayments.find((p: any) => p.status !== "Paid") ||
-    tenantPayments[0] ||
+    (params.receiptNo ? allTenantPayments.find((p: any) => p.paymentId === params.receiptNo) : null) ||
+    tenantRentPayments.find((p: any) => p.status !== "Paid") ||
+    tenantRentPayments[0] ||
     null;
+  const targetIsDeposit = Boolean(targetPayment && isDepositTransaction(targetPayment));
 
   const moveInAnchor =
     matchedTenant?.moveInDate ||
@@ -1406,10 +1427,11 @@ async function buildTenantInvoiceAndLedgerBundle(params: {
   const sysPaybill = sysPayment.defaultPaybillNumber || "400200";
 
   const safeRef = cleanRef.replace(/[^A-Z0-9_-]/gi, "-");
-  const pdfFilename = `Invoice-${safeRef}.pdf`;
+  const pdfFilename = targetIsDeposit ? `Security-Deposit-${safeRef}.pdf` : `Invoice-${safeRef}.pdf`;
 
   // Full-Color Vector PDF Attachment (ONLY PDF attached to the email)
   const pdfBuffer = buildDesignedInvoicePdfBuffer({
+    transactionType: targetIsDeposit ? "Security Deposit" : "Rent",
     invoiceNumber,
     issueDate,
     dueDate,
@@ -2894,7 +2916,7 @@ async function ensureAnniversaryInvoicesForAllTenants(
     if (!moveInYmd || monthlyRent <= 0) continue;
 
     const myPayments = state.payments.filter(
-      (p: any) => String(p.tenantRef || "").trim().toUpperCase() === cleanRef
+      (p: any) => String(p.tenantRef || "").trim().toUpperCase() === cleanRef && !isDepositTransaction(p)
     );
 
     // 1. Auto-mark any existing unpaid Pending invoice past its due date as Overdue (never touch Paid history)
@@ -3121,7 +3143,7 @@ async function runAutomatedRentSmsChecks(actorName = "Automated Rent Scheduler")
     }
 
     const unpaidPayments = state.payments.filter(
-      (p) => p.tenantRef?.toUpperCase() === tenant.tenantRef?.toUpperCase() && p.status !== "Paid"
+      (p) => p.tenantRef?.toUpperCase() === tenant.tenantRef?.toUpperCase() && p.status !== "Paid" && !isDepositTransaction(p)
     );
     const primaryUnpaid = unpaidPayments[unpaidPayments.length - 1] || unpaidPayments[0];
     const dueYmd = parseBillingDateToYmd(primaryUnpaid?.dueDate || tenant.dueDate);
@@ -3778,7 +3800,7 @@ async function runAutomatedEmailReminders(actorName = "Automated Email Scheduler
 
     // B. Check Anniversary Rent Payment Reminders (Advance notice before next billing date OR unpaid/overdue invoice)
     const unpaidPayments = state.payments.filter(
-      (p) => p.tenantRef?.toUpperCase() === cleanRef && p.status !== "Paid"
+      (p) => p.tenantRef?.toUpperCase() === cleanRef && p.status !== "Paid" && !isDepositTransaction(p)
     );
 
     // Case B1: Tenant has already paid current cycle — still check if their NEXT anniversary billing date is within `advanceDays`!
@@ -4214,26 +4236,29 @@ async function fetchFullDatabaseState(forceRefresh = false) {
 
   const payments = paymentsRows.map((r) => {
     const cleanRef = String(r.tenant_ref || "").trim().toUpperCase();
+    const txType = classifyPaymentTransaction(r);
+    const isDeposit = txType === "Security Deposit";
     const matchedLease = leaseByTenantId.get(String(r.tenant_id || "")) || leaseByTenantRef.get(cleanRef);
     const moveInAnchor = matchedLease?.lease_start || r.billing_period_start || r.due_date;
-    const extractedPeriod = extractBillingPeriodFromPayment(r, moveInAnchor);
-    const amountDue = Number(r.amount_due ?? r.amount ?? matchedLease?.monthly_rent ?? 0);
+    const extractedPeriod = isDeposit ? null : extractBillingPeriodFromPayment(r, moveInAnchor);
+    const amountDue = Number(r.amount_due ?? r.amount ?? (isDeposit ? 0 : matchedLease?.monthly_rent) ?? 0);
     const rawAmountPaid = r.amount_paid !== undefined && r.amount_paid !== null ? Number(r.amount_paid) : undefined;
     const dueYmd = parseBillingDateToYmd(r.due_date) || extractedPeriod?.periodStart || null;
     const fin = computeInvoiceFinancials({
       amountDue,
       amountPaid: rawAmountPaid,
       amount: Number(r.amount ?? amountDue),
-      monthlyRent: Number(matchedLease?.monthly_rent ?? amountDue),
+      monthlyRent: isDeposit ? amountDue : Number(matchedLease?.monthly_rent ?? amountDue),
       dueDate: dueYmd,
       storedStatus: r.status || "Pending",
       referenceYmd: nairobiTodayYmd,
     });
-    const periodStart = extractedPeriod?.periodStart || dueYmd || void 0;
-    const periodEnd = extractedPeriod?.periodEnd || void 0;
-    const anniversaryDay =
-      Number(r.billing_anniversary_day || matchedLease?.billing_anniversary_day || 0) ||
-      (moveInAnchor ? getBillingAnniversaryDay(moveInAnchor, nairobiTodayYmd) : void 0);
+    const periodStart = isDeposit ? void 0 : (extractedPeriod?.periodStart || dueYmd || void 0);
+    const periodEnd = isDeposit ? void 0 : (extractedPeriod?.periodEnd || void 0);
+    const anniversaryDay = isDeposit
+      ? void 0
+      : Number(r.billing_anniversary_day || matchedLease?.billing_anniversary_day || 0) ||
+        (moveInAnchor ? getBillingAnniversaryDay(moveInAnchor, nairobiTodayYmd) : void 0);
     const invoiceDate =
       parseBillingDateToYmd(r.invoice_date) ||
       periodStart ||
@@ -4241,6 +4266,13 @@ async function fetchFullDatabaseState(forceRefresh = false) {
       dueYmd ||
       void 0;
     const confirmerProfile = r.confirmed_by ? profilesById.get(r.confirmed_by) : null;
+    const displayNote =
+      formatTransactionDisplayNote(r) ||
+      (periodStart && periodEnd
+        ? formatBillingPeriodNote(periodStart, periodEnd)
+        : isDeposit
+        ? "Security Deposit"
+        : "Rent Payment");
     return {
       id: r.id,
       paymentId: r.payment_code,
@@ -4250,14 +4282,17 @@ async function fetchFullDatabaseState(forceRefresh = false) {
       property: r.property_name,
       unitType: r.unit_type || "Deluxe",
       unitNumber: r.unit_number,
-      paymentNote: r.payment_note || (periodStart && periodEnd ? formatBillingPeriodNote(periodStart, periodEnd) : "Rent Payment"),
+      paymentNote: displayNote,
+      transactionType: txType,
       leaseTerm: r.lease_term || "12 months",
       dueDate: dueYmd || r.due_date,
       paidDate: r.paid_date || "-",
       invoiceDate,
       billingPeriodStart: periodStart,
       billingPeriodEnd: periodEnd,
-      billingPeriodKey: r.billing_period_key || (periodStart && periodEnd ? buildBillingPeriodKey(cleanRef, periodStart, periodEnd) : void 0),
+      billingPeriodKey: isDeposit
+        ? void 0
+        : r.billing_period_key || (periodStart && periodEnd ? buildBillingPeriodKey(cleanRef, periodStart, periodEnd) : void 0),
       billingAnniversaryDay: anniversaryDay,
       amount: fin.amountDue,
       amountPaid: fin.amountPaid,
@@ -4278,13 +4313,15 @@ async function fetchFullDatabaseState(forceRefresh = false) {
     const resolvedUnitId = unitObj?.id || lease.unit_id || void 0;
     const resolvedUnitNumber = unitObj?.unit_number || lease.unit_number || "Unit 101";
     const resolvedUnitType = lease.unit_type || unitObj?.unit_type_name || "Deluxe";
-    const myPayments = payments.filter((p) => p.tenantRef.toUpperCase() === String(t.tenant_ref).toUpperCase());
+    const myAllPayments = payments.filter((p) => p.tenantRef.toUpperCase() === String(t.tenant_ref).toUpperCase());
+    // Separate Security Deposit transactions from Monthly Rent balances & billing status
+    const myPayments = myAllPayments.filter((p) => !isDepositTransaction(p));
     const totalPaid = myPayments.reduce((s, p) => s + Number(p.amountPaid ?? (p.status === "Paid" ? p.amount : 0)), 0);
     const rentBalance = myPayments.reduce((s, p) => s + Number(p.balanceDue ?? (p.status === "Paid" ? 0 : p.amount)), 0);
     const hasOverdue = myPayments.some((p) => p.status === "Overdue");
     const hasPending = myPayments.some((p) => p.status === "Pending");
     const derivedStatus = hasOverdue ? "Overdue" : hasPending ? "Pending" : "Paid";
-    const monthlyRent = Number(lease.monthly_rent ?? unitObj?.monthly_rent ?? t.security_deposit ?? 0);
+    const monthlyRent = Number(lease.monthly_rent ?? unitObj?.monthly_rent ?? 0);
     const baseRent = Number(lease.base_rent || monthlyRent);
     const utilityPackage = Number(lease.utility_package || 0);
     const maintenanceFee = Number(lease.maintenance_fee || 0);
@@ -4306,18 +4343,23 @@ async function fetchFullDatabaseState(forceRefresh = false) {
       activeCycle?.dueDate ||
       moveInYmd;
 
-    const paymentHistory = myPayments.map((p) => ({
-      id: p.paymentId,
-      paymentDate: p.paidDate,
-      unitType: p.unitType,
-      unitNumber: p.unitNumber,
-      periodStart: p.billingPeriodStart || p.dueDate,
-      periodEnd: p.billingPeriodEnd || p.paidDate,
-      occupants: lease.occupants || "1 Resident",
-      amount: p.amount,
-      status: p.status,
-      variant: p.unitType === "Suite" ? "suite" : p.unitType === "Standard" ? "standard" : "deluxe",
-    }));
+    const paymentHistory = myAllPayments.map((p) => {
+      const pTxType = p.transactionType || classifyPaymentTransaction(p);
+      return {
+        id: p.paymentId,
+        paymentDate: p.paidDate,
+        unitType: p.unitType,
+        unitNumber: p.unitNumber,
+        periodStart: pTxType === "Security Deposit" ? (p.paidDate !== "-" ? p.paidDate : p.dueDate) : (p.billingPeriodStart || p.dueDate),
+        periodEnd: pTxType === "Security Deposit" ? "Deposit Escrow" : (p.billingPeriodEnd || p.paidDate),
+        occupants: lease.occupants || "1 Resident",
+        amount: p.amount,
+        status: p.status,
+        variant: p.unitType === "Suite" ? "suite" : p.unitType === "Standard" ? "standard" : "deluxe",
+        transactionType: pTxType,
+        paymentNote: formatTransactionDisplayNote(p),
+      };
+    });
 
     const rawLeaseNotes = String(lease.lease_notes || "Standard residential lease agreement.");
     const settleMarkerPrefix = "[DEPOSIT_SETTLEMENT:";
@@ -4413,7 +4455,7 @@ async function fetchFullDatabaseState(forceRefresh = false) {
     const propUnitTypes = unitTypesRows.filter((ut) => ut.property_id === p.id || String(ut.property_name).trim().toLowerCase() === propNameLower);
     const propTenants = tenants.filter((t) => t.tenancyStatus !== "Vacated" && (t.propertyId === p.id || String(t.property).trim().toLowerCase() === propNameLower));
     const propOccupiedUnits = unitsRows.filter((un) => un.property_id === p.id && un.status === "Occupied");
-    const propPaidPayments = payments.filter((pay) => String(pay.property).trim().toLowerCase() === propNameLower && pay.status === "Paid");
+    const propPaidPayments = payments.filter((pay) => String(pay.property).trim().toLowerCase() === propNameLower && pay.status === "Paid" && !isDepositTransaction(pay));
     const unitTypeTotalSum = propUnitTypes.reduce((s, u) => s + Number(u.total_count || 0), 0);
     const unitTypeOccSum = propUnitTypes.reduce((s, u) => s + Number(u.occupied_count || 0), 0);
     const occupiedUnits = Math.max(Number(p.occupied_units || 0), unitTypeOccSum, propOccupiedUnits.length, propTenants.length);
@@ -4486,8 +4528,10 @@ async function fetchFullDatabaseState(forceRefresh = false) {
 }
 function computeRealAnalytics(properties, unitTypes, tenants, payments, expenses, maintenance, reviews) {
   const activeTenants = tenants.filter((t) => t.tenancyStatus !== "Vacated");
-  const paidPayments = payments.filter((p) => p.status === "Paid");
-  const pendingOrOverdue = payments.filter((p) => p.status !== "Paid");
+  // Exclude Security Deposit transactions from monthly rent revenue, collection rate, and arrears analytics
+  const rentPayments = payments.filter((p) => !isDepositTransaction(p));
+  const paidPayments = rentPayments.filter((p) => p.status === "Paid");
+  const pendingOrOverdue = rentPayments.filter((p) => p.status !== "Paid");
   const paidRentSum = paidPayments.reduce((s, p) => s + Number(p.amount || 0), 0);
   const totalExpensesSum = expenses.reduce((s, e) => s + Number(e.amount || 0), 0);
   const activeLeasesCount = activeTenants.length;
@@ -4496,7 +4540,7 @@ function computeRealAnalytics(properties, unitTypes, tenants, payments, expenses
   const totalRentRevenue = paidRentSum;
   const totalIncome = paidRentSum;
   const netBalance = totalIncome - totalExpensesSum;
-  const totalPaymentsCount = payments.length;
+  const totalPaymentsCount = rentPayments.length;
   const collectionRatePct = totalPaymentsCount > 0 ? Number((paidPayments.length / totalPaymentsCount * 100).toFixed(1)) : 0;
   const propTotalUnits = properties.reduce((s, p) => s + Number(p.totalUnits || 0), 0);
   const unitTypeTotalUnits = unitTypes.reduce((s, u) => s + Number(u.totalCount || 0), 0);
@@ -4540,7 +4584,7 @@ function computeRealAnalytics(properties, unitTypes, tenants, payments, expenses
     const dayNum = String(d.getDate()).padStart(2, "0");
     const mShort = monthNames[d.getMonth()];
     const dayLabel = `${dayNum} ${mShort}`;
-    const dayPayments = payments.filter((p) => {
+    const dayPayments = rentPayments.filter((p) => {
       const pPaidDate = String(p.paidDate || "").toLowerCase();
       if (pPaidDate && pPaidDate.includes(`${d.getDate()}`) && pPaidDate.includes(mShort.toLowerCase())) {
         return true;
@@ -4945,11 +4989,16 @@ function requireRole(allowedRoles) {
 }
 
 let dbInitPromise: Promise<void> | null = null;
+let dbInitCompleted = false;
 function ensureDbInitialized(): Promise<void> {
   if (!dbInitPromise) {
-    dbInitPromise = initPostgresDatabase().catch((err) => {
-      console.warn("[DB Init Notice]", err?.message || err);
-    });
+    dbInitPromise = initPostgresDatabase()
+      .catch((err) => {
+        console.warn("[DB Init Notice]", err?.message || err);
+      })
+      .finally(() => {
+        dbInitCompleted = true;
+      });
   }
   return dbInitPromise;
 }
@@ -4969,10 +5018,10 @@ async function createApp() {
     if (req.path.startsWith("/api/") && req.method !== "GET" && req.method !== "HEAD" && req.method !== "OPTIONS") {
       invalidateFullDatabaseStateCache();
     }
-    if (req.path.startsWith("/api/") && !pg) {
+    if (req.path.startsWith("/api/") && !dbInitCompleted) {
       await Promise.race([
         ensureDbInitialized(),
-        new Promise((resolve) => setTimeout(resolve, 2500))
+        new Promise((resolve) => setTimeout(resolve, 10000))
       ]);
     }
     next();
@@ -7070,8 +7119,26 @@ async function createApp() {
     return res.status(201).json(createdProfile);
   });
   app.put("/api/tenants/:id", requireRole(["owner", "property_manager"]), async (req, res) => {
-    const { name, phone, email, dob, gender, nationality, idNumber, securityDeposit, depositStatus, vehicleInfo, propertyId, property, leaseNotes, unitNumber, unitType, monthlyRent, dueDate, leaseStart, leaseEnd, leaseDuration, occupants, paymentMethod } = req.body;
+    const { name, phone, email, dob, gender, nationality, idNumber, securityDeposit, depositStatus, vehicleInfo, propertyId, property, leaseNotes, unitNumber, unitType, monthlyRent, leaseStart, leaseEnd, leaseDuration, occupants, paymentMethod } = req.body;
     const paramId = req.params.id;
+    const hasPropertyChange = propertyId !== void 0 || property !== void 0;
+    const hasUnitChange = unitNumber !== void 0;
+    const hasUnitTypeChange = unitType !== void 0;
+    const hasRentChange = monthlyRent !== void 0;
+    const cleanLeaseStartPatch = leaseStart !== void 0 && String(leaseStart).trim() ? String(leaseStart).trim() : void 0;
+    const cleanLeaseEndPatch = leaseEnd !== void 0 && String(leaseEnd).trim() ? String(leaseEnd).trim() : void 0;
+    const hasLeaseFieldUpdate =
+      hasPropertyChange ||
+      hasUnitChange ||
+      hasUnitTypeChange ||
+      hasRentChange ||
+      cleanLeaseStartPatch !== void 0 ||
+      cleanLeaseEndPatch !== void 0 ||
+      leaseDuration !== void 0 ||
+      occupants !== void 0 ||
+      leaseNotes !== void 0 ||
+      paymentMethod !== void 0;
+
     if (supabaseAdmin && !isSupabaseQuotaRestricted()) {
       let tenantQuery = supabaseAdmin.from("tenants").select("*");
       if (isValidUuid(paramId)) {
@@ -7083,166 +7150,259 @@ async function createApp() {
       if (tFindErr && markSupabaseIfQuotaRestricted(tFindErr)) {
         // Fall through to local PostgreSQL mirror
       } else {
-      if (!t2) {
-        return res.status(404).json({ error: "Tenant not found in Supabase." });
-      }
-      let propLookupPromise = Promise.resolve({ data: null });
-      if (propertyId && isValidUuid(propertyId)) {
-        propLookupPromise = supabaseAdmin.from("properties").select("*").eq("id", propertyId).maybeSingle();
-      } else if (property) {
-        propLookupPromise = supabaseAdmin.from("properties").select("*").ilike("name", String(property).trim()).maybeSingle();
-      } else if (t2.property_id) {
-        propLookupPromise = supabaseAdmin.from("properties").select("*").eq("id", t2.property_id).maybeSingle();
-      }
-      const [propRes, leaseRes] = await Promise.all([
-        propLookupPromise,
-        supabaseAdmin.from("leases").select("*").or(`tenant_id.eq.${t2.id},tenant_ref.eq.${t2.tenant_ref}`).maybeSingle()
-      ]);
-      const targetProp = propRes.data;
-      const existingLease = leaseRes.data;
-      const resolvedPropertyId = targetProp?.id ?? t2.property_id;
-      const resolvedPropertyName = targetProp?.name || property || existingLease?.property_name || "Main Property";
-      const updatedFullName = name !== void 0 ? String(name).trim() : t2.full_name;
-      const updatedPhone = phone !== void 0 ? String(phone).trim() : t2.phone;
-      const updatedEmail = email !== void 0 ? String(email).trim() : t2.email;
-      const updatedDob = dob ?? t2.dob;
-      const updatedGender = gender ?? t2.gender;
-      const updatedNationality = nationality ?? t2.nationality;
-      const updatedIdNumber = idNumber ?? t2.id_number;
-      const updatedDeposit = securityDeposit !== void 0 ? Math.max(0, Number(securityDeposit) || 0) : Number(t2.security_deposit || 0);
-      const validDepositStatuses = ["Held", "Not Paid", "Returned", "Partially Returned", "Forfeited"];
-      const updatedDepositStatus =
-        depositStatus && validDepositStatuses.includes(String(depositStatus))
-          ? String(depositStatus)
-          : securityDeposit !== void 0 && (!t2.deposit_status || t2.deposit_status === "Held" || t2.deposit_status === "Not Paid")
-          ? updatedDeposit > 0
-            ? "Held"
-            : "Not Paid"
-          : t2.deposit_status || (updatedDeposit > 0 ? "Held" : "Not Paid");
-      const updatedVehicle = vehicleInfo ?? t2.vehicle_info;
-      const newRent = monthlyRent !== void 0 ? Number(monthlyRent) : Number(existingLease?.monthly_rent || 0);
-      const resolvedUnitNumber = unitNumber !== void 0 ? String(unitNumber).trim() : existingLease?.unit_number || "Unit 101";
-      const resolvedUnitType = unitType ?? existingLease?.unit_type ?? "Deluxe";
-      const cleanDueDatePatch = dueDate !== void 0 && String(dueDate).trim() ? (parseBillingDateToYmd(dueDate) || String(dueDate).trim()) : void 0;
-      const cleanLeaseStartPatch = leaseStart !== void 0 && String(leaseStart).trim() ? String(leaseStart).trim() : void 0;
-      const cleanLeaseEndPatch = leaseEnd !== void 0 && String(leaseEnd).trim() ? String(leaseEnd).trim() : void 0;
-
-      // Update public.tenants (with automatic fallback if extended columns are not yet migrated in Supabase Cloud)
-      const baseTenantPatch: Record<string, any> = {
-        property_id: resolvedPropertyId,
-        full_name: updatedFullName,
-        phone: updatedPhone,
-        email: updatedEmail,
-        dob: updatedDob,
-        gender: updatedGender,
-        nationality: updatedNationality,
-        id_number: updatedIdNumber,
-        security_deposit: updatedDeposit,
-        vehicle_info: updatedVehicle,
-      };
-      const extendedTenantPatch: Record<string, any> = {
-        ...baseTenantPatch,
-        property_name: resolvedPropertyName,
-        unit_number: resolvedUnitNumber,
-        unit_type: resolvedUnitType,
-        monthly_rent: newRent,
-        deposit_status: updatedDepositStatus,
-        ...(cleanDueDatePatch ? { due_date: cleanDueDatePatch } : {}),
-      };
-      let { error: tUpdErr } = await supabaseAdmin.from("tenants").update(extendedTenantPatch).eq("id", t2.id);
-      if (tUpdErr) {
-        const retryBase = await supabaseAdmin.from("tenants").update(baseTenantPatch).eq("id", t2.id);
-        tUpdErr = retryBase.error;
-      }
-      if (tUpdErr) {
-        return res.status(400).json({ error: tUpdErr.message });
-      }
-      let resolvedUnitId = existingLease?.unit_id || void 0;
-      if (resolvedPropertyId && unitNumber) {
-        const cleanUnit = String(unitNumber).trim();
-        const { data: existingUnit } = await supabaseAdmin.from("units").select("*").eq("property_id", resolvedPropertyId).ilike("unit_number", cleanUnit).maybeSingle();
-        if (existingUnit) {
-          resolvedUnitId = existingUnit.id;
-          await supabaseAdmin.from("units").update({ status: "Occupied", unit_type_name: unitType || existingUnit.unit_type_name, ...monthlyRent !== void 0 ? { monthly_rent: Number(monthlyRent) } : {} }).eq("id", existingUnit.id);
-        } else {
-          const { data: createdUnit } = await supabaseAdmin.from("units").insert({ property_id: resolvedPropertyId, unit_number: cleanUnit, unit_type_name: unitType || "Deluxe", floor_number: 1, monthly_rent: monthlyRent !== void 0 ? Number(monthlyRent) : 35e3, status: "Occupied" }).select("*").maybeSingle();
-          if (createdUnit) resolvedUnitId = createdUnit.id;
+        if (!t2) {
+          return res.status(404).json({ error: "Tenant not found in Supabase." });
         }
-      }
-      const base = Math.round(newRent * 0.88);
-      const util = Math.round(newRent * 0.06);
-      const maint = Math.round(newRent * 0.04);
-      const park = Math.max(0, newRent - base - util - maint);
-      const resolvedOccupants = occupants ?? existingLease?.occupants ?? "1 Adult";
-      const resolvedDuration = leaseDuration ?? existingLease?.lease_duration ?? "12 Months";
-      const resolvedNotes = leaseNotes ?? existingLease?.lease_notes ?? "Standard residential lease agreement.";
-      const resolvedPayMethod = paymentMethod ?? existingLease?.payment_method ?? "M-Pesa / Bank Transfer";
-      const resolvedLeaseStart = cleanLeaseStartPatch || existingLease?.lease_start || formatShortDate(new Date(t2.created_at));
-      const resolvedLeaseEnd = cleanLeaseEndPatch || existingLease?.lease_end || "Active";
-      const moveInYmdUpd = parseBillingDateToYmd(resolvedLeaseStart) || getNairobiDateString();
-      const anniversaryDayUpd = getBillingAnniversaryDay(moveInYmdUpd);
-      const nextBillUpd = getNextBillingDate(moveInYmdUpd, getNairobiDateString());
 
-      // Never mutate historical Paid invoices' due_date or amount — only sync metadata or unpaid invoices
-      const paymentMetaPatch: Record<string, any> = {};
-      if (name !== void 0) paymentMetaPatch.tenant_name = updatedFullName;
-      if (resolvedPropertyName) paymentMetaPatch.property_name = resolvedPropertyName;
-      if (unitNumber !== void 0) paymentMetaPatch.unit_number = resolvedUnitNumber;
-      if (unitType !== void 0) paymentMetaPatch.unit_type = resolvedUnitType;
-      const baseLeasePatch: Record<string, any> = {
-        ...(resolvedUnitId ? { unit_id: resolvedUnitId } : {}),
-        unit_number: resolvedUnitNumber,
-        unit_type: resolvedUnitType,
-        property_name: resolvedPropertyName,
-        monthly_rent: newRent,
-        base_rent: base,
-        utility_package: util,
-        maintenance_fee: maint,
-        parking_fee: park,
-        lease_start: resolvedLeaseStart,
-        lease_end: resolvedLeaseEnd,
-        lease_notes: resolvedNotes,
-        lease_duration: resolvedDuration,
-        occupants: resolvedOccupants,
-        payment_method: resolvedPayMethod,
-      };
-      await Promise.all([
-        existingLease
-          ? (async () => {
-              const extLeasePatch = {
-                ...baseLeasePatch,
-                billing_anniversary_day: anniversaryDayUpd,
-                ...(nextBillUpd ? { next_billing_date: nextBillUpd } : {}),
-                ...(cleanDueDatePatch ? { due_date: cleanDueDatePatch } : {}),
-              };
-              const { error: lErr } = await supabaseAdmin.from("leases").update(extLeasePatch).eq("id", existingLease.id);
-              if (lErr) {
-                await supabaseAdmin.from("leases").update(baseLeasePatch).eq("id", existingLease.id);
-              }
-            })()
-          : Promise.resolve(),
-        Object.keys(paymentMetaPatch).length > 0 ? supabaseAdmin.from("rent_payments").update(paymentMetaPatch).or(`tenant_id.eq.${t2.id},tenant_ref.ilike.${t2.tenant_ref}`) : Promise.resolve(),
-        cleanDueDatePatch ? supabaseAdmin.from("rent_payments").update({ due_date: cleanDueDatePatch }).or(`tenant_id.eq.${t2.id},tenant_ref.ilike.${t2.tenant_ref}`).neq("status", "Paid") : Promise.resolve(),
-        monthlyRent !== void 0 ? supabaseAdmin.from("rent_payments").update({ amount_due: newRent }).eq("tenant_id", t2.id).neq("status", "Paid") : Promise.resolve(),
-        pg
-          ? pg
-              .query(
-                `UPDATE public.tenants
-                 SET full_name = $1, phone = $2, email = $3, property_name = $4, unit_number = $5, unit_type = $6, monthly_rent = $7, due_date = COALESCE($8, due_date), security_deposit = $9
-                 WHERE id = $10 OR UPPER(tenant_ref) = UPPER($11);`,
-                [updatedFullName, updatedPhone, updatedEmail, resolvedPropertyName, resolvedUnitNumber, resolvedUnitType, newRent, cleanDueDatePatch ?? null, updatedDeposit, t2.id, t2.tenant_ref]
-              )
-              .catch(() => {})
-          : Promise.resolve(),
-      ]);
-      cachedFullDatabaseState = null;
-      cachedFullDatabaseStateExpiresAt = 0;
-      const refreshedState = await fetchFullDatabaseState(true);
-      const updatedProfile = refreshedState.tenants.find((item) => item.id === t2.id || item.tenantRef.toUpperCase() === String(t2.tenant_ref).toUpperCase());
-      void logActivity("lease", `Tenant Profile Updated (${t2.tenant_ref})`, `${updatedFullName} (${t2.tenant_ref}) updated in Supabase.`, req.currentUser?.fullName || "Manager", t2.tenant_ref, "mint");
-      return res.json(updatedProfile || { id: t2.id, tenantRef: t2.tenant_ref, name: updatedFullName });
+        let targetProp: any = null;
+        if (hasPropertyChange) {
+          if (propertyId && isValidUuid(propertyId)) {
+            const { data } = await supabaseAdmin.from("properties").select("*").eq("id", propertyId).maybeSingle();
+            targetProp = data;
+          } else if (property) {
+            const { data } = await supabaseAdmin.from("properties").select("*").ilike("name", String(property).trim()).maybeSingle();
+            targetProp = data;
+          } else if (t2.property_id) {
+            const { data } = await supabaseAdmin.from("properties").select("*").eq("id", t2.property_id).maybeSingle();
+            targetProp = data;
+          }
+        }
+
+        const { data: existingLease } = await supabaseAdmin
+          .from("leases")
+          .select("*")
+          .or(`tenant_id.eq.${t2.id},tenant_ref.eq.${t2.tenant_ref}`)
+          .maybeSingle();
+
+        const resolvedPropertyId = targetProp?.id ?? (hasPropertyChange && isValidUuid(propertyId) ? propertyId : t2.property_id);
+        const resolvedPropertyName = hasPropertyChange
+          ? (targetProp?.name || (property ? String(property).trim() : "") || existingLease?.property_name || t2.property_name || "Main Property")
+          : (existingLease?.property_name || t2.property_name || "Main Property");
+        const updatedFullName = name !== void 0 ? String(name).trim() : t2.full_name;
+        const updatedPhone = phone !== void 0 ? String(phone).trim() : t2.phone;
+        const updatedEmail = email !== void 0 ? String(email).trim().toLowerCase() : t2.email;
+        const updatedDeposit = securityDeposit !== void 0 ? Math.max(0, Number(securityDeposit) || 0) : Number(t2.security_deposit || 0);
+        const validDepositStatuses = ["Held", "Not Paid", "Returned", "Partially Returned", "Forfeited"];
+        const updatedDepositStatus =
+          depositStatus && validDepositStatuses.includes(String(depositStatus))
+            ? String(depositStatus)
+            : securityDeposit !== void 0 && (!t2.deposit_status || t2.deposit_status === "Held" || t2.deposit_status === "Not Paid")
+            ? updatedDeposit > 0
+              ? "Held"
+              : "Not Paid"
+            : t2.deposit_status || (updatedDeposit > 0 ? "Held" : "Not Paid");
+        const newRent = hasRentChange ? Number(monthlyRent) : Number(existingLease?.monthly_rent || t2.monthly_rent || 0);
+        const resolvedUnitNumber = hasUnitChange ? String(unitNumber).trim() : existingLease?.unit_number || t2.unit_number || "Unit 101";
+        const resolvedUnitType = hasUnitTypeChange ? unitType : existingLease?.unit_type ?? t2.unit_type ?? "Deluxe";
+
+        // Build minimal tenant profile patch (never sends due_date; never mutates rent_payments)
+        const baseTenantPatch: Record<string, any> = {};
+        if (name !== void 0) baseTenantPatch.full_name = updatedFullName;
+        if (phone !== void 0) baseTenantPatch.phone = updatedPhone;
+        if (email !== void 0) baseTenantPatch.email = updatedEmail;
+        if (dob !== void 0) baseTenantPatch.dob = dob;
+        if (gender !== void 0) baseTenantPatch.gender = gender;
+        if (nationality !== void 0) baseTenantPatch.nationality = nationality;
+        if (idNumber !== void 0) baseTenantPatch.id_number = idNumber;
+        if (securityDeposit !== void 0) baseTenantPatch.security_deposit = updatedDeposit;
+        if (vehicleInfo !== void 0) baseTenantPatch.vehicle_info = vehicleInfo;
+        if (hasPropertyChange && resolvedPropertyId) baseTenantPatch.property_id = resolvedPropertyId;
+
+        const extendedTenantPatch: Record<string, any> = { ...baseTenantPatch };
+        if (hasPropertyChange) extendedTenantPatch.property_name = resolvedPropertyName;
+        if (hasUnitChange) extendedTenantPatch.unit_number = resolvedUnitNumber;
+        if (hasUnitTypeChange) extendedTenantPatch.unit_type = resolvedUnitType;
+        if (hasRentChange) extendedTenantPatch.monthly_rent = newRent;
+        if (depositStatus !== void 0 || securityDeposit !== void 0) {
+          extendedTenantPatch.deposit_status = updatedDepositStatus;
+        }
+
+        // Recalculate billing anniversary metadata ONLY if leaseStart was explicitly edited
+        let anniversaryDayUpd: number | undefined;
+        let nextBillUpd: string | null = null;
+        if (cleanLeaseStartPatch) {
+          const moveInYmdUpd = parseBillingDateToYmd(cleanLeaseStartPatch);
+          if (moveInYmdUpd) {
+            anniversaryDayUpd = getBillingAnniversaryDay(moveInYmdUpd);
+            const { data: existingPayRows } = await supabaseAdmin
+              .from("rent_payments")
+              .select("due_date,billing_period_start")
+              .or(`tenant_id.eq.${t2.id},tenant_ref.ilike.${t2.tenant_ref}`);
+            const issuedDueDates = (existingPayRows || [])
+              .map((row: any) => parseBillingDateToYmd(row.billing_period_start || row.due_date))
+              .filter(Boolean);
+            nextBillUpd = getNextBillingDate(moveInYmdUpd, getNairobiDateString(), issuedDueDates);
+            extendedTenantPatch.billing_anniversary_day = anniversaryDayUpd;
+            if (nextBillUpd) extendedTenantPatch.next_billing_date = nextBillUpd;
+          }
+        }
+
+        if (Object.keys(extendedTenantPatch).length > 0) {
+          let { error: tUpdErr } = await supabaseAdmin.from("tenants").update(extendedTenantPatch).eq("id", t2.id);
+          if (tUpdErr && Object.keys(baseTenantPatch).length > 0) {
+            const retryBase = await supabaseAdmin.from("tenants").update(baseTenantPatch).eq("id", t2.id);
+            tUpdErr = retryBase.error;
+          }
+          if (tUpdErr) {
+            return res.status(400).json({ error: tUpdErr.message });
+          }
+        }
+
+        let resolvedUnitId = existingLease?.unit_id || void 0;
+        if (resolvedPropertyId && (hasUnitChange || hasPropertyChange || hasUnitTypeChange || hasRentChange)) {
+          const cleanUnit = resolvedUnitNumber;
+          const { data: existingUnit } = await supabaseAdmin
+            .from("units")
+            .select("*")
+            .eq("property_id", resolvedPropertyId)
+            .ilike("unit_number", cleanUnit)
+            .maybeSingle();
+          if (existingUnit) {
+            resolvedUnitId = existingUnit.id;
+            const unitPatch: Record<string, any> = { status: "Occupied" };
+            if (hasUnitTypeChange) unitPatch.unit_type_name = resolvedUnitType;
+            if (hasRentChange) unitPatch.monthly_rent = Number(monthlyRent);
+            await supabaseAdmin.from("units").update(unitPatch).eq("id", existingUnit.id);
+          } else if (hasUnitChange || hasPropertyChange) {
+            const { data: createdUnit } = await supabaseAdmin
+              .from("units")
+              .insert({
+                property_id: resolvedPropertyId,
+                unit_number: cleanUnit,
+                unit_type_name: resolvedUnitType || "Deluxe",
+                floor_number: 1,
+                monthly_rent: hasRentChange ? Number(monthlyRent) : newRent || 35e3,
+                status: "Occupied",
+              })
+              .select("*")
+              .maybeSingle();
+            if (createdUnit) resolvedUnitId = createdUnit.id;
+          }
+        }
+
+        // Update lease record ONLY with lease fields that were explicitly provided.
+        // Never overwrite rent_payments (due_date, billing periods, amount_due, amount_paid, or historical records).
+        const leaseUpdatePromise =
+          existingLease && hasLeaseFieldUpdate
+            ? (async () => {
+                const baseLeasePatch: Record<string, any> = {};
+                if (resolvedUnitId && resolvedUnitId !== existingLease.unit_id) baseLeasePatch.unit_id = resolvedUnitId;
+                if (hasUnitChange) baseLeasePatch.unit_number = resolvedUnitNumber;
+                if (hasUnitTypeChange) baseLeasePatch.unit_type = resolvedUnitType;
+                if (hasPropertyChange) baseLeasePatch.property_name = resolvedPropertyName;
+                if (hasRentChange) {
+                  const base = Math.round(newRent * 0.88);
+                  const util = Math.round(newRent * 0.06);
+                  const maint = Math.round(newRent * 0.04);
+                  const park = Math.max(0, newRent - base - util - maint);
+                  baseLeasePatch.monthly_rent = newRent;
+                  baseLeasePatch.base_rent = base;
+                  baseLeasePatch.utility_package = util;
+                  baseLeasePatch.maintenance_fee = maint;
+                  baseLeasePatch.parking_fee = park;
+                }
+                if (cleanLeaseStartPatch !== void 0) baseLeasePatch.lease_start = cleanLeaseStartPatch;
+                if (cleanLeaseEndPatch !== void 0) baseLeasePatch.lease_end = cleanLeaseEndPatch;
+                if (leaseNotes !== void 0) baseLeasePatch.lease_notes = leaseNotes;
+                if (leaseDuration !== void 0) baseLeasePatch.lease_duration = leaseDuration;
+                if (occupants !== void 0) baseLeasePatch.occupants = occupants;
+                if (paymentMethod !== void 0) baseLeasePatch.payment_method = paymentMethod;
+
+                if (Object.keys(baseLeasePatch).length > 0) {
+                  const extLeasePatch: Record<string, any> = {
+                    ...baseLeasePatch,
+                    ...(anniversaryDayUpd !== void 0 ? { billing_anniversary_day: anniversaryDayUpd } : {}),
+                    ...(nextBillUpd ? { next_billing_date: nextBillUpd } : {}),
+                  };
+                  const { error: lErr } = await supabaseAdmin.from("leases").update(extLeasePatch).eq("id", existingLease.id);
+                  if (lErr) {
+                    await supabaseAdmin.from("leases").update(baseLeasePatch).eq("id", existingLease.id);
+                  }
+                }
+              })()
+            : Promise.resolve();
+
+        await Promise.all([
+          leaseUpdatePromise,
+          pg
+            ? pg
+                .query(
+                  `UPDATE public.tenants
+                   SET full_name = COALESCE($1, full_name),
+                       phone = COALESCE($2, phone),
+                       email = COALESCE($3, email),
+                       property_name = COALESCE($4, property_name),
+                       unit_number = COALESCE($5, unit_number),
+                       unit_type = COALESCE($6, unit_type),
+                       monthly_rent = COALESCE($7, monthly_rent),
+                       security_deposit = COALESCE($8, security_deposit),
+                       deposit_status = COALESCE($9, deposit_status)
+                   WHERE id = $10 OR UPPER(tenant_ref) = UPPER($11);`,
+                  [
+                    name !== void 0 ? updatedFullName : null,
+                    phone !== void 0 ? updatedPhone : null,
+                    email !== void 0 ? updatedEmail : null,
+                    hasPropertyChange ? resolvedPropertyName : null,
+                    hasUnitChange ? resolvedUnitNumber : null,
+                    hasUnitTypeChange ? resolvedUnitType : null,
+                    hasRentChange ? newRent : null,
+                    securityDeposit !== void 0 ? updatedDeposit : null,
+                    depositStatus !== void 0 || securityDeposit !== void 0 ? updatedDepositStatus : null,
+                    t2.id,
+                    t2.tenant_ref,
+                  ]
+                )
+                .catch(() => {})
+            : Promise.resolve(),
+          pg && hasLeaseFieldUpdate
+            ? pg
+                .query(
+                  `UPDATE public.leases
+                   SET property_name = COALESCE($1, property_name),
+                       unit_number = COALESCE($2, unit_number),
+                       unit_type = COALESCE($3, unit_type),
+                       monthly_rent = COALESCE($4, monthly_rent),
+                       lease_start = COALESCE($5, lease_start),
+                       lease_end = COALESCE($6, lease_end),
+                       lease_duration = COALESCE($7, lease_duration),
+                       occupants = COALESCE($8, occupants),
+                       lease_notes = COALESCE($9, lease_notes),
+                       payment_method = COALESCE($10, payment_method),
+                       billing_anniversary_day = COALESCE($11, billing_anniversary_day),
+                       next_billing_date = COALESCE($12, next_billing_date)
+                   WHERE tenant_id = $13 OR UPPER(tenant_ref) = UPPER($14);`,
+                  [
+                    hasPropertyChange ? resolvedPropertyName : null,
+                    hasUnitChange ? resolvedUnitNumber : null,
+                    hasUnitTypeChange ? resolvedUnitType : null,
+                    hasRentChange ? newRent : null,
+                    cleanLeaseStartPatch ?? null,
+                    cleanLeaseEndPatch ?? null,
+                    leaseDuration ?? null,
+                    occupants ?? null,
+                    leaseNotes ?? null,
+                    paymentMethod ?? null,
+                    anniversaryDayUpd ?? null,
+                    nextBillUpd ?? null,
+                    t2.id,
+                    t2.tenant_ref,
+                  ]
+                )
+                .catch(() => {})
+            : Promise.resolve(),
+        ]);
+
+        cachedFullDatabaseState = null;
+        cachedFullDatabaseStateExpiresAt = 0;
+        const refreshedState = await fetchFullDatabaseState(true);
+        const updatedProfile = refreshedState.tenants.find(
+          (item) => item.id === t2.id || item.tenantRef.toUpperCase() === String(t2.tenant_ref).toUpperCase()
+        );
+        void logActivity("lease", `Tenant Profile Updated (${t2.tenant_ref})`, `${updatedFullName} (${t2.tenant_ref}) updated in Supabase.`, req.currentUser?.fullName || "Manager", t2.tenant_ref, "mint");
+        return res.json(updatedProfile || { id: t2.id, tenantRef: t2.tenant_ref, name: updatedFullName });
       }
     }
+
     const findRes = await pg.query(`SELECT * FROM public.tenants WHERE id::text = $1 OR UPPER(tenant_ref) = UPPER($1) LIMIT 1;`, [paramId]);
     if (findRes.rows.length === 0) {
       return res.status(404).json({ error: "Tenant not found." });
@@ -7258,7 +7418,40 @@ async function createApp() {
           ? "Held"
           : "Not Paid"
         : null;
-    await pg.query(`UPDATE public.tenants
+
+    let resolvedPropIdPg: string | null = null;
+    let resolvedPropNamePg: string | null = null;
+    if (hasPropertyChange) {
+      if (propertyId && isValidUuid(propertyId)) {
+        const pRes = await pg.query(`SELECT id, name FROM public.properties WHERE id = $1 LIMIT 1;`, [propertyId]).catch(() => ({ rows: [] }));
+        resolvedPropIdPg = pRes.rows[0]?.id || propertyId;
+        resolvedPropNamePg = pRes.rows[0]?.name || (property ? String(property).trim() : null);
+      } else if (property) {
+        const pRes = await pg.query(`SELECT id, name FROM public.properties WHERE LOWER(name) = LOWER($1) LIMIT 1;`, [String(property).trim()]).catch(() => ({ rows: [] }));
+        resolvedPropIdPg = pRes.rows[0]?.id || null;
+        resolvedPropNamePg = pRes.rows[0]?.name || String(property).trim();
+      }
+    }
+
+    let pgAnnivDay: number | null = null;
+    let pgNextBill: string | null = null;
+    if (cleanLeaseStartPatch) {
+      const moveInYmdPg = parseBillingDateToYmd(cleanLeaseStartPatch);
+      if (moveInYmdPg) {
+        pgAnnivDay = getBillingAnniversaryDay(moveInYmdPg);
+        const pgPayRes = await pg
+          .query(`SELECT due_date, billing_period_start FROM public.rent_payments WHERE tenant_id = $1 OR UPPER(tenant_ref) = UPPER($2);`, [t.id, t.tenant_ref])
+          .catch(() => ({ rows: [] }));
+        const issuedDatesPg = (pgPayRes.rows || [])
+          .map((row: any) => parseBillingDateToYmd(row.billing_period_start || row.due_date))
+          .filter(Boolean);
+        pgNextBill = getNextBillingDate(moveInYmdPg, getNairobiDateString(), issuedDatesPg);
+      }
+    }
+
+    await pg
+      .query(
+        `UPDATE public.tenants
          SET full_name = COALESCE($1, full_name),
              phone = COALESCE($2, phone),
              email = COALESCE($3, email),
@@ -7268,33 +7461,128 @@ async function createApp() {
              id_number = COALESCE($7, id_number),
              security_deposit = COALESCE($8, security_deposit),
              deposit_status = COALESCE($9, deposit_status),
-             vehicle_info = COALESCE($10, vehicle_info)
-         WHERE id = $11;`, [name ?? null, phone ?? null, email ?? null, dob ?? null, gender ?? null, nationality ?? null, idNumber ?? null, securityDeposit !== void 0 ? nextDepositNum : null, nextDepositStatus, vehicleInfo ?? null, t.id]).catch(async () => {
-      await pg.query(`UPDATE public.tenants
-         SET full_name = COALESCE($1, full_name),
-             phone = COALESCE($2, phone),
-             email = COALESCE($3, email),
-             dob = COALESCE($4, dob),
-             gender = COALESCE($5, gender),
-             nationality = COALESCE($6, nationality),
-             id_number = COALESCE($7, id_number),
-             security_deposit = COALESCE($8, security_deposit),
-             vehicle_info = COALESCE($9, vehicle_info)
-         WHERE id = $10;`, [name ?? null, phone ?? null, email ?? null, dob ?? null, gender ?? null, nationality ?? null, idNumber ?? null, securityDeposit !== void 0 ? nextDepositNum : null, vehicleInfo ?? null, t.id]);
-    });
-    await pg.query(`UPDATE public.leases
-         SET lease_notes = COALESCE($1, lease_notes),
-             unit_number = COALESCE($2, unit_number),
-             unit_type = COALESCE($3, unit_type),
-             monthly_rent = COALESCE($4, monthly_rent),
-             lease_duration = COALESCE($5, lease_duration),
-             payment_method = COALESCE($6, payment_method),
-             lease_start = COALESCE($7, lease_start),
-             lease_end = COALESCE($8, lease_end)
-         WHERE tenant_id = $9 OR tenant_ref = $10;`, [leaseNotes ?? null, unitNumber ?? null, unitType ?? null, monthlyRent !== void 0 ? Number(monthlyRent) : null, leaseDuration ?? null, paymentMethod ?? null, leaseStart ?? null, leaseEnd ?? null, t.id, t.tenant_ref]);
-    if (dueDate !== void 0 && String(dueDate).trim()) {
-      await pg.query(`UPDATE public.rent_payments SET due_date = $1 WHERE (tenant_id = $2 OR UPPER(tenant_ref) = UPPER($3)) AND status <> 'Paid';`, [parseBillingDateToYmd(dueDate) || String(dueDate).trim(), t.id, t.tenant_ref]);
+             vehicle_info = COALESCE($10, vehicle_info),
+             property_id = COALESCE($11, property_id),
+             property_name = COALESCE($12, property_name),
+             unit_number = COALESCE($13, unit_number),
+             unit_type = COALESCE($14, unit_type),
+             monthly_rent = COALESCE($15, monthly_rent),
+             billing_anniversary_day = COALESCE($16, billing_anniversary_day),
+             next_billing_date = COALESCE($17, next_billing_date)
+         WHERE id = $18;`,
+        [
+          name !== void 0 ? String(name).trim() : null,
+          phone !== void 0 ? String(phone).trim() : null,
+          email !== void 0 ? String(email).trim().toLowerCase() : null,
+          dob ?? null,
+          gender ?? null,
+          nationality ?? null,
+          idNumber ?? null,
+          securityDeposit !== void 0 ? nextDepositNum : null,
+          nextDepositStatus,
+          vehicleInfo ?? null,
+          resolvedPropIdPg,
+          resolvedPropNamePg,
+          hasUnitChange ? String(unitNumber).trim() : null,
+          hasUnitTypeChange ? unitType : null,
+          hasRentChange ? Number(monthlyRent) : null,
+          pgAnnivDay,
+          pgNextBill,
+          t.id,
+        ]
+      )
+      .catch(async () => {
+        await pg.query(
+          `UPDATE public.tenants
+           SET full_name = COALESCE($1, full_name),
+               phone = COALESCE($2, phone),
+               email = COALESCE($3, email),
+               dob = COALESCE($4, dob),
+               gender = COALESCE($5, gender),
+               nationality = COALESCE($6, nationality),
+               id_number = COALESCE($7, id_number),
+               security_deposit = COALESCE($8, security_deposit),
+               vehicle_info = COALESCE($9, vehicle_info)
+           WHERE id = $10;`,
+          [
+            name !== void 0 ? String(name).trim() : null,
+            phone !== void 0 ? String(phone).trim() : null,
+            email !== void 0 ? String(email).trim().toLowerCase() : null,
+            dob ?? null,
+            gender ?? null,
+            nationality ?? null,
+            idNumber ?? null,
+            securityDeposit !== void 0 ? nextDepositNum : null,
+            vehicleInfo ?? null,
+            t.id,
+          ]
+        );
+      });
+
+    if (hasLeaseFieldUpdate) {
+      await pg
+        .query(
+          `UPDATE public.leases
+           SET lease_notes = COALESCE($1, lease_notes),
+               property_name = COALESCE($2, property_name),
+               unit_number = COALESCE($3, unit_number),
+               unit_type = COALESCE($4, unit_type),
+               monthly_rent = COALESCE($5, monthly_rent),
+               lease_duration = COALESCE($6, lease_duration),
+               occupants = COALESCE($7, occupants),
+               payment_method = COALESCE($8, payment_method),
+               lease_start = COALESCE($9, lease_start),
+               lease_end = COALESCE($10, lease_end),
+               billing_anniversary_day = COALESCE($11, billing_anniversary_day),
+               next_billing_date = COALESCE($12, next_billing_date)
+           WHERE tenant_id = $13 OR UPPER(tenant_ref) = UPPER($14);`,
+          [
+            leaseNotes ?? null,
+            resolvedPropNamePg,
+            hasUnitChange ? String(unitNumber).trim() : null,
+            hasUnitTypeChange ? unitType : null,
+            hasRentChange ? Number(monthlyRent) : null,
+            leaseDuration ?? null,
+            occupants ?? null,
+            paymentMethod ?? null,
+            cleanLeaseStartPatch ?? null,
+            cleanLeaseEndPatch ?? null,
+            pgAnnivDay,
+            pgNextBill,
+            t.id,
+            t.tenant_ref,
+          ]
+        )
+        .catch(async () => {
+          await pg.query(
+            `UPDATE public.leases
+             SET lease_notes = COALESCE($1, lease_notes),
+                 property_name = COALESCE($2, property_name),
+                 unit_number = COALESCE($3, unit_number),
+                 unit_type = COALESCE($4, unit_type),
+                 monthly_rent = COALESCE($5, monthly_rent),
+                 lease_duration = COALESCE($6, lease_duration),
+                 payment_method = COALESCE($7, payment_method),
+                 lease_start = COALESCE($8, lease_start),
+                 lease_end = COALESCE($9, lease_end)
+             WHERE tenant_id = $10 OR UPPER(tenant_ref) = UPPER($11);`,
+            [
+              leaseNotes ?? null,
+              resolvedPropNamePg,
+              hasUnitChange ? String(unitNumber).trim() : null,
+              hasUnitTypeChange ? unitType : null,
+              hasRentChange ? Number(monthlyRent) : null,
+              leaseDuration ?? null,
+              paymentMethod ?? null,
+              cleanLeaseStartPatch ?? null,
+              cleanLeaseEndPatch ?? null,
+              t.id,
+              t.tenant_ref,
+            ]
+          );
+        });
     }
+
     cachedFullDatabaseState = null;
     cachedFullDatabaseStateExpiresAt = 0;
     const fullState = await fetchFullDatabaseState(true);
@@ -7473,7 +7761,7 @@ async function createApp() {
       void logActivity(
         "lease",
         `Tenant Vacated (${t2.tenant_ref})`,
-        `${t2.full_name} vacated ${cleanUnit} at ${cleanProperty}. Deposit: ${finalDepositStatus} (Returned: KSh ${returnedNum.toLocaleString()}${damageNum > 0 ? `, Damage Deduction: KSh ${damageNum.toLocaleString()}` : ""}).`,
+        `${t2.full_name} vacated ${cleanUnit} at ${cleanProperty}. Security Deposit: ${finalDepositStatus} (Returned: KSh ${returnedNum.toLocaleString()}${damageNum > 0 ? `, Damage Deduction: KSh ${damageNum.toLocaleString()}` : ""}).`,
         actorName,
         t2.tenant_ref,
         damageNum > 0 ? "lime" : "mint"
@@ -7560,7 +7848,7 @@ async function createApp() {
     void logActivity(
       "lease",
       `Tenant Vacated (${target.tenant_ref})`,
-      `${target.full_name} vacated ${cleanUnit} at ${cleanProperty}. Deposit: ${finalDepositStatus} (Returned: KSh ${returnedNum.toLocaleString()}${damageNum > 0 ? `, Damage Deduction: KSh ${damageNum.toLocaleString()}` : ""}).`,
+      `${target.full_name} vacated ${cleanUnit} at ${cleanProperty}. Security Deposit: ${finalDepositStatus} (Returned: KSh ${returnedNum.toLocaleString()}${damageNum > 0 ? `, Damage Deduction: KSh ${damageNum.toLocaleString()}` : ""}).`,
       actorName,
       target.tenant_ref,
       damageNum > 0 ? "lime" : "mint"
@@ -7616,14 +7904,16 @@ async function createApp() {
     return res.json({ success: true });
   });
   app.post("/api/payments", requireRole(["owner", "property_manager"]), async (req, res) => {
-    const { tenantRef, tenantName, property, unitType, unitNumber, paymentNote, leaseTerm, dueDate, paidDate, amount, status } = req.body;
+    const { tenantRef, tenantName, property, unitType, unitNumber, paymentNote, transactionType, leaseTerm, dueDate, paidDate, amount, status } = req.body;
     if (!tenantName || amount === void 0) {
       return res.status(400).json({ error: "Tenant name and payment amount are required." });
     }
     const propName = String(property || "Main Property").trim();
     const amtNum = Math.max(0, Number(amount) || 0);
     const finalStatus = status || "Paid";
-    const todayYmd = getNairobiTodayYmd();
+    const txType = classifyPaymentTransaction({ transactionType, paymentNote });
+    const isDeposit = txType === "Security Deposit";
+    const todayYmd = getNairobiDateString();
     const todayStr = formatShortDate(/* @__PURE__ */ new Date());
     if (supabaseAdmin && !isSupabaseQuotaRestricted()) {
       let resolvedRef = tenantRef && tenantRef !== "AUTO" ? String(tenantRef).trim().toUpperCase() : "";
@@ -7649,14 +7939,14 @@ async function createApp() {
           const { data: createdProp } = await supabaseAdmin.from("properties").insert({ code_prefix: desiredPrefix, name: propName, address: "Registered Property Location", total_units: 24, manager_name: req.currentUser?.fullName || "Property Manager", rating: 5, variant: "deluxe" }).select("*").single();
           propRow = createdProp;
         }
-        const { data: createdTenant, error: tErr } = await supabaseAdmin.from("tenants").insert({ property_id: propRow?.id || null, tenant_ref: resolvedRef || "AUTO", full_name: String(tenantName).trim(), phone: "On file", email: `${String(tenantName).toLowerCase().replace(/\s+/g, ".")}@tenant.io`, dob: todayStr, gender: "Resident", nationality: "Kenyan", id_number: `ID-${Date.now().toString().slice(-6)}`, tier: "Verified Tenant", on_time_streak: "Active Lease", security_deposit: amtNum, vehicle_info: "Registered Resident Vehicle", avatar_bg: "#D8F3E5" }).select("*").single();
+        const { data: createdTenant, error: tErr } = await supabaseAdmin.from("tenants").insert({ property_id: propRow?.id || null, tenant_ref: resolvedRef || "AUTO", full_name: String(tenantName).trim(), phone: "On file", email: `${String(tenantName).toLowerCase().replace(/\s+/g, ".")}@tenant.io`, dob: todayStr, gender: "Resident", nationality: "Kenyan", id_number: `ID-${Date.now().toString().slice(-6)}`, tier: "Verified Tenant", on_time_streak: "Active Lease", security_deposit: isDeposit ? amtNum : 0, deposit_status: isDeposit && finalStatus === "Paid" ? "Held" : "Not Paid", vehicle_info: "Registered Resident Vehicle", avatar_bg: "#D8F3E5" }).select("*").single();
         if (tErr || !createdTenant) {
           return res.status(400).json({ error: tErr?.message || "Failed to register tenant for payment." });
         }
         tenantRow = createdTenant;
         resolvedRef = tenantRow.tenant_ref;
         const leaseCode = `LS-${resolvedRef.replace("-", "")}-${Date.now().toString().slice(-4)}`;
-        await supabaseAdmin.from("leases").insert({ lease_code: leaseCode, tenant_id: tenantRow.id, tenant_ref: resolvedRef, unit_number: unitNumber || "Unit 101", unit_type: unitType || "Deluxe", property_name: propRow?.name || propName, monthly_rent: amtNum, base_rent: amtNum, utility_package: 0, maintenance_fee: 0, parking_fee: 0, occupants: "1 Adult", lease_duration: leaseTerm || "12 Months", lease_start: todayYmd, lease_end: "Active", lease_notes: "Standard residential lease agreement.", perks: [], payment_method: "M-Pesa / Bank Transfer", is_active: true });
+        await supabaseAdmin.from("leases").insert({ lease_code: leaseCode, tenant_id: tenantRow.id, tenant_ref: resolvedRef, unit_number: unitNumber || "Unit 101", unit_type: unitType || "Deluxe", property_name: propRow?.name || propName, monthly_rent: isDeposit ? 0 : amtNum, base_rent: isDeposit ? 0 : amtNum, utility_package: 0, maintenance_fee: 0, parking_fee: 0, occupants: "1 Adult", lease_duration: leaseTerm || "12 Months", lease_start: todayYmd, lease_end: "Active", lease_notes: "Standard residential lease agreement.", perks: [], payment_method: "M-Pesa / Bank Transfer", is_active: true });
       }
       const [{ data: activeLease }, validConfirmerId] = await Promise.all([
         supabaseAdmin.from("leases").select("id, lease_start").eq("tenant_id", tenantRow.id).maybeSingle(),
@@ -7664,11 +7954,13 @@ async function createApp() {
       ]);
       const moveInYmd = parseBillingDateToYmd(activeLease?.lease_start) || parseBillingDateToYmd(dueDate) || todayYmd;
       const targetDueYmd = parseBillingDateToYmd(dueDate) || todayYmd;
-      const cycle = getBillingCycleForDate(moveInYmd, targetDueYmd);
-      const periodNote = paymentNote
-        ? (String(paymentNote).includes(" - ") ? String(paymentNote) : `${String(paymentNote).trim()} (${formatYmdShort(cycle.periodStart)} - ${formatYmdShort(cycle.periodEnd)})`)
+      const cycle = isDeposit ? null : getBillingCycleForDate(moveInYmd, targetDueYmd);
+      const periodNote = isDeposit
+        ? normalizeNewPaymentNote("Security Deposit", paymentNote)
+        : paymentNote
+        ? (String(paymentNote).includes(" - ") ? String(paymentNote) : normalizeNewPaymentNote("Rent", paymentNote, `${formatYmdShort(cycle.periodStart)} - ${formatYmdShort(cycle.periodEnd)}`))
         : formatBillingPeriodNote(cycle);
-      const paymentCode2 = `PAY-${resolvedRef.replace("-", "")}-${Date.now().toString().slice(-4)}`;
+      const paymentCode2 = `${isDeposit ? "DEP" : "PAY"}-${resolvedRef.replace("-", "")}-${Date.now().toString().slice(-4)}`;
       const baseInsertPayload = {
         payment_code: paymentCode2,
         lease_id: activeLease?.id || null,
@@ -7681,7 +7973,7 @@ async function createApp() {
         unit_number: unitNumber || "Unit 101",
         payment_note: periodNote,
         lease_term: leaseTerm || "12 months",
-        due_date: parseBillingDateToYmd(dueDate) || cycle.dueDate,
+        due_date: isDeposit ? targetDueYmd : (parseBillingDateToYmd(dueDate) || cycle.dueDate),
         paid_date: finalStatus === "Paid" ? (paidDate || todayStr) : "-",
         amount_due: amtNum,
         amount_paid: finalStatus === "Paid" ? amtNum : 0,
@@ -7689,14 +7981,17 @@ async function createApp() {
         confirmed_by: validConfirmerId,
         confirmed_at: finalStatus === "Paid" ? (/* @__PURE__ */ new Date()).toISOString() : null
       };
-      let { data: r, error: payErr } = await supabaseAdmin.from("rent_payments").insert({
-        ...baseInsertPayload,
-        invoice_date: todayYmd,
-        billing_period_start: cycle.periodStart,
-        billing_period_end: cycle.periodEnd,
-        billing_anniversary_day: cycle.anniversaryDay,
-        billing_period_key: buildBillingPeriodKey(tenantRow.id || resolvedRef, cycle.periodStart, cycle.periodEnd)
-      }).select("*").single();
+      const extendedPayload = isDeposit
+        ? { ...baseInsertPayload, invoice_date: todayYmd }
+        : {
+            ...baseInsertPayload,
+            invoice_date: todayYmd,
+            billing_period_start: cycle.periodStart,
+            billing_period_end: cycle.periodEnd,
+            billing_anniversary_day: cycle.anniversaryDay,
+            billing_period_key: buildBillingPeriodKey(tenantRow.id || resolvedRef, cycle.periodStart, cycle.periodEnd),
+          };
+      let { data: r, error: payErr } = await supabaseAdmin.from("rent_payments").insert(extendedPayload).select("*").single();
       if (payErr) {
         const retry = await supabaseAdmin.from("rent_payments").insert(baseInsertPayload).select("*").single();
         r = retry.data;
@@ -7707,9 +8002,10 @@ async function createApp() {
       }
       cachedFullDatabaseState = null;
       cachedFullDatabaseStateExpiresAt = 0;
-      void logActivity("payment", `Rent ${finalStatus === "Paid" ? "Payment Recorded" : "Invoice Issued"} (${resolvedRef})`, `KSh ${amtNum.toLocaleString()} ${finalStatus.toLowerCase()} for ${tenantName} (${unitNumber || "Unit 101"}, ${propName}).`, req.currentUser?.fullName || "Owner", resolvedRef, finalStatus === "Paid" ? "mint" : "lime");
+      void logActivity("payment", `${isDeposit ? "Security Deposit" : "Rent"} ${finalStatus === "Paid" ? "Payment Recorded" : (isDeposit ? "Pending" : "Invoice Issued")} (${resolvedRef})`, `KSh ${amtNum.toLocaleString()} ${isDeposit ? "Security Deposit " : ""}${finalStatus.toLowerCase()} for ${tenantName} (${unitNumber || "Unit 101"}, ${propName}).`, req.currentUser?.fullName || "Owner", resolvedRef, finalStatus === "Paid" ? "mint" : "lime");
       if (finalStatus === "Paid" && r.status === "Paid" && r.id) {
-        void dispatchSmsNotification({ tenantId: tenantRow?.id || void 0, tenantRef: r.tenant_ref, tenantName: r.tenant_name || tenantRow?.full_name || String(tenantName).trim(), recipientPhone: tenantRow?.phone || "On file", propertyName: r.property_name, unitNumber: r.unit_number, triggerType: "payment_confirmed", paymentId: r.id, paymentVerified: true, messageBody: `Dear ${r.tenant_name}, thank you! Your rent payment of KSh ${amtNum.toLocaleString()} for ${r.property_name}, Apartment ${r.unit_number} (Tenant Ref: ${r.tenant_ref}, Receipt: ${r.payment_code}) has been verified and recorded.`, sentBy: req.currentUser?.fullName || "Rentify System" });
+        const paymentNoun = isDeposit ? "security deposit payment" : "rent payment";
+        void dispatchSmsNotification({ tenantId: tenantRow?.id || void 0, tenantRef: r.tenant_ref, tenantName: r.tenant_name || tenantRow?.full_name || String(tenantName).trim(), recipientPhone: tenantRow?.phone || "On file", propertyName: r.property_name, unitNumber: r.unit_number, triggerType: "payment_confirmed", paymentId: r.id, paymentVerified: true, messageBody: `Dear ${r.tenant_name}, thank you! Your ${paymentNoun} of KSh ${amtNum.toLocaleString()} for ${r.property_name}, Apartment ${r.unit_number} (Tenant Ref: ${r.tenant_ref}, Receipt: ${r.payment_code}) has been verified and recorded.`, sentBy: req.currentUser?.fullName || "Rentify System" });
         void dispatchTenantEmailNotification({ tenantId: tenantRow?.id || void 0, tenantRef: r.tenant_ref, tenantName: r.tenant_name || tenantRow?.full_name || String(tenantName).trim(), recipientEmail: tenantRow?.email, propertyName: r.property_name, unitNumber: r.unit_number, triggerType: "payment_confirmed", amountDue: amtNum, dueDate: r.due_date || todayYmd, receiptNo: r.payment_code, paymentId: r.id, paymentVerified: true, sentBy: req.currentUser?.fullName || "ARabella agency" });
       }
       return res.status(201).json({
@@ -7721,14 +8017,15 @@ async function createApp() {
         property: r.property_name,
         unitType: r.unit_type,
         unitNumber: r.unit_number,
-        paymentNote: r.payment_note,
+        paymentNote: formatTransactionDisplayNote(r),
+        transactionType: txType,
         leaseTerm: r.lease_term,
         dueDate: r.due_date,
         paidDate: r.paid_date,
         invoiceDate: r.invoice_date || todayYmd,
-        billingPeriodStart: r.billing_period_start || cycle.periodStart,
-        billingPeriodEnd: r.billing_period_end || cycle.periodEnd,
-        billingAnniversaryDay: Number(r.billing_anniversary_day || cycle.anniversaryDay),
+        billingPeriodStart: isDeposit ? void 0 : (r.billing_period_start || cycle?.periodStart),
+        billingPeriodEnd: isDeposit ? void 0 : (r.billing_period_end || cycle?.periodEnd),
+        billingAnniversaryDay: isDeposit ? void 0 : Number(r.billing_anniversary_day || cycle?.anniversaryDay),
         amount: Number(r.amount_due ?? r.amount_paid ?? amtNum),
         amountPaid: Number(r.amount_paid ?? (finalStatus === "Paid" ? amtNum : 0)),
         balanceDue: Math.max(0, Number(r.amount_due ?? amtNum) - Number(r.amount_paid ?? (finalStatus === "Paid" ? amtNum : 0))),
@@ -7737,12 +8034,14 @@ async function createApp() {
         confirmedAt: r.confirmed_at
       });
     }
-    const paymentCode = `PAY-${Date.now().toString().slice(-4)}`;
+    const paymentCode = `${isDeposit ? "DEP" : "PAY"}-${Date.now().toString().slice(-4)}`;
     const pgLeaseRes = await pg.query(`SELECT lease_start FROM public.leases WHERE UPPER(tenant_ref) = UPPER($1) LIMIT 1;`, [tenantRef || "A-001"]);
     const pgMoveInYmd = parseBillingDateToYmd(pgLeaseRes.rows[0]?.lease_start) || parseBillingDateToYmd(dueDate) || todayYmd;
-    const pgCycle = getBillingCycleForDate(pgMoveInYmd, parseBillingDateToYmd(dueDate) || todayYmd);
-    const pgNote = paymentNote
-      ? (String(paymentNote).includes(" - ") ? String(paymentNote) : `${String(paymentNote).trim()} (${formatYmdShort(pgCycle.periodStart)} - ${formatYmdShort(pgCycle.periodEnd)})`)
+    const pgCycle = isDeposit ? null : getBillingCycleForDate(pgMoveInYmd, parseBillingDateToYmd(dueDate) || todayYmd);
+    const pgNote = isDeposit
+      ? normalizeNewPaymentNote("Security Deposit", paymentNote)
+      : paymentNote
+      ? (String(paymentNote).includes(" - ") ? String(paymentNote) : normalizeNewPaymentNote("Rent", paymentNote, `${formatYmdShort(pgCycle.periodStart)} - ${formatYmdShort(pgCycle.periodEnd)}`))
       : formatBillingPeriodNote(pgCycle);
     const insertRes = await pg.query(`INSERT INTO public.rent_payments
           (payment_code, tenant_ref, tenant_name, avatar_bg, property_name, unit_type, unit_number, payment_note, lease_term, due_date, paid_date, invoice_date, billing_period_start, billing_period_end, billing_anniversary_day, billing_period_key, amount, amount_due, amount_paid, status, confirmed_by, confirmed_at)
@@ -7756,13 +8055,13 @@ async function createApp() {
       unitNumber || "Unit 101",
       pgNote,
       leaseTerm || "12 months",
-      parseBillingDateToYmd(dueDate) || pgCycle.dueDate,
+      isDeposit ? (parseBillingDateToYmd(dueDate) || todayYmd) : (parseBillingDateToYmd(dueDate) || pgCycle.dueDate),
       finalStatus === "Paid" ? (paidDate || todayStr) : "-",
       todayYmd,
-      pgCycle.periodStart,
-      pgCycle.periodEnd,
-      pgCycle.anniversaryDay,
-      buildBillingPeriodKey(tenantRef || "A-001", pgCycle.periodStart, pgCycle.periodEnd),
+      isDeposit ? null : pgCycle.periodStart,
+      isDeposit ? null : pgCycle.periodEnd,
+      isDeposit ? null : pgCycle.anniversaryDay,
+      isDeposit ? null : buildBillingPeriodKey(tenantRef || "A-001", pgCycle.periodStart, pgCycle.periodEnd),
       amtNum,
       finalStatus === "Paid" ? amtNum : 0,
       finalStatus,
@@ -7773,7 +8072,8 @@ async function createApp() {
     cachedFullDatabaseState = null;
     cachedFullDatabaseStateExpiresAt = 0;
     if (finalStatus === "Paid" && r && r.id) {
-      void dispatchSmsNotification({ tenantRef: r.tenant_ref, tenantName: r.tenant_name, recipientPhone: "On file", propertyName: r.property_name, unitNumber: r.unit_number, triggerType: "payment_confirmed", paymentId: r.id, paymentVerified: true, messageBody: `Dear ${r.tenant_name}, thank you! Your rent payment of KSh ${amtNum.toLocaleString()} for ${r.property_name}, Apartment ${r.unit_number} (Tenant Ref: ${r.tenant_ref}, Receipt: ${r.payment_code}) has been verified and recorded.`, sentBy: req.currentUser?.fullName || "ARabella agency" });
+      const pgPaymentNoun = isDeposit ? "security deposit payment" : "rent payment";
+      void dispatchSmsNotification({ tenantRef: r.tenant_ref, tenantName: r.tenant_name, recipientPhone: "On file", propertyName: r.property_name, unitNumber: r.unit_number, triggerType: "payment_confirmed", paymentId: r.id, paymentVerified: true, messageBody: `Dear ${r.tenant_name}, thank you! Your ${pgPaymentNoun} of KSh ${amtNum.toLocaleString()} for ${r.property_name}, Apartment ${r.unit_number} (Tenant Ref: ${r.tenant_ref}, Receipt: ${r.payment_code}) has been verified and recorded.`, sentBy: req.currentUser?.fullName || "ARabella agency" });
       void dispatchTenantEmailNotification({ tenantRef: r.tenant_ref, tenantName: r.tenant_name, propertyName: r.property_name, unitNumber: r.unit_number, triggerType: "payment_confirmed", amountDue: amtNum, dueDate: r.due_date || todayYmd, receiptNo: r.payment_code, paymentId: r.id, paymentVerified: true, sentBy: req.currentUser?.fullName || "ARabella agency" });
     }
     return res.status(201).json({
@@ -7785,14 +8085,15 @@ async function createApp() {
       property: r.property_name,
       unitType: r.unit_type || "Deluxe",
       unitNumber: r.unit_number,
-      paymentNote: r.payment_note || "Rent Payment",
+      paymentNote: formatTransactionDisplayNote(r),
+      transactionType: classifyPaymentTransaction(r),
       leaseTerm: r.lease_term || "12 months",
       dueDate: r.due_date,
       paidDate: r.paid_date,
       invoiceDate: r.invoice_date || todayYmd,
-      billingPeriodStart: r.billing_period_start || pgCycle.periodStart,
-      billingPeriodEnd: r.billing_period_end || pgCycle.periodEnd,
-      billingAnniversaryDay: Number(r.billing_anniversary_day || pgCycle.anniversaryDay),
+      billingPeriodStart: isDeposit ? void 0 : (r.billing_period_start || pgCycle?.periodStart),
+      billingPeriodEnd: isDeposit ? void 0 : (r.billing_period_end || pgCycle?.periodEnd),
+      billingAnniversaryDay: isDeposit ? void 0 : Number(r.billing_anniversary_day || pgCycle?.anniversaryDay),
       amount: Number(r.amount || amtNum),
       amountPaid: Number(r.amount_paid ?? (finalStatus === "Paid" ? amtNum : 0)),
       balanceDue: Math.max(0, Number(r.amount_due ?? r.amount ?? amtNum) - Number(r.amount_paid ?? (finalStatus === "Paid" ? amtNum : 0))),
@@ -7802,7 +8103,7 @@ async function createApp() {
     });
   });
   app.post("/api/payments/:id/confirm", requireRole(["owner", "property_manager"]), async (req, res) => {
-    const todayYmd = getNairobiTodayYmd();
+    const todayYmd = getNairobiDateString();
     const todayStr = formatShortDate(/* @__PURE__ */ new Date());
     const confirmedByName = req.currentUser?.fullName || "Owner";
     const paramId = req.params.id;
@@ -7830,7 +8131,7 @@ async function createApp() {
           return res.status(404).json({ error: "Payment or tenant record not found in Supabase." });
         }
         const { data: l } = await supabaseAdmin.from("leases").select("*").or(`tenant_id.eq.${t.id},tenant_ref.eq.${t.tenant_ref}`).maybeSingle();
-        const rentAmt = Number(l?.monthly_rent || t.security_deposit || 35e3);
+        const rentAmt = Number(l?.monthly_rent || 35e3);
         const moveInYmd = parseBillingDateToYmd(l?.lease_start) || todayYmd;
         const cycle = getBillingCycleForDate(moveInYmd, todayYmd);
         const code = `PAY-${t.tenant_ref.replace("-", "")}-${Date.now().toString().slice(-4)}`;
@@ -7888,7 +8189,8 @@ async function createApp() {
           property: createdPay.property_name,
           unitType: createdPay.unit_type || "Deluxe",
           unitNumber: createdPay.unit_number,
-          paymentNote: createdPay.payment_note || "Verified Rent Payment",
+          paymentNote: formatTransactionDisplayNote(createdPay),
+          transactionType: classifyPaymentTransaction(createdPay),
           leaseTerm: createdPay.lease_term || "12 Months",
           dueDate: createdPay.due_date,
           paidDate: createdPay.paid_date,
@@ -7935,6 +8237,7 @@ async function createApp() {
           }
         })();
       }
+      const targetTxType = classifyPaymentTransaction(updated2);
       return res.json({
         id: updated2.id,
         paymentId: updated2.payment_code,
@@ -7944,7 +8247,8 @@ async function createApp() {
         property: updated2.property_name,
         unitType: updated2.unit_type || "Deluxe",
         unitNumber: updated2.unit_number,
-        paymentNote: updated2.payment_note || "Rent Payment",
+        paymentNote: formatTransactionDisplayNote(updated2),
+        transactionType: targetTxType,
         leaseTerm: updated2.lease_term || "12 months",
         dueDate: updated2.due_date,
         paidDate: updated2.paid_date,
@@ -8029,7 +8333,7 @@ async function createApp() {
         } catch {}
       })();
     }
-    return res.json({ id: updatedRow.id, paymentId: updatedRow.payment_code, tenantRef: updatedRow.tenant_ref, tenantName: updatedRow.tenant_name, avatarBg: updatedRow.avatar_bg || "#D8F3E5", property: updatedRow.property_name, unitType: updatedRow.unit_type || "Deluxe", unitNumber: updatedRow.unit_number, paymentNote: updatedRow.payment_note || "Rent Payment", leaseTerm: updatedRow.lease_term || "12 months", dueDate: updatedRow.due_date, paidDate: updatedRow.paid_date, amount: resolvedAmt, status: "Paid", confirmedBy: confirmedByName, confirmedAt: updatedRow.confirmed_at });
+    return res.json({ id: updatedRow.id, paymentId: updatedRow.payment_code, tenantRef: updatedRow.tenant_ref, tenantName: updatedRow.tenant_name, avatarBg: updatedRow.avatar_bg || "#D8F3E5", property: updatedRow.property_name, unitType: updatedRow.unit_type || "Deluxe", unitNumber: updatedRow.unit_number, paymentNote: formatTransactionDisplayNote(updatedRow), transactionType: classifyPaymentTransaction(updatedRow), leaseTerm: updatedRow.lease_term || "12 months", dueDate: updatedRow.due_date, paidDate: updatedRow.paid_date, amount: resolvedAmt, status: "Paid", confirmedBy: confirmedByName, confirmedAt: updatedRow.confirmed_at });
   });
   app.delete("/api/payments/:id", requireRole(["owner", "property_manager"]), async (req, res) => {
     if (supabaseAdmin && !isSupabaseQuotaRestricted()) {
@@ -9502,7 +9806,8 @@ async function createApp() {
         const unpaidList = state.payments.filter(
           (p: any) =>
             String(p.tenantRef || "").toUpperCase() === matchedTenant.tenantRef.toUpperCase() &&
-            p.status !== "Paid"
+            p.status !== "Paid" &&
+            !isDepositTransaction(p)
         );
         const existingPending = unpaidList[unpaidList.length - 1] || unpaidList[0];
 

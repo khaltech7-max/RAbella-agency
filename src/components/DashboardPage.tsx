@@ -51,6 +51,7 @@ import {
   UserSession,
 } from '../data/rentalData';
 import { useThemePalette } from '../lib/useThemeState';
+import { classifyPaymentTransaction, isDepositTransaction } from '../lib/paymentClassification';
 
 interface DashboardPageProps {
   currentUser?: UserSession;
@@ -972,7 +973,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                     </th>
                     <th className="py-2.5 px-3">
                       <span className="inline-flex items-center gap-1">
-                        Term <ArrowUpDown className="w-3 h-3" />
+                        Type <ArrowUpDown className="w-3 h-3" />
                       </span>
                     </th>
                     <th className="py-2.5 px-3">
@@ -1029,11 +1030,29 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                           </span>
                         </td>
                         <td className="py-3 px-3 text-[#46544E]">{row.unitNumber}</td>
-                        <td className="py-3 px-3 text-[#46544E] tabular-nums">
-                          {row.leaseTerm}
+                        <td className="py-3 px-3">
+                          {(() => {
+                            const txType = classifyPaymentTransaction(row);
+                            const isDeposit = txType === 'Security Deposit';
+                            return (
+                              <span
+                                className={`inline-block px-2 py-0.5 rounded-md text-[10.5px] font-bold ${
+                                  isDeposit
+                                    ? 'bg-[#E0F2FE] text-[#0369A1]'
+                                    : 'bg-[#EAF4EE] text-[#145338]'
+                                }`}
+                              >
+                                {txType}
+                              </span>
+                            );
+                          })()}
                         </td>
                         <td className="py-3 px-3 text-[#46544E] tabular-nums">
-                          {row.dueDate} &nbsp;-&nbsp; {row.paidDate}
+                          {isDepositTransaction(row)
+                            ? row.paidDate && row.paidDate !== '-'
+                              ? `Paid: ${row.paidDate}`
+                              : row.dueDate
+                            : `${row.dueDate} \u00A0-\u00A0 ${row.paidDate}`}
                         </td>
                         <td className="py-3 px-3">
                           <span

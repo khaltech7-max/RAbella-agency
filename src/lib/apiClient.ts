@@ -39,6 +39,12 @@ import {
   SupabaseIntegrationError,
 } from './supabaseClient';
 import {
+  classifyPaymentTransaction,
+  formatTransactionDisplayNote,
+  isDepositTransaction,
+  normalizeNewPaymentNote,
+} from './paymentClassification';
+import {
   computeInvoiceFinancials,
   extractBillingPeriodFromPayment,
   getBillingAnniversaryDay,
@@ -275,8 +281,10 @@ function computeRealAnalytics(
   reviews: PropertyReviewRecord[]
 ): DashboardAnalytics {
   const activeTenants = tenants.filter((t) => t.tenancyStatus !== 'Vacated');
-  const paidPayments = payments.filter((p) => p.status === 'Paid');
-  const pendingOrOverdue = payments.filter((p) => p.status !== 'Paid');
+  // Separate Rent transactions from Security Deposit transactions
+  const rentPayments = payments.filter((p) => !isDepositTransaction(p));
+  const paidPayments = rentPayments.filter((p) => p.status === 'Paid');
+  const pendingOrOverdue = rentPayments.filter((p) => p.status !== 'Paid');
   const paidRentSum = paidPayments.reduce((s, p) => s + Number(p.amount || 0), 0);
   const totalExpensesSum = expenses.reduce((s, e) => s + Number(e.amount || 0), 0);
   const activeLeasesCount = activeTenants.length;
@@ -285,7 +293,7 @@ function computeRealAnalytics(
   const totalRentRevenue = paidRentSum;
   const totalIncome = paidRentSum;
   const netBalance = totalIncome - totalExpensesSum;
-  const totalPaymentsCount = payments.length;
+  const totalPaymentsCount = rentPayments.length;
   const collectionRatePct =
     totalPaymentsCount > 0
       ? Number(((paidPayments.length / totalPaymentsCount) * 100).toFixed(1))
@@ -345,7 +353,7 @@ function computeRealAnalytics(
     const dayNum = String(d.getDate()).padStart(2, '0');
     const mShort = monthNames[d.getMonth()];
     const dayLabel = `${dayNum} ${mShort}`;
-    const dayPayments = payments.filter((p) => {
+    const dayPayments = rentPayments.filter((p) => {
       if (
         p.paidDate.toLowerCase().includes(`${d.getDate()}`) &&
         p.paidDate.toLowerCase().includes(mShort.toLowerCase())
@@ -960,6 +968,8 @@ async function fetchBootstrapFromSupabase(): Promise<BootstrapPayload> {
   }
 
   const payments: RentPaymentRecord[] = paymentsRows.map((r) => {
+    const txType = classifyPaymentTransaction(r);
+    const isDeposit = txType === 'Security Deposit';
     const amt = Number(r.amount_due ?? r.amount ?? r.amount_paid ?? 0);
     const amtPaidRaw = Number(
       r.amount_paid !== undefined && r.amount_paid !== null
@@ -975,7 +985,7 @@ async function fetchBootstrapFromSupabase(): Promise<BootstrapPayload> {
       parseBillingDateToYmd(matchedLease?.lease_start) ||
       parseBillingDateToYmd(r.due_date) ||
       todayYmd;
-    const period = extractBillingPeriodFromPayment(r, moveInYmd);
+    const period = isDeposit ? null : extractBillingPeriodFromPayment(r, moveInYmd);
     const dueYmd = parseBillingDateToYmd(r.due_date) || period?.periodStart || todayYmd;
     const fin = computeInvoiceFinancials({
       amountDue: amt,
@@ -996,17 +1006,18 @@ async function fetchBootstrapFromSupabase(): Promise<BootstrapPayload> {
       property: r.property_name,
       unitType: r.unit_type || 'Deluxe',
       unitNumber: r.unit_number,
-      paymentNote: r.payment_note || 'Rent Payment',
+      paymentNote: formatTransactionDisplayNote(r),
+      transactionType: txType,
       leaseTerm: r.lease_term || '12 months',
       dueDate: r.due_date || dueYmd,
       paidDate: r.paid_date || '-',
       invoiceDate: r.invoice_date || parseBillingDateToYmd(r.created_at) || dueYmd,
       billingPeriodStart: period?.periodStart,
       billingPeriodEnd: period?.periodEnd,
-      billingPeriodKey: r.billing_period_key || undefined,
-      billingAnniversaryDay: Number(
-        r.billing_anniversary_day || getBillingAnniversaryDay(moveInYmd)
-      ),
+      billingPeriodKey: isDeposit ? undefined : (r.billing_period_key || undefined),
+      billingAnniversaryDay: isDeposit
+        ? undefined
+        : Number(r.billing_anniversary_day || getBillingAnniversaryDay(moveInYmd)),
       amount: amt,
       amountPaid: fin.amountPaid,
       balanceDue: fin.outstandingBalance,
@@ -1050,11 +1061,13 @@ async function fetchBootstrapFromSupabase(): Promise<BootstrapPayload> {
       unitObj?.unit_number || lease.unit_number || 'Unit 101';
     const resolvedUnitType =
       lease.unit_type || unitObj?.unit_type_name || 'Deluxe';
-    const myPayments = payments.filter(
+    const myAllPayments = payments.filter(
       (p) =>
         String(p.tenantRef || '').toUpperCase() ===
         String(t.tenant_ref || '').toUpperCase()
     );
+    // Keep Security Deposit transactions strictly separate from Rent invoices & balances
+    const myPayments = myAllPayments.filter((p) => !isDepositTransaction(p));
     const moveInYmd =
       parseBillingDateToYmd(lease.lease_start) ||
       parseBillingDateToYmd(t.created_at) ||
@@ -1086,28 +1099,33 @@ async function fetchBootstrapFromSupabase(): Promise<BootstrapPayload> {
     const activeDueDate =
       unpaidPayments[0]?.dueDate || nextBillingYmd || currentCycle?.dueDate || moveInYmd;
     const monthlyRent = Number(
-      lease.monthly_rent ?? unitObj?.monthly_rent ?? t.security_deposit ?? 0
+      lease.monthly_rent ?? unitObj?.monthly_rent ?? 0
     );
     const baseRent = Number(lease.base_rent || monthlyRent);
     const utilityPackage = Number(lease.utility_package || 0);
     const maintenanceFee = Number(lease.maintenance_fee || 0);
     const parkingFee = Number(lease.parking_fee || 0);
-    const paymentHistory = myPayments.map((p) => ({
-      id: p.paymentId,
-      paymentDate: p.paidDate,
-      unitType: p.unitType,
-      unitNumber: p.unitNumber,
-      periodStart: p.billingPeriodStart || p.dueDate,
-      periodEnd: p.billingPeriodEnd || p.paidDate,
-      occupants: lease.occupants || '1 Resident',
-      amount: p.amount,
-      status: p.status,
-      variant: (p.unitType === 'Suite'
-        ? 'suite'
-        : p.unitType === 'Standard'
-        ? 'standard'
-        : 'deluxe') as 'standard' | 'deluxe' | 'suite',
-    }));
+    const paymentHistory = myAllPayments.map((p) => {
+      const pTxType = p.transactionType || classifyPaymentTransaction(p);
+      return {
+        id: p.paymentId,
+        paymentDate: p.paidDate,
+        unitType: p.unitType,
+        unitNumber: p.unitNumber,
+        periodStart: pTxType === 'Security Deposit' ? (p.paidDate !== '-' ? p.paidDate : p.dueDate) : (p.billingPeriodStart || p.dueDate),
+        periodEnd: pTxType === 'Security Deposit' ? 'Deposit Escrow' : (p.billingPeriodEnd || p.paidDate),
+        occupants: lease.occupants || '1 Resident',
+        amount: p.amount,
+        status: p.status,
+        variant: (p.unitType === 'Suite'
+          ? 'suite'
+          : p.unitType === 'Standard'
+          ? 'standard'
+          : 'deluxe') as 'standard' | 'deluxe' | 'suite',
+        transactionType: pTxType,
+        paymentNote: formatTransactionDisplayNote(p),
+      };
+    });
 
     const rawLeaseNotes = String(
       lease.lease_notes || 'Standard residential lease agreement.'
@@ -1238,7 +1256,8 @@ async function fetchBootstrapFromSupabase(): Promise<BootstrapPayload> {
     const propPaidPayments = payments.filter(
       (pay) =>
         String(pay.property).trim().toLowerCase() === propNameLower &&
-        pay.status === 'Paid'
+        pay.status === 'Paid' &&
+        !isDepositTransaction(pay)
     );
     const unitTypeTotalSum = propUnitTypes.reduce(
       (s, u) => s + Number(u.total_count || 0),
@@ -3957,7 +3976,7 @@ export const rentalApi = {
           property_name: propName,
           unit_type: resolvedUnitType,
           unit_number: cleanUnitNumber,
-          payment_note: 'Lease Rent Invoice',
+          payment_note: 'Monthly Rent',
           lease_term: data.leaseDuration || '12 Months',
           due_date: resolvedDueDate,
           paid_date: startStr,
@@ -3986,7 +4005,8 @@ export const rentalApi = {
             property: propName,
             unitType: resolvedUnitType,
             unitNumber: cleanUnitNumber,
-            paymentNote: 'Lease Rent Invoice',
+            paymentNote: 'Monthly Rent',
+            transactionType: 'Rent' as const,
             leaseTerm: data.leaseDuration || '12 Months',
             dueDate: resolvedDueDate,
             paidDate: startStr,
@@ -4060,7 +4080,7 @@ export const rentalApi = {
       const patch: Record<string, any> = {};
       if (data.name !== undefined) patch.full_name = String(data.name).trim();
       if (data.phone !== undefined) patch.phone = String(data.phone).trim();
-      if (data.email !== undefined) patch.email = String(data.email).trim();
+      if (data.email !== undefined) patch.email = String(data.email).trim().toLowerCase();
       if (data.dob !== undefined) patch.dob = data.dob;
       if (data.gender !== undefined) patch.gender = data.gender;
       if (data.nationality !== undefined) patch.nationality = data.nationality;
@@ -4072,33 +4092,77 @@ export const rentalApi = {
         patch.deposit_status = data.depositStatus;
       }
       if (data.vehicleInfo !== undefined) patch.vehicle_info = data.vehicleInfo;
+      if (data.propertyId !== undefined) patch.property_id = data.propertyId;
+      if (data.property !== undefined) patch.property_name = data.property;
+      if (data.unitNumber !== undefined) patch.unit_number = String(data.unitNumber).trim();
+      if (data.unitType !== undefined) patch.unit_type = data.unitType;
+      if (data.monthlyRent !== undefined) patch.monthly_rent = Number(data.monthlyRent);
 
-      const { error: supaUpdErr } = await supabase
-        .from('tenants')
-        .update(patch)
-        .or(`id.eq.${id},tenant_ref.eq.${id}`);
-      if (supaUpdErr && patch.deposit_status !== undefined) {
-        delete patch.deposit_status;
-        await supabase
+      const moveInUpdate = parseBillingDateToYmd(data.leaseStart || data.moveInDate);
+      const leasePatch: Record<string, any> = {};
+      if (moveInUpdate) {
+        leasePatch.lease_start = moveInUpdate;
+        const annivDay = getBillingAnniversaryDay(moveInUpdate);
+        const { data: existingPays } = await supabase
+          .from('rent_payments')
+          .select('due_date,billing_period_start')
+          .or(`tenant_id.eq.${id},tenant_ref.eq.${id}`);
+        const issuedDates = (existingPays || [])
+          .map((row: any) => parseBillingDateToYmd(row.billing_period_start || row.due_date))
+          .filter(Boolean) as string[];
+        const nextBill = getNextBillingDate(moveInUpdate, getNairobiTodayYmd(), issuedDates);
+        leasePatch.billing_anniversary_day = annivDay;
+        patch.billing_anniversary_day = annivDay;
+        if (nextBill) {
+          leasePatch.next_billing_date = nextBill;
+          patch.next_billing_date = nextBill;
+        }
+      }
+      if (data.property !== undefined) leasePatch.property_name = data.property;
+      if (data.unitNumber !== undefined) leasePatch.unit_number = String(data.unitNumber).trim();
+      if (data.unitType !== undefined) leasePatch.unit_type = data.unitType;
+      if (data.monthlyRent !== undefined) leasePatch.monthly_rent = Number(data.monthlyRent);
+      if (data.leaseDuration !== undefined) leasePatch.lease_duration = data.leaseDuration;
+      if (data.occupants !== undefined) leasePatch.occupants = data.occupants;
+      if (data.leaseNotes !== undefined) leasePatch.lease_notes = data.leaseNotes;
+      if (data.leaseEnd !== undefined) leasePatch.lease_end = data.leaseEnd;
+      if (data.paymentMethod !== undefined) leasePatch.payment_method = data.paymentMethod;
+
+      if (Object.keys(patch).length > 0) {
+        const { error: supaUpdErr } = await supabase
           .from('tenants')
           .update(patch)
           .or(`id.eq.${id},tenant_ref.eq.${id}`);
+        if (supaUpdErr) {
+          const fallbackPatch = { ...patch };
+          delete fallbackPatch.deposit_status;
+          delete fallbackPatch.billing_anniversary_day;
+          delete fallbackPatch.next_billing_date;
+          if (Object.keys(fallbackPatch).length > 0) {
+            await supabase
+              .from('tenants')
+              .update(fallbackPatch)
+              .or(`id.eq.${id},tenant_ref.eq.${id}`);
+          }
+        }
       }
 
-      const moveInUpdate = parseBillingDateToYmd(data.leaseStart || data.moveInDate);
-      if (moveInUpdate) {
-        await supabase
+      if (Object.keys(leasePatch).length > 0) {
+        const { error: leaseUpdErr } = await supabase
           .from('leases')
-          .update({ lease_start: moveInUpdate })
+          .update(leasePatch)
           .or(`tenant_id.eq.${id},tenant_ref.eq.${id}`);
-      }
-
-      if (data.dueDate && String(data.dueDate).trim()) {
-        await supabase
-          .from('rent_payments')
-          .update({ due_date: String(data.dueDate).trim() })
-          .or(`tenant_id.eq.${id},tenant_ref.eq.${id}`)
-          .neq('status', 'Paid');
+        if (leaseUpdErr) {
+          const fallbackLease = { ...leasePatch };
+          delete fallbackLease.billing_anniversary_day;
+          delete fallbackLease.next_billing_date;
+          if (Object.keys(fallbackLease).length > 0) {
+            await supabase
+              .from('leases')
+              .update(fallbackLease)
+              .or(`tenant_id.eq.${id},tenant_ref.eq.${id}`);
+          }
+        }
       }
 
       const state = await fetchBootstrapFromSupabase();
@@ -4316,12 +4380,15 @@ export const rentalApi = {
       const todayStr = formatShortDate();
       const amtNum = Math.max(0, Number(data.amount) || 0);
       const finalStatus = data.status || 'Paid';
+      const txType = classifyPaymentTransaction(data);
+      const isDeposit = txType === 'Security Deposit';
       const resolvedRef = String(data.tenantRef || 'A-001')
         .trim()
         .toUpperCase();
-      const paymentCode = `PAY-${resolvedRef.replace('-', '')}-${Date.now()
+      const paymentCode = `${isDeposit ? 'DEP' : 'PAY'}-${resolvedRef.replace('-', '')}-${Date.now()
         .toString()
         .slice(-4)}`;
+      const cleanNote = normalizeNewPaymentNote(txType, data.paymentNote);
 
       const { data: r, error } = await supabase
         .from('rent_payments')
@@ -4333,7 +4400,7 @@ export const rentalApi = {
           property_name: String(data.property || 'Main Property').trim(),
           unit_type: data.unitType || 'Deluxe',
           unit_number: data.unitNumber || 'Unit 101',
-          payment_note: data.paymentNote || 'Rent Payment',
+          payment_note: cleanNote,
           lease_term: data.leaseTerm || '12 months',
           due_date: data.dueDate || todayStr,
           paid_date: data.paidDate || todayStr,
@@ -4363,7 +4430,8 @@ export const rentalApi = {
         property: r.property_name,
         unitType: r.unit_type || 'Deluxe',
         unitNumber: r.unit_number,
-        paymentNote: r.payment_note || 'Rent Payment',
+        paymentNote: formatTransactionDisplayNote(r),
+        transactionType: classifyPaymentTransaction(r),
         leaseTerm: r.lease_term || '12 months',
         dueDate: r.due_date,
         paidDate: r.paid_date,
@@ -4449,7 +4517,8 @@ export const rentalApi = {
         property: updated.property_name,
         unitType: updated.unit_type || 'Deluxe',
         unitNumber: updated.unit_number,
-        paymentNote: updated.payment_note || 'Rent Payment',
+        paymentNote: formatTransactionDisplayNote(updated),
+        transactionType: classifyPaymentTransaction(updated),
         leaseTerm: updated.lease_term || '12 months',
         dueDate: updated.due_date,
         paidDate: updated.paid_date,

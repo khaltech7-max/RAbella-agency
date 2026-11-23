@@ -171,7 +171,10 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
     const activeStart = activeCycle?.periodStart || moveInYmd;
     const activeEnd = activeCycle?.periodEnd || moveInYmd;
     const activeDue = activeCycle?.dueDate || moveInYmd;
-    const syntheticPayments = (tenant.paymentHistory || []).map((p, idx) => {
+    const rentHistoryItems = (tenant.paymentHistory || []).filter(
+      (p) => (p.transactionType || 'Rent') !== 'Security Deposit'
+    );
+    const syntheticPayments = rentHistoryItems.map((p, idx) => {
       const pStart = parseBillingDateToYmd(p.periodStart) || activeStart;
       const pEnd = parseBillingDateToYmd(p.periodEnd) || getBillingCycleForDate(moveInYmd, pStart)?.periodEnd || activeEnd;
       const amt = Number(p.amount || tenant.monthlyRent || 0);
@@ -283,10 +286,25 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
   const [editDepositStatus, setEditDepositStatus] = useState<
     'Held' | 'Not Paid' | 'Returned' | 'Partially Returned' | 'Forfeited'
   >('Held');
-  const [editDueDate, setEditDueDate] = useState(getDefaultNairobiDateInput);
+  const [editLeaseStart, setEditLeaseStart] = useState(getDefaultNairobiDateInput);
   const [editDuration, setEditDuration] = useState('12 Months');
   const [editOccupants, setEditOccupants] = useState('2 Adults');
   const [customNote, setCustomNote] = useState('');
+  const [editInitialSnapshot, setEditInitialSnapshot] = useState<{
+    name: string;
+    phone: string;
+    email: string;
+    propertyId: string;
+    unitNumber: string;
+    unitType: 'Standard' | 'Deluxe' | 'Suite' | 'Family' | 'Single';
+    monthlyRent: number;
+    securityDeposit: number;
+    depositStatus: 'Held' | 'Not Paid' | 'Returned' | 'Partially Returned' | 'Forfeited';
+    leaseStart: string;
+    leaseDuration: string;
+    occupants: string;
+    leaseNotes: string;
+  } | null>(null);
 
   // Add Tenant form state (Deposit is strictly entered manually by Admin)
   const [newName, setNewName] = useState('');
@@ -650,32 +668,58 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
   const handleOpenEditModal = (t: TenantProfile) => {
     setFormError(null);
     setEditingTenant(t);
-    setEditName(t.name);
-    setEditPhone(t.phone);
-    setEditEmail(t.email);
+    const cleanInitName = t.name || '';
+    const cleanInitPhone = t.phone || '';
+    const cleanInitEmail = t.email || '';
     const matchedProp =
       properties.find((p) => p.id === t.propertyId) ||
       properties.find((p) => p.name.toLowerCase() === t.property.toLowerCase());
-    setEditPropertyId(matchedProp?.id || properties[0]?.id || '');
-    setEditUnitNumber(t.unitNumber);
-    setEditUnitType(t.unitType);
-    setEditRent(t.monthlyRent);
-    setEditDeposit(Number(t.securityDeposit || 0));
-    setEditDepositStatus(
-      t.depositStatus || (Number(t.securityDeposit || 0) > 0 ? 'Held' : 'Not Paid')
+    const initPropId = matchedProp?.id || properties[0]?.id || '';
+    const initUnitNumber = t.unitNumber || '';
+    const initUnitType = t.unitType;
+    const initRent = Number(t.monthlyRent || 0);
+    const initDeposit = Number(t.securityDeposit || 0);
+    const initDepositStatus =
+      t.depositStatus || (initDeposit > 0 ? 'Held' : 'Not Paid');
+    const initLeaseStart = toDateInputValue(
+      t.moveInDate || t.leaseStart || t.paymentHistory?.[0]?.periodStart
     );
-    setEditDueDate(
-      toDateInputValue(
-        t.moveInDate || t.leaseStart || t.dueDate || t.paymentHistory?.[0]?.periodStart
-      )
-    );
-    setEditDuration(t.leaseDuration);
-    setEditOccupants(t.occupants);
-    setCustomNote(t.leaseNotes);
+    const initDuration = t.leaseDuration || '12 Months';
+    const initOccupants = t.occupants || '1 Adult';
+    const initNotes = t.leaseNotes || '';
+
+    setEditName(cleanInitName);
+    setEditPhone(cleanInitPhone);
+    setEditEmail(cleanInitEmail);
+    setEditPropertyId(initPropId);
+    setEditUnitNumber(initUnitNumber);
+    setEditUnitType(initUnitType);
+    setEditRent(initRent);
+    setEditDeposit(initDeposit);
+    setEditDepositStatus(initDepositStatus);
+    setEditLeaseStart(initLeaseStart);
+    setEditDuration(initDuration);
+    setEditOccupants(initOccupants);
+    setCustomNote(initNotes);
+    setEditInitialSnapshot({
+      name: cleanInitName.trim(),
+      phone: cleanInitPhone.trim(),
+      email: cleanInitEmail.trim().toLowerCase(),
+      propertyId: initPropId,
+      unitNumber: initUnitNumber.trim(),
+      unitType: initUnitType,
+      monthlyRent: initRent,
+      securityDeposit: initDeposit,
+      depositStatus: initDepositStatus,
+      leaseStart: initLeaseStart,
+      leaseDuration: initDuration,
+      occupants: initOccupants,
+      leaseNotes: initNotes,
+    });
     setEditTenantModalOpen(true);
   };
 
-  // Submit Edit Tenant
+  // Submit Edit Tenant (only sends fields intentionally modified by the administrator; never sends invoice dueDate)
   const handleSaveTenantEdit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingTenant) return;
@@ -685,31 +729,52 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
       setFormError('Please provide a valid email address for the tenant.');
       return;
     }
+
+    const cleanName = editName.trim() || editingTenant.name;
+    const cleanPhone = editPhone.trim() || editingTenant.phone;
+    const cleanUnitNumber = editUnitNumber.trim() || editingTenant.unitNumber;
+    const cleanRent = Number(editRent);
+    const cleanDeposit = Math.max(0, Number(editDeposit) || 0);
+    const cleanLeaseStart = editLeaseStart.trim();
+    const chosenProp = properties.find((p) => p.id === editPropertyId);
+    const snap = editInitialSnapshot;
+
+    const patch: Partial<TenantProfile> = {};
+    if (!snap || cleanName !== snap.name) patch.name = cleanName;
+    if (!snap || cleanPhone !== snap.phone) patch.phone = cleanPhone;
+    if (!snap || cleanEmail !== snap.email) patch.email = cleanEmail;
+    if (!snap || editPropertyId !== snap.propertyId) {
+      if (chosenProp?.id || editingTenant.propertyId) {
+        patch.propertyId = chosenProp?.id || editingTenant.propertyId;
+      }
+      if (chosenProp?.name || editingTenant.property) {
+        patch.property = chosenProp?.name || editingTenant.property;
+      }
+    }
+    if (!snap || cleanUnitNumber !== snap.unitNumber) patch.unitNumber = cleanUnitNumber;
+    if (!snap || editUnitType !== snap.unitType) patch.unitType = editUnitType;
+    if (!snap || cleanRent !== snap.monthlyRent) patch.monthlyRent = cleanRent;
+    if ((!snap || cleanLeaseStart !== snap.leaseStart) && cleanLeaseStart) {
+      patch.leaseStart = cleanLeaseStart;
+    }
+    if (!snap || cleanDeposit !== snap.securityDeposit) patch.securityDeposit = cleanDeposit;
+    if (!snap || editDepositStatus !== snap.depositStatus) patch.depositStatus = editDepositStatus;
+    if (!snap || editDuration !== snap.leaseDuration) patch.leaseDuration = editDuration;
+    if (!snap || editOccupants !== snap.occupants) patch.occupants = editOccupants;
+    if (!snap || customNote !== snap.leaseNotes) patch.leaseNotes = customNote;
+
+    if (Object.keys(patch).length === 0) {
+      setEditTenantModalOpen(false);
+      showToast(`No profile changes detected for ${cleanName}.`);
+      return;
+    }
+
     setSaving(true);
     setFormError(null);
     try {
-      const chosenProp = properties.find((p) => p.id === editPropertyId);
-      const cleanMoveIn = editDueDate.trim() || editingTenant.moveInDate || editingTenant.leaseStart;
-      const cleanDeposit = Math.max(0, Number(editDeposit) || 0);
-      await onUpdateTenant(editingTenant.id, {
-        name: editName.trim() || editingTenant.name,
-        phone: editPhone.trim() || editingTenant.phone,
-        email: cleanEmail,
-        propertyId: chosenProp?.id || editingTenant.propertyId,
-        property: chosenProp?.name || editingTenant.property,
-        unitNumber: editUnitNumber.trim() || editingTenant.unitNumber,
-        unitType: editUnitType,
-        monthlyRent: Number(editRent),
-        leaseStart: cleanMoveIn,
-        dueDate: cleanMoveIn,
-        securityDeposit: cleanDeposit,
-        depositStatus: editDepositStatus,
-        leaseDuration: editDuration,
-        occupants: editOccupants,
-        leaseNotes: customNote,
-      });
+      await onUpdateTenant(editingTenant.id, patch);
       setEditTenantModalOpen(false);
-      showToast(`Updated profile & deposit details for ${editName.trim() || editingTenant.name}`);
+      showToast(`Updated profile & deposit details for ${cleanName}`);
     } catch (err: any) {
       setFormError(err?.message || 'Failed to update tenant in Supabase.');
     } finally {
@@ -1942,8 +2007,8 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
                   <input
                     type="date"
                     required
-                    value={editDueDate}
-                    onChange={(e) => setEditDueDate(e.target.value)}
+                    value={editLeaseStart}
+                    onChange={(e) => setEditLeaseStart(e.target.value)}
                     className="w-full px-3 py-2 rounded-xl bg-[#F5F7F6] border border-[#E7ECE9] text-xs text-[#172B25] tabular-nums"
                   />
                 </div>
@@ -2265,23 +2330,40 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
                     <thead>
                       <tr className="bg-[#F5F7F6] text-[#7B8983] text-[11px] font-semibold">
                         <th className="py-2.5 px-3">Receipt ID</th>
+                        <th className="py-2.5 px-3">Type</th>
                         <th className="py-2.5 px-3">Payment Date</th>
                         <th className="py-2.5 px-3">Unit Number</th>
-                        <th className="py-2.5 px-3">Period</th>
+                        <th className="py-2.5 px-3">Period / Details</th>
                         <th className="py-2.5 px-3">Amount</th>
                         <th className="py-2.5 px-3">Status</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-[#E7ECE9]">
-                      {profileModalTenant.paymentHistory.map((p) => (
+                      {profileModalTenant.paymentHistory.map((p) => {
+                        const txType = p.transactionType || 'Rent';
+                        const isDeposit = txType === 'Security Deposit';
+                        return (
                         <tr key={p.id} className="hover:bg-[#F9FBFA]">
                           <td className="py-2.5 px-3 font-mono font-bold text-[#172B25]">
                             {p.id}
                           </td>
+                          <td className="py-2.5 px-3">
+                            <span
+                              className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                                isDeposit
+                                  ? 'bg-[#E0F2FE] text-[#0369A1]'
+                                  : 'bg-[#D9F5E7] text-[#145338]'
+                              }`}
+                            >
+                              {txType}
+                            </span>
+                          </td>
                           <td className="py-2.5 px-3 tabular-nums">{p.paymentDate}</td>
                           <td className="py-2.5 px-3">{p.unitNumber}</td>
                           <td className="py-2.5 px-3 text-[#7B8983] tabular-nums">
-                            {p.periodStart} - {p.periodEnd}
+                            {isDeposit
+                              ? p.paymentNote || 'Deposit Escrow'
+                              : `${p.periodStart} - ${p.periodEnd}`}
                           </td>
                           <td className="py-2.5 px-3 font-bold text-[#172B25] tabular-nums">
                             KSh {p.amount.toLocaleString()}
@@ -2298,7 +2380,8 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
                             </span>
                           </td>
                         </tr>
-                      ))}
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>

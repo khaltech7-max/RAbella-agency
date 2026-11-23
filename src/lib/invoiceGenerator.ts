@@ -19,6 +19,12 @@ import {
   parseBillingDateToYmd,
 } from './anniversaryBilling';
 
+import {
+  classifyPaymentTransaction,
+  formatTransactionDisplayNote,
+  isDepositTransaction,
+} from './paymentClassification';
+
 export interface InvoiceLineItem {
   description: string;
   qty: number;
@@ -30,6 +36,7 @@ export interface LedgerHistoryEntry {
   code: string;
   period: string;
   description: string;
+  type?: 'Rent' | 'Security Deposit';
   billed: number;
   paid: number;
   balance: number;
@@ -211,6 +218,7 @@ function getCachedPayHeroContext(): {
 }
 
 export interface InvoiceDocumentData {
+  transactionType?: 'Rent' | 'Security Deposit';
   invoiceNumber: string;
   issueDate: string;
   dueDate: string;
@@ -270,8 +278,10 @@ export function buildInvoiceDataFromPayment(
       ? `INV-${currentYear}-${String(indexOrCode + 1).padStart(3, '0')}`
       : inv.paymentId || `INV-${currentYear}-001`;
 
-  const monthlyRent = Number(tenantProfile?.monthlyRent || inv.amount || 0);
-  const rawAmount = Number(inv.amount || monthlyRent || 0);
+  const txType = classifyPaymentTransaction(inv);
+  const isDeposit = txType === 'Security Deposit';
+  const rawAmount = Number(inv.amount || tenantProfile?.monthlyRent || 0);
+  const monthlyRent = isDeposit ? rawAmount : Number(tenantProfile?.monthlyRent || inv.amount || 0);
   const moveInAnchor = tenantProfile?.moveInDate || tenantProfile?.leaseStart || inv.billingPeriodStart || inv.dueDate;
   const resolvedPeriod = extractBillingPeriodFromPayment(inv, moveInAnchor);
 
@@ -302,29 +312,34 @@ export function buildInvoiceDataFromPayment(
     .trim()
     .toUpperCase();
 
+  // Keep Deposit transactions strictly separate from Monthly Rent invoices in ledger history
   const tenantPayments = allPayments.filter(
-    (p) => String(p.tenantRef || '').trim().toUpperCase() === cleanRef
+    (p) =>
+      String(p.tenantRef || '').trim().toUpperCase() === cleanRef &&
+      (isDeposit ? isDepositTransaction(p) : !isDepositTransaction(p))
   );
 
   const sourceList = tenantPayments.length > 0 ? tenantPayments : [inv];
 
   let runningBalance = 0;
   const ledgerEntries: LedgerHistoryEntry[] = sourceList.map((p, idx) => {
-    const pPeriod = extractBillingPeriodFromPayment(p, moveInAnchor);
+    const pIsDeposit = isDepositTransaction(p);
+    const pPeriod = pIsDeposit ? null : extractBillingPeriodFromPayment(p, moveInAnchor);
     const pFin = computeInvoiceFinancials({
       amountDue: p.amount,
       amountPaid: p.amountPaid,
-      monthlyRent,
+      monthlyRent: pIsDeposit ? p.amount : monthlyRent,
       dueDate: p.dueDate,
       storedStatus: p.status,
     });
     runningBalance += pFin.outstandingBalance;
     return {
-      code: p.paymentId || `INV-${String(idx + 1).padStart(3, '0')}`,
+      code: p.paymentId || `${pIsDeposit ? 'DEP' : 'INV'}-${String(idx + 1).padStart(3, '0')}`,
       period: pPeriod
         ? `${formatYmdShort(pPeriod.periodStart)} – ${formatYmdShort(pPeriod.periodEnd)}`
-        : formatYmdShort(p.dueDate),
-      description: `${p.paymentNote || 'Residential Rent'} — ${p.property} (${p.unitNumber})`,
+        : formatYmdShort(p.paidDate && p.paidDate !== '-' ? p.paidDate : p.dueDate),
+      description: `${formatTransactionDisplayNote(p)} — ${p.property} (${p.unitNumber})`,
+      type: classifyPaymentTransaction(p),
       billed: pFin.amountDue,
       paid: pFin.amountPaid,
       balance: runningBalance,
@@ -334,7 +349,9 @@ export function buildInvoiceDataFromPayment(
 
   const items: InvoiceLineItem[] = [
     {
-      description: `Monthly Rent (${billingPeriodStartLabel} – ${billingPeriodEndLabel}) — ${inv.property} (${inv.unitNumber})`,
+      description: isDeposit
+        ? `${formatTransactionDisplayNote(inv)} — ${inv.property} (${inv.unitNumber})`
+        : `Monthly Rent (${billingPeriodStartLabel} – ${billingPeriodEndLabel}) — ${inv.property} (${inv.unitNumber})`,
       qty: 1,
       price: rawAmount,
       total: rawAmount,
@@ -364,11 +381,14 @@ export function buildInvoiceDataFromPayment(
     ? `${matchedPaybill.paybillName} (${brand.companyName})`
     : brand.bankName;
 
-  const defaultNotes =
-    brand.footerNote ||
-    `Billing period: ${billingPeriodStartLabel} to ${billingPeriodEndLabel}. Payment is due on your monthly move-in anniversary (${dueDateLabel}). Kindly quote Account Ref ${cleanRef} on all M-Pesa PayBill (${resolvedPaybillNumber}) or Bank payments.`;
+  const defaultNotes = isDeposit
+    ? brand.footerNote ||
+      `Security Deposit receipt for ${inv.property} (${inv.unitNumber}), Account Ref ${cleanRef}. Deposit funds are held separately from monthly rent billing.`
+    : brand.footerNote ||
+      `Billing period: ${billingPeriodStartLabel} to ${billingPeriodEndLabel}. Payment is due on your monthly move-in anniversary (${dueDateLabel}). Kindly quote Account Ref ${cleanRef} on all M-Pesa PayBill (${resolvedPaybillNumber}) or Bank payments.`;
 
   return {
+    transactionType: txType,
     invoiceNumber,
     issueDate: issueDateLabel,
     dueDate: dueDateLabel,
@@ -455,6 +475,7 @@ export function generateStandaloneInvoiceHtml(
   options?: { autoPrint?: boolean; includeLedger?: boolean }
 ): string {
   const includeLedger = options?.includeLedger !== false;
+  const isDeposit = data.transactionType === 'Security Deposit';
   const fmt = (n: number) => `KSh ${Number(n || 0).toLocaleString()}`;
   const palette = resolveInvoiceThemePalette(data.accentTheme);
   const fontStack = resolveInvoiceFontStack(data.fontFamily);
@@ -565,7 +586,7 @@ export function generateStandaloneInvoiceHtml(
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Invoice ${data.invoiceNumber} - ${data.tenantName} (${data.tenantRef})</title>
+  <title>${isDeposit ? 'Security Deposit Receipt' : 'Invoice'} ${data.invoiceNumber} - ${data.tenantName} (${data.tenantRef})</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&family=IBM+Plex+Sans:wght@400;500;600;700&family=Inter:wght@400;500;600;700;800&family=Manrope:wght@400;500;600;700;800&family=Outfit:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
@@ -639,18 +660,18 @@ export function generateStandaloneInvoiceHtml(
   <div class="invoice-sheet">
     <div class="top-accent-bar"></div>
     <div class="invoice-content">
-      <!-- Top Row: Logo + Website Name + INVOICE Title (Left) | INVOICE AMOUNT + Status (Right) -->
+      <!-- Top Row: Logo + Website Name + Title (Left) | Amount + Status (Right) -->
       <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; flex-wrap: wrap; padding-bottom: 20px; border-bottom: 1px solid ${palette.ruleLineColor};">
         <div>
           ${buildSystemLogoHtml(data)}
-          <div style="font-size: 34px; font-weight: 800; color: ${palette.titleColor}; letter-spacing: 0.04em; line-height: 1.05; margin-top: 10px;">
-            INVOICE
+          <div style="font-size: ${isDeposit ? '26px' : '34px'}; font-weight: 800; color: ${palette.titleColor}; letter-spacing: 0.04em; line-height: 1.05; margin-top: 10px;">
+            ${isDeposit ? 'SECURITY DEPOSIT RECEIPT' : 'INVOICE'}
           </div>
         </div>
 
         <div style="text-align: right;">
           <div style="font-size: 11px; font-weight: 800; color: ${palette.sectionLabelColor}; letter-spacing: 0.08em; text-transform: uppercase;">
-            INVOICE AMOUNT
+            ${isDeposit ? 'DEPOSIT AMOUNT' : 'INVOICE AMOUNT'}
           </div>
           <div style="font-size: 28px; font-weight: 800; color: ${palette.titleColor}; margin-top: 4px; font-variant-numeric: tabular-nums;">
             ${fmt(billedDisplayAmount)}
@@ -709,7 +730,7 @@ export function generateStandaloneInvoiceHtml(
             <tr style="background: ${palette.barBg}; color: ${palette.barText}; border: 1px solid ${palette.barBorder};">
               <th style="padding: 10px 14px; text-align: left; font-size: 11px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; width: 9%; border-top-left-radius: 4px; border-bottom-left-radius: 4px;">S.NO.</th>
               <th style="padding: 10px 14px; text-align: left; font-size: 11px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; width: 45%;">DESCRIPTION</th>
-              <th style="padding: 10px 14px; text-align: right; font-size: 11px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; width: 16%;">MONTHLY RENT</th>
+              <th style="padding: 10px 14px; text-align: right; font-size: 11px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; width: 16%;">${isDeposit ? 'SECURITY DEPOSIT' : 'MONTHLY RENT'}</th>
               <th style="padding: 10px 14px; text-align: right; font-size: 11px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; width: 15%;">PAID</th>
               <th style="padding: 10px 14px; text-align: right; font-size: 11px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; width: 15%; border-top-right-radius: 4px; border-bottom-right-radius: 4px;">BALANCE</th>
             </tr>
@@ -724,7 +745,7 @@ export function generateStandaloneInvoiceHtml(
       <div style="display: flex; justify-content: flex-end; margin-top: 26px;">
         <div style="width: 280px; max-width: 100%;">
           <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 10px; border-bottom: 1px solid ${palette.ruleLineColor}; font-size: 12px;">
-            <span style="font-weight: 700; color: ${palette.primaryText}; letter-spacing: 0.04em;">MONTHLY RENT</span>
+            <span style="font-weight: 700; color: ${palette.primaryText}; letter-spacing: 0.04em;">${isDeposit ? 'SECURITY DEPOSIT' : 'MONTHLY RENT'}</span>
             <span style="font-weight: 700; color: ${palette.primaryText}; font-variant-numeric: tabular-nums;">${fmt(data.monthlyRent || data.subTotal)}</span>
           </div>
           <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 10px; border-bottom: 1px solid ${palette.ruleLineColor}; font-size: 12px;">
@@ -781,6 +802,7 @@ export function generateStandaloneInvoiceHtml(
  */
 export function downloadDesignedInvoiceFile(data: InvoiceDocumentData, filenamePrefix = 'Invoice'): void {
   const pdfBytes = buildDesignedInvoicePdfBytes({
+    transactionType: data.transactionType,
     invoiceNumber: data.invoiceNumber,
     issueDate: data.issueDate,
     dueDate: data.dueDate,
@@ -876,20 +898,21 @@ export function downloadDesignedInvoicePng(data: InvoiceDocumentData, filenamePr
   ctx.roundRect(margin + 20, 67, 7, 23, 3);
   ctx.fill();
 
+  const isDeposit = data.transactionType === 'Security Deposit';
   ctx.textAlign = 'left';
   ctx.fillStyle = palette.sectionLabelColor;
   ctx.font = `800 19px ${fontFace}`;
   ctx.fillText(String(data.companyName || 'ARabella agency').toUpperCase(), margin + 38, 84);
 
   ctx.fillStyle = palette.titleColor;
-  ctx.font = `800 46px ${fontFace}`;
-  ctx.fillText('INVOICE', margin, 148);
+  ctx.font = `800 ${isDeposit ? 34 : 46}px ${fontFace}`;
+  ctx.fillText(isDeposit ? 'SECURITY DEPOSIT' : 'INVOICE', margin, 148);
 
-  // 3. Top-Right: INVOICE AMOUNT & Status Badge
+  // 3. Top-Right: INVOICE / DEPOSIT AMOUNT & Status Badge
   ctx.textAlign = 'right';
   ctx.fillStyle = palette.sectionLabelColor;
   ctx.font = `800 14px ${fontFace}`;
-  ctx.fillText('INVOICE AMOUNT', width - margin, 80);
+  ctx.fillText(isDeposit ? 'DEPOSIT AMOUNT' : 'INVOICE AMOUNT', width - margin, 80);
 
   ctx.fillStyle = palette.titleColor;
   ctx.font = `800 36px ${fontFace}`;
@@ -964,7 +987,7 @@ export function downloadDesignedInvoicePng(data: InvoiceDocumentData, filenamePr
   ctx.fillText('S.NO.', margin + 18, tableHeaderY + 27);
   ctx.fillText('DESCRIPTION', margin + 84, tableHeaderY + 27);
   ctx.textAlign = 'right';
-  ctx.fillText('MONTHLY RENT', width - margin - 270, tableHeaderY + 27);
+  ctx.fillText(isDeposit ? 'DEPOSIT' : 'MONTHLY RENT', width - margin - 270, tableHeaderY + 27);
   ctx.fillText('PAID', width - margin - 140, tableHeaderY + 27);
   ctx.fillText('BALANCE', width - margin - 18, tableHeaderY + 27);
 
@@ -1019,7 +1042,7 @@ export function downloadDesignedInvoicePng(data: InvoiceDocumentData, filenamePr
     ctx.stroke();
   };
 
-  drawSumRow('MONTHLY RENT', fmt(data.monthlyRent || data.subTotal), bottomY + 12, palette.primaryText);
+  drawSumRow(isDeposit ? 'SECURITY DEPOSIT' : 'MONTHLY RENT', fmt(data.monthlyRent || data.subTotal), bottomY + 12, palette.primaryText);
   drawSumRow('AMOUNT PAID', fmt(data.amountPaid), bottomY + 52, '#145338');
   drawSumRow('PAYMENT STATUS', normStatus.toUpperCase(), bottomY + 92, statusFg);
 

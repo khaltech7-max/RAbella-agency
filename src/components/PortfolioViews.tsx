@@ -44,6 +44,11 @@ import {
   formatYmdShort,
   parseBillingDateToYmd,
 } from '../lib/anniversaryBilling';
+import {
+  classifyPaymentTransaction,
+  formatTransactionDisplayNote,
+  isDepositTransaction,
+} from '../lib/paymentClassification';
 import { useThemePalette } from '../lib/useThemeState';
 
 interface PropertiesViewProps {
@@ -491,7 +496,9 @@ export const InvoicesPage: React.FC<InvoicesPageProps> = ({
     return tenants.find((t) => String(t.tenantRef || '').trim().toUpperCase() === refUpper);
   };
 
-  const filteredInvoices = payments
+  const rentPaymentsOnly = payments.filter((inv) => !isDepositTransaction(inv));
+
+  const filteredInvoices = rentPaymentsOnly
     .map((inv, idx) => ({
       inv,
       idx,
@@ -519,14 +526,14 @@ export const InvoicesPage: React.FC<InvoicesPageProps> = ({
 
   const handlePreviewInvoice = (inv: RentPaymentRecord, idx: number) => {
     const invoiceNumber = inv.paymentId || `INV-${currentYear}-${String(idx + 1).padStart(3, '0')}`;
-    const docData = buildInvoiceDataFromPayment(inv, invoiceNumber, payments, findTenantForInvoice(inv));
+    const docData = buildInvoiceDataFromPayment(inv, invoiceNumber, rentPaymentsOnly, findTenantForInvoice(inv));
     setPreviewInvoice(docData);
   };
 
   const handleDownloadInvoice = (inv: RentPaymentRecord, idx: number) => {
     setDownloadedId(inv.id);
     const invoiceNumber = inv.paymentId || `INV-${currentYear}-${String(idx + 1).padStart(3, '0')}`;
-    const docData = buildInvoiceDataFromPayment(inv, invoiceNumber, payments, findTenantForInvoice(inv));
+    const docData = buildInvoiceDataFromPayment(inv, invoiceNumber, rentPaymentsOnly, findTenantForInvoice(inv));
     setPreviewInvoice(docData);
     downloadDesignedInvoiceFile(docData, 'Invoice');
     setTimeout(() => setDownloadedId(null), 1800);
@@ -540,7 +547,7 @@ export const InvoicesPage: React.FC<InvoicesPageProps> = ({
             Anniversary Rent Invoices &amp; Statements
           </h2>
           <p className="text-[11.5px] text-[#7A8681]">
-            Automated monthly invoices anchored to each tenant&apos;s move-in date ({filteredInvoices.length} of {payments.length})
+            Automated monthly rent invoices anchored to each tenant&apos;s move-in date ({filteredInvoices.length} of {rentPaymentsOnly.length})
           </p>
           {syncMessage && (
             <p className="text-[11px] font-semibold text-[#145338] mt-1">{syncMessage}</p>
@@ -604,8 +611,8 @@ export const InvoicesPage: React.FC<InvoicesPageProps> = ({
 
       {filteredInvoices.length === 0 ? (
         <div className="py-10 text-center text-[13px] text-[#7A8681]">
-          {payments.length === 0
-            ? 'No rent invoices in the database yet. Record a rent payment on the Rent Payments page to generate statements.'
+          {rentPaymentsOnly.length === 0
+            ? 'No monthly rent invoices in the database yet. Record a rent payment on the Rent Payments page to generate statements.'
             : `No rent invoices match "${search || globalSearch}".`}
         </div>
       ) : (
@@ -630,7 +637,10 @@ export const InvoicesPage: React.FC<InvoicesPageProps> = ({
                 return (
                 <tr key={inv.id} className="hover:bg-[#F8FBF9]">
                   <td className="py-3 px-3 font-bold text-[#17231E] tabular-nums">
-                    {invoiceNumber}
+                    <div>{invoiceNumber}</div>
+                    <span className="inline-block mt-0.5 px-1.5 py-0.5 rounded bg-[#EAF4EE] text-[#145338] text-[9.5px] font-bold">
+                      Rent
+                    </span>
                   </td>
                   <td className="py-3 px-3">
                     <button
@@ -837,7 +847,10 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
     };
   });
 
-  const paidTotal = filteredPayments
+  const rentPaymentsForReport = filteredPayments.filter((p) => !isDepositTransaction(p));
+  const depositPaymentsForReport = filteredPayments.filter((p) => isDepositTransaction(p));
+
+  const paidTotal = rentPaymentsForReport
     .filter((p) => p.status === 'Paid')
     .reduce((s, p) => s + p.amount, 0);
   const expTotal = filteredExpenses.reduce((s, e) => s + e.amount, 0);
@@ -985,19 +998,22 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
                     Monthly Rent Roll & Arrears Ledger
                   </p>
                   <p className="text-[10.5px] text-[#7A8681] tabular-nums">
-                    <AnimatedCounter value={filteredPayments.length} /> database records •{' '}
-                    <AnimatedCounter value={paidTotal} prefix="KSh " /> collected
+                    <AnimatedCounter value={rentPaymentsForReport.length} /> rent records •{' '}
+                    <AnimatedCounter value={paidTotal} prefix="KSh " /> rent collected
                   </p>
                 </div>
                 <button
                   onClick={() =>
                     exportCsv('rent-roll-export.csv', [
-                      ['Tenant Ref', 'Tenant Name', 'Property', 'Unit', 'Amount (KSh)', 'Status', 'Due Date'],
-                      ...filteredPayments.map((p) => [
+                      ['Receipt ID', 'Transaction Type', 'Tenant Ref', 'Tenant Name', 'Property', 'Unit', 'Description', 'Amount (KSh)', 'Status', 'Due Date'],
+                      ...rentPaymentsForReport.map((p) => [
+                        p.paymentId,
+                        classifyPaymentTransaction(p),
                         p.tenantRef,
                         p.tenantName,
                         p.property,
                         p.unitNumber,
+                        formatTransactionDisplayNote(p),
                         `KSh ${p.amount}`,
                         p.status,
                         p.dueDate,
@@ -1080,14 +1096,18 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
                   <p className="text-[10.5px] text-[#7A8681] tabular-nums">
                     <AnimatedCounter value={filteredTenants.length} /> active tenants •{' '}
                     <AnimatedCounter value={depositTotal} prefix="KSh " /> held in escrow
+                    {depositPaymentsForReport.length > 0
+                      ? ` • ${depositPaymentsForReport.length} deposit receipt(s)`
+                      : ''}
                   </p>
                 </div>
                 <button
                   onClick={() =>
                     exportCsv('tenant-escrow-export.csv', [
-                      ['Tenant Ref', 'Name', 'Email', 'Phone', 'Property', 'Unit', 'Monthly Rent (KSh)', 'Security Deposit (KSh)', 'Rent Balance (KSh)'],
+                      ['Tenant Ref', 'Transaction Type', 'Name', 'Email', 'Phone', 'Property', 'Unit', 'Monthly Rent (KSh)', 'Security Deposit (KSh)', 'Rent Balance (KSh)'],
                       ...filteredTenants.map((t) => [
                         t.tenantRef,
+                        'Security Deposit',
                         t.name,
                         t.email,
                         t.phone,

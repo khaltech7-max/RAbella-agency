@@ -66,15 +66,16 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
   const totalLedgerBalance = Math.max(0, totalLedgerBilled - totalLedgerPaid);
   const billedDisplayAmount = Number(syncedData.monthlyRent || syncedData.subTotal || 0);
   const blankRowsCount = Math.max(0, 4 - syncedData.items.length);
+  const isDeposit = syncedData.transactionType === 'Security Deposit';
 
   const handleDownloadPng = () => {
-    downloadDesignedInvoicePng(syncedData, 'Invoice');
+    downloadDesignedInvoicePng(syncedData, isDeposit ? 'Security-Deposit' : 'Invoice');
     setDownloadedType('png');
     setTimeout(() => setDownloadedType(null), 2000);
   };
 
   const handleDownloadPdf = () => {
-    downloadDesignedInvoiceFile(syncedData, 'Invoice-Ledger');
+    downloadDesignedInvoiceFile(syncedData, isDeposit ? 'Security-Deposit' : 'Invoice-Ledger');
     setDownloadedType('html');
     setTimeout(() => setDownloadedType(null), 2000);
   };
@@ -113,6 +114,13 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
             }}
           >
             {syncedData.invoiceNumber}
+          </span>
+          <span
+            className={`px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider ${
+              isDeposit ? 'bg-[#D8F3E5] text-[#145338]' : 'bg-white/15 text-white'
+            }`}
+          >
+            {isDeposit ? 'Security Deposit' : 'Rent'}
           </span>
           <span className="text-white text-[12.5px] font-bold truncate max-w-[180px] sm:max-w-xs">
             {syncedData.tenantName} ({syncedData.tenantRef})
@@ -280,11 +288,17 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
 
               <h1
                 className={`${
-                  fitScreen ? 'text-[26px] sm:text-[30px]' : 'text-[32px] sm:text-[36px]'
+                  fitScreen
+                    ? isDeposit
+                      ? 'text-[20px] sm:text-[23px]'
+                      : 'text-[26px] sm:text-[30px]'
+                    : isDeposit
+                    ? 'text-[24px] sm:text-[28px]'
+                    : 'text-[32px] sm:text-[36px]'
                 } font-extrabold tracking-[0.04em] leading-none mt-2.5`}
                 style={{ color: palette.titleColor }}
               >
-                INVOICE
+                {isDeposit ? 'SECURITY DEPOSIT RECEIPT' : 'INVOICE'}
               </h1>
             </div>
 
@@ -293,7 +307,7 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
                 className="text-[10px] sm:text-[11px] font-extrabold uppercase tracking-[0.08em]"
                 style={{ color: palette.sectionLabelColor }}
               >
-                INVOICE AMOUNT
+                {isDeposit ? 'DEPOSIT AMOUNT' : 'INVOICE AMOUNT'}
               </div>
               <div
                 className={`${
@@ -388,7 +402,7 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
                       DESCRIPTION
                     </th>
                     <th className="py-2 px-3 text-right text-[10px] font-extrabold uppercase tracking-[0.06em] w-[16%]">
-                      MONTHLY RENT
+                      {isDeposit ? 'SECURITY DEPOSIT' : 'MONTHLY RENT'}
                     </th>
                     <th className="py-2 px-3 text-right text-[10px] font-extrabold uppercase tracking-[0.06em] w-[15%]">
                       PAID
@@ -460,7 +474,7 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
                 style={{ borderBottom: `1px solid ${palette.ruleLineColor}` }}
               >
                 <span className="font-bold tracking-[0.04em]" style={{ color: palette.primaryText }}>
-                  MONTHLY RENT
+                  {isDeposit ? 'SECURITY DEPOSIT' : 'MONTHLY RENT'}
                 </span>
                 <span className="font-bold tabular-nums" style={{ color: palette.primaryText }}>
                   {fmt(syncedData.monthlyRent || syncedData.subTotal)}
