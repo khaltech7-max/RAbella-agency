@@ -1,4 +1,4 @@
-import type { AccentThemeKey } from './useThemeState';
+import type { AccentThemeKey } from './useThemeState.js';
 
 export interface InvoiceThemePalette {
   accentTheme: AccentThemeKey;

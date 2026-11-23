@@ -1,4 +1,4 @@
-import { hexToPdfRgb, resolveInvoiceThemePalette } from './invoiceTheme';
+import { hexToPdfRgb, resolveInvoiceThemePalette } from './invoiceTheme.js';
 
 export interface PdfInvoiceItem {
   description: string;
