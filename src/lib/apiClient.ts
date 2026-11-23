@@ -1371,7 +1371,7 @@ async function fetchBootstrapFromSupabase(): Promise<BootstrapPayload> {
   });
 
   if (unitTypes.length === 0 && properties.length > 0) {
-    unitTypes = properties.map((p) => {
+    const derivedCandidates = properties.map((p) => {
       const propUnits = unitsRows.filter(
         (un) =>
           un.property_id === p.id ||
@@ -1405,39 +1405,137 @@ async function fetchBootstrapFromSupabase(): Promise<BootstrapPayload> {
       );
       const occ = Math.max(Number(p.occupiedUnits || 0), propTenants.length);
       const tot = Math.max(Number(p.totalUnits || 1), occ);
+      const sizeSqm =
+        p.variant === 'suite' ? 110 : p.variant === 'standard' ? 55 : 75;
+      const bedrooms =
+        utName.toLowerCase().includes('family') || p.variant === 'suite'
+          ? '3 Bedrooms'
+          : p.variant === 'standard'
+          ? '1 Bedroom'
+          : '2 Bedrooms';
+      const maxTenants =
+        utName.toLowerCase().includes('family') || p.variant === 'suite' ? 5 : 3;
+      const status: UnitTypeItem['status'] =
+        occ < tot ? 'Available' : 'Occupied';
+      const description = `${utName} residential units at ${p.name} (${p.address}).`;
+      const longDescription = `Modern ${utName} residential apartments at ${p.name} located in ${p.address}, managed by ${p.manager}.`;
+      const features = [
+        'Spacious Living Area',
+        'Modern Kitchen',
+        'Private Balcony',
+        'High-Speed Fiber Ready',
+      ];
+      const amenities = [
+        '24/7 Security',
+        'Reliable Water Supply',
+        'Resident Parking',
+      ];
       return {
-        id: `ut-derived-${p.id}`,
-        propertyId: p.id,
-        name: utName,
-        property: p.name,
-        variant: (p.variant || 'deluxe') as 'standard' | 'deluxe' | 'suite',
-        sizeSqm:
-          p.variant === 'suite' ? 110 : p.variant === 'standard' ? 55 : 75,
-        bedrooms:
-          utName.toLowerCase().includes('family') || p.variant === 'suite'
-            ? '3 Bedrooms'
-            : p.variant === 'standard'
-            ? '1 Bedroom'
-            : '2 Bedrooms',
-        maxTenants:
-          utName.toLowerCase().includes('family') || p.variant === 'suite'
-            ? 5
-            : 3,
-        occupiedCount: occ,
-        totalCount: tot,
-        status: occ < tot ? 'Available' : 'Occupied',
-        monthlyRent: rentVal,
-        description: `${utName} residential units at ${p.name} (${p.address}).`,
-        longDescription: `Modern ${utName} residential apartments at ${p.name} located in ${p.address}, managed by ${p.manager}.`,
-        features: [
-          'Spacious Living Area',
-          'Modern Kitchen',
-          'Private Balcony',
-          'High-Speed Fiber Ready',
-        ],
-        amenities: ['24/7 Security', 'Reliable Water Supply', 'Resident Parking'],
+        property: p,
+        payload: {
+          property_id: p.id,
+          property_name: p.name,
+          name: utName,
+          variant: (p.variant || 'deluxe') as UnitTypeItem['variant'],
+          size_sqm: sizeSqm,
+          bedrooms,
+          max_tenants: maxTenants,
+          monthly_rent: rentVal,
+          occupied_count: occ,
+          total_count: tot,
+          status,
+          description,
+          long_description: longDescription,
+          features,
+          amenities,
+        },
       };
     });
+
+    let materializedRows: any[] = [];
+    if (supabase) {
+      try {
+        const { data: existingCheck } = await supabase
+          .from('unit_types')
+          .select('*')
+          .limit(100);
+        if (Array.isArray(existingCheck) && existingCheck.length > 0) {
+          materializedRows = existingCheck;
+        } else {
+          const { data: insertedRows, error: insErr } = await supabase
+            .from('unit_types')
+            .insert(derivedCandidates.map((c) => c.payload))
+            .select('*');
+          if (!insErr && Array.isArray(insertedRows) && insertedRows.length > 0) {
+            materializedRows = insertedRows;
+            await Promise.all(
+              insertedRows.map((row: any) =>
+                supabase!
+                  .from('units')
+                  .update({ unit_type_id: row.id })
+                  .eq('property_id', row.property_id)
+                  .is('unit_type_id', null)
+              )
+            ).catch(() => {});
+          }
+        }
+      } catch {
+        // Read-only fallback handled cleanly below
+      }
+    }
+
+    if (materializedRows.length > 0) {
+      unitTypes = materializedRows.map((u) => {
+        const occ = Number(u.occupied_count || 0);
+        const tot = Number(u.total_count || 0);
+        const resolvedProp = u.property_id
+          ? propsById.get(u.property_id)
+          : undefined;
+        const computedStatus: UnitTypeItem['status'] =
+          u.status === 'Inactive' || tot <= 0
+            ? 'Inactive'
+            : occ < tot
+            ? 'Available'
+            : 'Occupied';
+        return {
+          id: u.id,
+          propertyId: u.property_id || resolvedProp?.id,
+          name: u.name,
+          property: resolvedProp?.name || u.property_name,
+          variant: u.variant || 'deluxe',
+          sizeSqm: Number(u.size_sqm || 65),
+          bedrooms: u.bedrooms,
+          maxTenants: Number(u.max_tenants || 2),
+          occupiedCount: occ,
+          totalCount: Math.max(0, tot),
+          status: computedStatus,
+          monthlyRent: Number(u.monthly_rent || 0),
+          description: u.description,
+          longDescription: u.long_description || u.description,
+          features: Array.isArray(u.features) ? u.features : [],
+          amenities: Array.isArray(u.amenities) ? u.amenities : [],
+        };
+      });
+    } else {
+      unitTypes = derivedCandidates.map(({ property: p, payload }) => ({
+        id: `ut-derived-${p.id}`,
+        propertyId: p.id,
+        name: payload.name,
+        property: p.name,
+        variant: payload.variant,
+        sizeSqm: payload.size_sqm,
+        bedrooms: payload.bedrooms,
+        maxTenants: payload.max_tenants,
+        occupiedCount: payload.occupied_count,
+        totalCount: payload.total_count,
+        status: payload.status,
+        monthlyRent: payload.monthly_rent,
+        description: payload.description,
+        longDescription: payload.long_description,
+        features: payload.features,
+        amenities: payload.amenities,
+      }));
+    }
   }
 
   const maintenance: MaintenanceItem[] = maintRows.map((m) => ({
@@ -3348,6 +3446,31 @@ export const rentalApi = {
     }
 
     if (isSupabaseConfigured && supabase) {
+      const { data: existingProp, error: findPropErr } = await supabase
+        .from('properties')
+        .select('id')
+        .eq('id', id)
+        .maybeSingle();
+
+      if (findPropErr) {
+        throw createDiagnosticError({
+          failedRequest: `PUT Supabase Lookup Property (${id})`,
+          statusCode: 400,
+          endpoint: getSanitizedSupabaseEndpoint('/rest/v1/properties'),
+          supabaseError: findPropErr.message,
+          category: 'Database Access',
+        });
+      }
+      if (!existingProp) {
+        throw createDiagnosticError({
+          failedRequest: `PUT Supabase Update Property (${id})`,
+          statusCode: 404,
+          endpoint: getSanitizedSupabaseEndpoint('/rest/v1/properties'),
+          supabaseError: 'Property record was not found in Supabase. Refresh the page and try again.',
+          category: 'Database Access',
+        });
+      }
+
       const patch: Record<string, any> = {};
       if (data.name !== undefined) patch.name = String(data.name).trim();
       if (data.address !== undefined)
@@ -3368,7 +3491,7 @@ export const rentalApi = {
         .update(patch)
         .eq('id', id)
         .select('*')
-        .single();
+        .maybeSingle();
 
       if (error || !updated) {
         throw createDiagnosticError({
@@ -3376,7 +3499,7 @@ export const rentalApi = {
           statusCode: 400,
           endpoint: getSanitizedSupabaseEndpoint('/rest/v1/properties'),
           supabaseError:
-            error?.message || 'Failed to update property in Supabase.',
+            error?.message || 'Property update did not match an editable record in Supabase.',
           category: 'Database Access',
         });
       }
@@ -3651,7 +3774,7 @@ export const rentalApi = {
           monthly_rent: rent,
           occupied_count: occ,
           total_count: tot,
-          status,
+          status: data.status === 'Inactive' ? 'Inactive' : status,
           description:
             data.description || `${data.name} residential unit at ${propName}.`,
           long_description:
@@ -3662,7 +3785,7 @@ export const rentalApi = {
           amenities,
         })
         .select('*')
-        .single();
+        .maybeSingle();
 
       if (error || !created) {
         throw createDiagnosticError({
@@ -3672,6 +3795,15 @@ export const rentalApi = {
           supabaseError: error?.message || 'Failed to create unit type.',
           category: 'Database Access',
         });
+      }
+
+      if (created.property_id) {
+        await supabase
+          .from('units')
+          .update({ unit_type_id: created.id })
+          .eq('property_id', created.property_id)
+          .ilike('unit_type_name', created.name)
+          .is('unit_type_id', null);
       }
 
       return {
@@ -3685,7 +3817,7 @@ export const rentalApi = {
         maxTenants: Number(created.max_tenants || 2),
         occupiedCount: occ,
         totalCount: tot,
-        status,
+        status: created.status === 'Inactive' ? 'Inactive' : status,
         monthlyRent: rent,
         description: created.description,
         longDescription: created.long_description || created.description,
@@ -3711,74 +3843,299 @@ export const rentalApi = {
         method: 'PUT',
         body: JSON.stringify(data),
       });
-    } catch (backendErr) {
-      if (!isSupabaseConfigured || !supabase) throw backendErr;
+    } catch (backendErr: any) {
+      if (
+        !isSupabaseConfigured ||
+        !supabase ||
+        backendErr?.statusCode === 400 ||
+        backendErr?.statusCode === 403
+      ) {
+        throw backendErr;
+      }
     }
 
     if (isSupabaseConfigured && supabase) {
-      const { data: cur } = await supabase
-        .from('unit_types')
-        .select('*')
-        .eq('id', id)
-        .maybeSingle();
+      const isDerivedId = id.startsWith('ut-derived-');
+      const derivedPropertyId = isDerivedId
+        ? id.slice('ut-derived-'.length).trim()
+        : null;
 
+      let cur: any = null;
+      if (!isDerivedId) {
+        const { data: found, error: findErr } = await supabase
+          .from('unit_types')
+          .select('*')
+          .eq('id', id)
+          .maybeSingle();
+        if (findErr) {
+          throw createDiagnosticError({
+            failedRequest: `PUT Supabase Lookup UnitType (${id})`,
+            statusCode: 400,
+            endpoint: getSanitizedSupabaseEndpoint('/rest/v1/unit_types'),
+            supabaseError: findErr.message,
+            category: 'Database Access',
+          });
+        }
+        cur = found;
+      } else if (derivedPropertyId) {
+        const { data: existingForProp } = await supabase
+          .from('unit_types')
+          .select('*')
+          .eq('property_id', derivedPropertyId);
+        if (Array.isArray(existingForProp) && existingForProp.length > 0) {
+          cur =
+            (data.name
+              ? existingForProp.find(
+                  (r: any) =>
+                    String(r.name || '').trim().toLowerCase() ===
+                    String(data.name || '').trim().toLowerCase()
+                )
+              : null) || existingForProp[0];
+        }
+      }
+
+      if (!cur) {
+        if (isDerivedId && derivedPropertyId) {
+          let propRow: any = null;
+          const { data: byId } = await supabase
+            .from('properties')
+            .select('id, name, variant, total_units, occupied_units')
+            .eq('id', derivedPropertyId)
+            .maybeSingle();
+          propRow = byId;
+          if (!propRow && data.property) {
+            const { data: byName } = await supabase
+              .from('properties')
+              .select('id, name, variant, total_units, occupied_units')
+              .ilike('name', String(data.property).trim())
+              .maybeSingle();
+            propRow = byName;
+          }
+          if (!propRow && !data.property) {
+            throw createDiagnosticError({
+              failedRequest: `PUT Supabase Persist Derived UnitType (${id})`,
+              statusCode: 404,
+              endpoint: getSanitizedSupabaseEndpoint('/rest/v1/unit_types'),
+              supabaseError:
+                'Associated property for this unit type was not found.',
+              category: 'Database Access',
+            });
+          }
+
+          const occNew = Math.max(
+            0,
+            Number(
+              data.occupiedCount !== undefined
+                ? data.occupiedCount
+                : propRow?.occupied_units || 0
+            )
+          );
+          const totNew = Math.max(
+            0,
+            Number(
+              data.totalCount !== undefined
+                ? data.totalCount
+                : propRow?.total_units || 1
+            )
+          );
+          const nextStatusNew: UnitTypeItem['status'] =
+            data.status === 'Inactive' || totNew <= 0
+              ? 'Inactive'
+              : occNew < totNew
+              ? 'Available'
+              : 'Occupied';
+          const unitNameNew = String(
+            data.name ||
+              (propRow?.variant === 'suite'
+                ? 'Suite'
+                : propRow?.variant === 'standard'
+                ? 'Standard'
+                : 'Deluxe')
+          ).trim();
+          const propNameNew = propRow?.name || String(data.property || '').trim();
+          const defaultFeatures = Array.isArray(data.features)
+            ? data.features
+            : [
+                'Spacious Living Area',
+                'Modern Kitchen',
+                'Private Balcony',
+                'High-Speed Fiber Ready',
+              ];
+          const defaultAmenities = Array.isArray(data.amenities)
+            ? data.amenities
+            : ['24/7 Security', 'Reliable Water Supply', 'Resident Parking'];
+          const descNew =
+            data.description ||
+            `${unitNameNew} residential units at ${propNameNew}.`;
+
+          const { data: inserted, error: insErr } = await supabase
+            .from('unit_types')
+            .insert({
+              property_id: propRow?.id || null,
+              property_name: propNameNew,
+              name: unitNameNew,
+              variant: data.variant || propRow?.variant || 'deluxe',
+              size_sqm: data.sizeSqm !== undefined ? Number(data.sizeSqm) : 75,
+              bedrooms: data.bedrooms || '2 Bedrooms',
+              max_tenants:
+                data.maxTenants !== undefined ? Number(data.maxTenants) : 3,
+              occupied_count: occNew,
+              total_count: totNew,
+              status: nextStatusNew,
+              monthly_rent:
+                data.monthlyRent !== undefined ? Number(data.monthlyRent) : 35000,
+              description: descNew,
+              long_description: data.longDescription ?? descNew,
+              features: defaultFeatures,
+              amenities: defaultAmenities,
+            })
+            .select('*')
+            .maybeSingle();
+
+          if (insErr || !inserted) {
+            throw createDiagnosticError({
+              failedRequest: `PUT Supabase Persist Derived UnitType (${id})`,
+              statusCode: 400,
+              endpoint: getSanitizedSupabaseEndpoint('/rest/v1/unit_types'),
+              supabaseError:
+                insErr?.message || 'Failed to persist unit type in Supabase.',
+              category: 'Database Access',
+            });
+          }
+
+          if (inserted.property_id) {
+            await supabase
+              .from('units')
+              .update({ unit_type_id: inserted.id })
+              .eq('property_id', inserted.property_id)
+              .is('unit_type_id', null);
+          }
+
+          return {
+            id: inserted.id,
+            propertyId: inserted.property_id,
+            name: inserted.name,
+            property: inserted.property_name,
+            variant: inserted.variant || 'deluxe',
+            sizeSqm: Number(inserted.size_sqm || 65),
+            bedrooms: inserted.bedrooms,
+            maxTenants: Number(inserted.max_tenants || 2),
+            occupiedCount: occNew,
+            totalCount: totNew,
+            status: nextStatusNew,
+            monthlyRent: Number(inserted.monthly_rent || 0),
+            description: inserted.description,
+            longDescription: inserted.long_description || inserted.description,
+            features: Array.isArray(inserted.features)
+              ? inserted.features
+              : defaultFeatures,
+            amenities: Array.isArray(inserted.amenities)
+              ? inserted.amenities
+              : defaultAmenities,
+          };
+        }
+
+        throw createDiagnosticError({
+          failedRequest: `PUT Supabase Update UnitType (${id})`,
+          statusCode: 404,
+          endpoint: getSanitizedSupabaseEndpoint('/rest/v1/unit_types'),
+          supabaseError:
+            'Unit type record was not found in Supabase. Refresh the page and try again.',
+          category: 'Database Access',
+        });
+      }
+
+      const targetUtId = cur.id;
       const occ =
         data.occupiedCount !== undefined
-          ? Number(data.occupiedCount)
-          : Number(cur?.occupied_count || 0);
+          ? Math.max(0, Number(data.occupiedCount))
+          : Number(cur.occupied_count || 0);
       const tot =
         data.totalCount !== undefined
-          ? Number(data.totalCount)
-          : Number(cur?.total_count || 1);
+          ? Math.max(0, Number(data.totalCount))
+          : Number(cur.total_count || 1);
       const status: UnitTypeItem['status'] =
-        data.status === 'Inactive'
+        data.status === 'Inactive' || tot <= 0
           ? 'Inactive'
           : data.status === 'Available' || data.status === 'Occupied'
           ? occ < tot
             ? 'Available'
             : 'Occupied'
-          : cur?.status === 'Inactive'
+          : cur.status === 'Inactive'
           ? 'Inactive'
           : occ < tot
           ? 'Available'
           : 'Occupied';
 
+      let nextPropertyId = cur.property_id;
+      let nextPropertyName = data.property
+        ? String(data.property).trim()
+        : cur.property_name;
+      if (
+        data.property &&
+        String(data.property).trim().toLowerCase() !==
+          String(cur.property_name || '').trim().toLowerCase()
+      ) {
+        const { data: propMatch } = await supabase
+          .from('properties')
+          .select('id, name')
+          .ilike('name', String(data.property).trim())
+          .maybeSingle();
+        if (propMatch) {
+          nextPropertyId = propMatch.id;
+          nextPropertyName = propMatch.name;
+        }
+      }
+
+      const nextName =
+        data.name !== undefined ? String(data.name).trim() : cur.name;
+
       const { data: updated, error } = await supabase
         .from('unit_types')
         .update({
-          name: data.name ?? cur?.name,
-          property_name: data.property ?? cur?.property_name,
-          variant: data.variant ?? cur?.variant,
+          property_id: nextPropertyId,
+          property_name: nextPropertyName,
+          name: nextName,
+          variant: data.variant ?? cur.variant,
           size_sqm:
-            data.sizeSqm !== undefined ? Number(data.sizeSqm) : cur?.size_sqm,
-          bedrooms: data.bedrooms ?? cur?.bedrooms,
+            data.sizeSqm !== undefined ? Number(data.sizeSqm) : cur.size_sqm,
+          bedrooms: data.bedrooms ?? cur.bedrooms,
           max_tenants:
             data.maxTenants !== undefined
               ? Number(data.maxTenants)
-              : cur?.max_tenants,
+              : cur.max_tenants,
           occupied_count: occ,
           total_count: tot,
           status,
           monthly_rent:
             data.monthlyRent !== undefined
               ? Number(data.monthlyRent)
-              : cur?.monthly_rent,
-          description: data.description ?? cur?.description,
+              : cur.monthly_rent,
+          description: data.description ?? cur.description,
           long_description:
-            data.longDescription ?? data.description ?? cur?.long_description,
+            data.longDescription ?? data.description ?? cur.long_description,
         })
-        .eq('id', id)
+        .eq('id', targetUtId)
         .select('*')
-        .single();
+        .maybeSingle();
 
       if (error || !updated) {
         throw createDiagnosticError({
-          failedRequest: `PUT Supabase Update UnitType (${id})`,
+          failedRequest: `PUT Supabase Update UnitType (${targetUtId})`,
           statusCode: 400,
           endpoint: getSanitizedSupabaseEndpoint('/rest/v1/unit_types'),
-          supabaseError: error?.message || 'Failed to update unit type.',
+          supabaseError:
+            error?.message ||
+            'Unit type update did not match an editable record in Supabase.',
           category: 'Database Access',
         });
+      }
+
+      if (nextName !== cur.name) {
+        await supabase
+          .from('units')
+          .update({ unit_type_name: nextName })
+          .eq('unit_type_id', updated.id);
       }
 
       return {
@@ -3812,11 +4169,28 @@ export const rentalApi = {
       return await apiRequest<{ success: boolean }>(`/api/unit-types/${id}`, {
         method: 'DELETE',
       });
-    } catch (backendErr) {
-      if (!isSupabaseConfigured || !supabase) throw backendErr;
+    } catch (backendErr: any) {
+      if (
+        !isSupabaseConfigured ||
+        !supabase ||
+        backendErr?.statusCode === 400 ||
+        backendErr?.statusCode === 403
+      ) {
+        throw backendErr;
+      }
     }
 
     if (isSupabaseConfigured && supabase) {
+      if (id.startsWith('ut-derived-')) {
+        const derivedPropertyId = id.slice('ut-derived-'.length).trim();
+        if (derivedPropertyId) {
+          await supabase
+            .from('unit_types')
+            .delete()
+            .eq('property_id', derivedPropertyId);
+        }
+        return { success: true };
+      }
       const { error } = await supabase.from('unit_types').delete().eq('id', id);
       if (error) {
         throw createDiagnosticError({
@@ -4179,6 +4553,54 @@ export const rentalApi = {
               .from('leases')
               .update(fallbackLease)
               .or(`tenant_id.eq.${id},tenant_ref.eq.${id}`);
+          }
+        }
+      }
+
+      if (
+        data.unitNumber !== undefined ||
+        data.unitType !== undefined ||
+        data.monthlyRent !== undefined ||
+        data.propertyId !== undefined ||
+        data.property !== undefined
+      ) {
+        let resolvedPropId = data.propertyId;
+        if (!resolvedPropId && data.property) {
+          const { data: propRow } = await supabase
+            .from('properties')
+            .select('id')
+            .ilike('name', String(data.property).trim())
+            .maybeSingle();
+          resolvedPropId = propRow?.id;
+        }
+        const targetUnitNum = data.unitNumber ? String(data.unitNumber).trim() : undefined;
+        if (resolvedPropId && targetUnitNum) {
+          const [{ data: existingUnit }, { data: matchedUtRow }] = await Promise.all([
+            supabase
+              .from('units')
+              .select('*')
+              .eq('property_id', resolvedPropId)
+              .ilike('unit_number', targetUnitNum)
+              .maybeSingle(),
+            data.unitType
+              ? supabase
+                  .from('unit_types')
+                  .select('id')
+                  .eq('property_id', resolvedPropId)
+                  .ilike('name', String(data.unitType).trim())
+                  .maybeSingle()
+              : Promise.resolve({ data: null }),
+          ]);
+          if (existingUnit) {
+            const unitPatch: Record<string, any> = { status: 'Occupied' };
+            if (data.unitType !== undefined) {
+              unitPatch.unit_type_name = data.unitType;
+              if (matchedUtRow?.id) unitPatch.unit_type_id = matchedUtRow.id;
+            }
+            if (data.monthlyRent !== undefined) {
+              unitPatch.monthly_rent = Number(data.monthlyRent);
+            }
+            await supabase.from('units').update(unitPatch).eq('id', existingUnit.id);
           }
         }
       }
