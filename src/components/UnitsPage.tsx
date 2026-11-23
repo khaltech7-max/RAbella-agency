@@ -25,7 +25,6 @@ import {
   MoreHorizontal,
   DoorOpen,
   UserCheck,
-  Banknote,
   Power,
   RotateCcw,
   ArrowUpDown,
@@ -271,13 +270,6 @@ export const UnitsPage: React.FC<UnitsPageProps> = ({
       totalUnitsCount > 0
         ? Math.min(100, Math.round((occupiedUnitsCount / totalUnitsCount) * 100))
         : 0;
-    const avgRent =
-      filteredUnits.length > 0
-        ? Math.round(
-            filteredUnits.reduce((sum, u) => sum + Math.max(0, Number(u.monthlyRent || 0)), 0) /
-              filteredUnits.length
-          )
-        : 0;
     const activeTierCount = filteredUnits.filter(
       (u) => getUnitDisplayStatus(u) !== 'Inactive'
     ).length;
@@ -289,7 +281,6 @@ export const UnitsPage: React.FC<UnitsPageProps> = ({
       occupiedUnitsCount,
       vacantUnitsCount,
       occupancyRate,
-      avgRent,
       activeTierCount,
       availableTierCount,
     };
@@ -461,8 +452,8 @@ export const UnitsPage: React.FC<UnitsPageProps> = ({
         </button>
       </div>
 
-      {/* Four Balanced Summary Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      {/* Three Balanced Summary Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         {/* Total Units */}
         <div className="bg-white rounded-2xl p-4 sm:p-5 border border-[#E7ECE9] shadow-xs rms-card-hover flex flex-col justify-between">
           <div className="flex items-center justify-between gap-2">
@@ -538,29 +529,6 @@ export const UnitsPage: React.FC<UnitsPageProps> = ({
             <p className="text-[11.5px] text-[#7A8681] mt-2 tabular-nums">
               {inventoryStats.availableTierCount}{' '}
               {inventoryStats.availableTierCount === 1 ? 'tier has' : 'tiers have'} open availability
-            </p>
-          </div>
-        </div>
-
-        {/* Average Rent */}
-        <div className="bg-white rounded-2xl p-4 sm:p-5 border border-[#E7ECE9] shadow-xs rms-card-hover flex flex-col justify-between">
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-[12px] font-semibold text-[#6E7A75]">
-              Average Rent
-            </span>
-            <span
-              className="w-8 h-8 rounded-xl bg-[#E5F69C] text-[#17231E] flex items-center justify-center shrink-0"
-              title="Average monthly rent across displayed unit tiers"
-            >
-              <Banknote className="w-4 h-4" />
-            </span>
-          </div>
-          <div className="mt-3">
-            <div className="text-[24px] font-extrabold text-[#17231E] tracking-tight tabular-nums leading-none">
-              <AnimatedCounter value={inventoryStats.avgRent} prefix="KSh " />
-            </div>
-            <p className="text-[11.5px] text-[#7A8681] mt-2">
-              Monthly tier average
             </p>
           </div>
         </div>
