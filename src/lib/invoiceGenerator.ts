@@ -8,6 +8,10 @@ import {
 } from '../data/rentalData';
 import { buildDesignedInvoicePdfBytes } from './pdfInvoiceBuilder';
 import {
+  resolveInvoiceFontStack,
+  resolveInvoiceThemePalette,
+} from './invoiceTheme';
+import {
   computeInvoiceFinancials,
   extractBillingPeriodFromPayment,
   formatYmdShort,
@@ -43,13 +47,15 @@ export interface SystemInvoiceBranding {
   supportPhone: string;
   supportEmail: string;
   businessAddress: string;
-  primaryColor: string;     // System deep forest: #17231E
-  forestColor: string;      // System emerald forest: #145338
-  accentColor: string;      // System electric lime: #D5F267
-  mintColor: string;        // System soft mint: #D8F3E5
-  canvasStart: string;      // System sage alabaster: #F7FAF8
-  canvasMid: string;        // System soft sage: #ECF3EF
-  canvasEnd: string;        // System mint-sage border tone: #DCE7E1
+  accentTheme: string;
+  fontFamily: string;
+  primaryColor: string;
+  forestColor: string;
+  accentColor: string;
+  mintColor: string;
+  canvasStart: string;
+  canvasMid: string;
+  canvasEnd: string;
   footerNote?: string;
 }
 
@@ -66,30 +72,32 @@ let cachedBranding: SystemInvoiceBranding = {
   supportPhone: '+254 712 345 678',
   supportEmail: 'billing@arabella.co.ke',
   businessAddress: 'Westlands, Nairobi, Kenya',
+  accentTheme: 'lime',
+  fontFamily: 'Plus Jakarta Sans',
   primaryColor: '#17231E',
   forestColor: '#145338',
   accentColor: '#D5F267',
   mintColor: '#D8F3E5',
-  canvasStart: '#F7FAF8',
-  canvasMid: '#ECF3EF',
-  canvasEnd: '#DDE8E2',
+  canvasStart: '#FFFFFF',
+  canvasMid: '#FFFFFF',
+  canvasEnd: '#F8FAF9',
 };
 
 export function setSystemBrandingForInvoices(
   sys?: SystemSettingsRecord | null,
   prefs?: UserAppearancePreferences | null
 ): void {
-  const primaryColor =
-    prefs?.primaryColor ||
-    sys?.appearanceDefaults?.primaryColor ||
-    '#17231E';
-  const accentColor =
-    prefs?.accentColor ||
-    sys?.appearanceDefaults?.accentColor ||
-    '#D5F267';
-  const mintColor =
-    sys?.appearanceDefaults?.secondaryAccentColor ||
-    '#D8F3E5';
+  const accentTheme =
+    prefs?.accentTheme ||
+    (typeof document !== 'undefined'
+      ? document.documentElement.getAttribute('data-accent-theme') || 'lime'
+      : 'lime');
+  const fontFamily =
+    prefs?.fontFamily ||
+    sys?.appearanceDefaults?.fontFamily ||
+    cachedBranding.fontFamily ||
+    'Plus Jakarta Sans';
+  const palette = resolveInvoiceThemePalette(accentTheme);
 
   cachedBranding = {
     companyName: sys?.general?.companyName || cachedBranding.companyName || 'ARabella agency',
@@ -106,13 +114,15 @@ export function setSystemBrandingForInvoices(
     supportPhone: sys?.general?.businessPhone || '+254 712 345 678',
     supportEmail: sys?.general?.businessEmail || 'billing@arabella.co.ke',
     businessAddress: sys?.general?.businessAddress || 'Westlands, Nairobi, Kenya',
-    primaryColor,
-    forestColor: '#145338',
-    accentColor,
-    mintColor,
-    canvasStart: '#F7FAF8',
-    canvasMid: '#ECF3EF',
-    canvasEnd: '#DDE8E2',
+    accentTheme: palette.accentTheme,
+    fontFamily,
+    primaryColor: palette.primaryText,
+    forestColor: palette.titleColor,
+    accentColor: palette.barBg,
+    mintColor: palette.softBg,
+    canvasStart: '#FFFFFF',
+    canvasMid: '#FFFFFF',
+    canvasEnd: palette.softBg,
     footerNote: sys?.invoice?.receiptFooterNote || undefined,
   };
 
@@ -131,11 +141,23 @@ export function getSystemBrandingForInvoices(): SystemInvoiceBranding {
         const parsed = JSON.parse(raw) as Partial<SystemInvoiceBranding>;
         cachedBranding = { ...cachedBranding, ...parsed };
       }
-      const rootStyle = getComputedStyle(document.documentElement);
-      const cssAccent = rootStyle.getPropertyValue('--rms-accent').trim();
-      const cssPrimary = rootStyle.getPropertyValue('--rms-primary').trim();
-      if (cssAccent) cachedBranding.accentColor = cssAccent;
-      if (cssPrimary) cachedBranding.primaryColor = cssPrimary;
+      const root = document.documentElement;
+      const domAccentTheme = root.getAttribute('data-accent-theme');
+      const domFontVar =
+        root.style.getPropertyValue('--rms-font-family') ||
+        getComputedStyle(root).getPropertyValue('--rms-font-family');
+      if (domAccentTheme) {
+        cachedBranding.accentTheme = domAccentTheme;
+      }
+      if (domFontVar) {
+        const cleanFont = domFontVar.replace(/['"]/g, '').split(',')[0].trim();
+        if (cleanFont) cachedBranding.fontFamily = cleanFont;
+      }
+      const palette = resolveInvoiceThemePalette(cachedBranding.accentTheme);
+      cachedBranding.primaryColor = palette.primaryText;
+      cachedBranding.forestColor = palette.titleColor;
+      cachedBranding.accentColor = palette.barBg;
+      cachedBranding.mintColor = palette.softBg;
     } catch {}
   }
   return cachedBranding;
@@ -208,6 +230,9 @@ export interface InvoiceDocumentData {
   companySubtitle: string;
   companyLogoUrl?: string;
   showCompanyLogo?: boolean;
+  businessAddress?: string;
+  accentTheme?: string;
+  fontFamily?: string;
   bankName: string;
   bankAccount: string;
   paybillNumber: string;
@@ -236,6 +261,7 @@ export function buildInvoiceDataFromPayment(
   tenantProfile?: TenantProfile
 ): InvoiceDocumentData {
   const brand = getSystemBrandingForInvoices();
+  const palette = resolveInvoiceThemePalette(brand.accentTheme);
   const currentYear = new Date().getFullYear();
   const invoiceNumber =
     typeof indexOrCode === 'string' && indexOrCode.trim()
@@ -276,7 +302,6 @@ export function buildInvoiceDataFromPayment(
     .trim()
     .toUpperCase();
 
-  // Filter all payments belonging to this tenant for the ledger history
   const tenantPayments = allPayments.filter(
     (p) => String(p.tenantRef || '').trim().toUpperCase() === cleanRef
   );
@@ -363,6 +388,9 @@ export function buildInvoiceDataFromPayment(
     companySubtitle: brand.companySubtitle,
     companyLogoUrl: brand.companyLogoUrl,
     showCompanyLogo: brand.showCompanyLogo,
+    businessAddress: brand.businessAddress,
+    accentTheme: palette.accentTheme,
+    fontFamily: brand.fontFamily,
     bankName: resolvedBankName,
     bankAccount: `M-Pesa PayBill ${resolvedPaybillNumber} • Account: ${cleanRef}`,
     paybillNumber: resolvedPaybillNumber,
@@ -370,10 +398,10 @@ export function buildInvoiceDataFromPayment(
     supportPhone: brand.supportPhone,
     supportEmail: brand.supportEmail,
     notes: defaultNotes,
-    primaryColor: brand.primaryColor,
-    forestColor: brand.forestColor,
-    accentColor: brand.accentColor,
-    mintColor: brand.mintColor,
+    primaryColor: palette.primaryText,
+    forestColor: palette.titleColor,
+    accentColor: palette.barBg,
+    mintColor: palette.softBg,
     items,
     subTotal,
     taxRatePercent,
@@ -386,51 +414,41 @@ export function buildInvoiceDataFromPayment(
 }
 
 /**
- * Builds the System Logo HTML matching the system's LayoutShell & AuthGatePage logo
- * (or renders the custom companyLogoUrl configured in System Settings).
+ * Clean inline Brand Logo + Website Name HTML header block styled to the active website theme.
  */
 export function buildSystemLogoHtml(data: {
   companyName: string;
   companySubtitle: string;
   companyLogoUrl?: string;
-  primaryColor?: string;
-  accentColor?: string;
-  forestColor?: string;
+  showCompanyLogo?: boolean;
+  website?: string;
+  accentTheme?: string;
 }): string {
-  const primary = data.primaryColor || '#17231E';
-  const accent = data.accentColor || '#D5F267';
+  const palette = resolveInvoiceThemePalette(data.accentTheme);
+  const [b1, b2, b3] = palette.emblemBars;
 
   const customLogoImg =
-    data.companyLogoUrl && data.companyLogoUrl.trim()
-      ? `<img src="${data.companyLogoUrl}" alt="${data.companyName}" style="width: 44px; height: 44px; border-radius: 13px; object-fit: contain; background: ${accent}; padding: 4px; box-shadow: 0 4px 12px rgba(23,35,30,0.12);" />`
-      : '';
+    data.showCompanyLogo !== false && data.companyLogoUrl && data.companyLogoUrl.trim()
+      ? `<img src="${data.companyLogoUrl}" alt="${data.companyName}" style="width: 34px; height: 34px; border-radius: 8px; object-fit: contain; border: 1px solid ${palette.ruleLineColor}; background: #FFFFFF; padding: 2px;" />`
+      : `<div style="display: inline-flex; align-items: flex-end; gap: 3px; height: 22px;">
+          <span style="display: inline-block; width: 4.5px; height: 13px; border-radius: 99px; background: ${b1};"></span>
+          <span style="display: inline-block; width: 4.5px; height: 20px; border-radius: 99px; background: ${b2};"></span>
+          <span style="display: inline-block; width: 4.5px; height: 16px; border-radius: 99px; background: ${b3};"></span>
+        </div>`;
 
   return `
-    <div style="display: flex; align-items: center; gap: 12px;">
+    <div style="display: inline-flex; align-items: center; gap: 10px;">
       ${customLogoImg}
-      <div style="display: flex; align-items: center; gap: 10px;">
-        <div style="display: flex; align-items: flex-end; gap: 4px; height: 30px;">
-          <span style="display: inline-block; width: 6px; height: 18px; border-radius: 99px; background: #9FE249;"></span>
-          <span style="display: inline-block; width: 6px; height: 26px; border-radius: 99px; background: ${accent};"></span>
-          <span style="display: inline-block; width: 6px; height: 21px; border-radius: 99px; background: #145338;"></span>
-        </div>
-        <div>
-          <div style="font-size: 23px; font-weight: 800; color: ${primary}; letter-spacing: -0.02em; line-height: 1.1;">
-            ${data.companyName || 'ARabella agency'}
-          </div>
-          <div style="font-size: 13px; color: #145338; font-weight: 700; margin-top: 3px;">
-            ${data.companySubtitle || 'Smart Property Management'}
-          </div>
-        </div>
+      <div style="font-size: 13.5px; font-weight: 800; color: ${palette.sectionLabelColor}; letter-spacing: 0.08em; text-transform: uppercase; line-height: 1.15;">
+        ${data.companyName || 'ARabella agency'}
       </div>
     </div>
   `;
 }
 
 /**
- * Generates a standalone, print-ready HTML document matching the reference Invoice layout
- * styled in the System Theme colors (#17231E Deep Forest, #145338 Emerald, #D5F267 Lime, #D8F3E5 Mint)
- * and using the System Logo.
+ * Generates a clean, minimalist white-paper printable HTML invoice matching the reference sheet layout,
+ * using the user's logo, website name, active website accent theme, and active font family.
  */
 export function generateStandaloneInvoiceHtml(
   data: InvoiceDocumentData,
@@ -438,38 +456,49 @@ export function generateStandaloneInvoiceHtml(
 ): string {
   const includeLedger = options?.includeLedger !== false;
   const fmt = (n: number) => `KSh ${Number(n || 0).toLocaleString()}`;
-  const primary = data.primaryColor || '#17231E';
-  const forest = data.forestColor || '#145338';
-  const accent = data.accentColor || '#D5F267';
-  const mint = data.mintColor || '#D8F3E5';
+  const palette = resolveInvoiceThemePalette(data.accentTheme);
+  const fontStack = resolveInvoiceFontStack(data.fontFamily);
 
   const statusColor =
     data.status === 'Paid'
-      ? { bg: mint, text: forest, label: 'PAID & VERIFIED' }
+      ? { bg: '#D8F3E5', text: '#145338', label: 'Paid' }
       : data.status === 'Overdue'
-      ? { bg: '#FEE2E2', text: '#991B1B', label: 'OVERDUE' }
-      : { bg: accent, text: primary, label: 'PAYMENT PENDING' };
+      ? { bg: '#FEE2E2', text: '#991B1B', label: 'Overdue' }
+      : { bg: palette.badgeBg, text: palette.badgeText, label: 'Pending' };
 
-  const itemsRowsHtml = data.items
-    .map(
-      (item) => `
+  const billedDisplayAmount = Number(data.monthlyRent || data.subTotal || 0);
+  const blankRowsCount = Math.max(0, 4 - data.items.length);
+
+  const itemsRowsHtml = [
+    ...data.items.map(
+      (item, idx) => `
       <tr>
-        <td style="padding: 13px 12px; font-size: 14px; color: ${primary}; font-weight: 600; border-bottom: 1px solid #EEF3F0;">
+        <td style="padding: 12px 14px; font-size: 13px; color: ${palette.mutedText}; font-weight: 600; border-bottom: 1px solid ${palette.ruleLineColor};">
+          ${idx + 1}
+        </td>
+        <td style="padding: 12px 14px; font-size: 13px; color: ${palette.primaryText}; font-weight: 600; border-bottom: 1px solid ${palette.ruleLineColor};">
           ${item.description}
         </td>
-        <td style="padding: 13px 12px; font-size: 14px; color: #46544E; text-align: center; font-weight: 600; border-bottom: 1px solid #EEF3F0;">
-          ${item.qty}
+        <td style="padding: 12px 14px; font-size: 13px; color: ${palette.primaryText}; text-align: right; font-weight: 500; border-bottom: 1px solid ${palette.ruleLineColor}; font-variant-numeric: tabular-nums;">
+          ${fmt(item.price || data.monthlyRent)}
         </td>
-        <td style="padding: 13px 12px; font-size: 14px; color: #46544E; text-align: right; font-weight: 600; border-bottom: 1px solid #EEF3F0; font-variant-numeric: tabular-nums;">
-          ${item.price === 0 ? 'Included' : fmt(item.price)}
+        <td style="padding: 12px 14px; font-size: 13px; color: #145338; text-align: right; font-weight: 600; border-bottom: 1px solid ${palette.ruleLineColor}; font-variant-numeric: tabular-nums;">
+          ${idx === 0 ? fmt(data.amountPaid) : fmt(0)}
         </td>
-        <td style="padding: 13px 12px; font-size: 14px; color: ${primary}; text-align: right; font-weight: 800; border-bottom: 1px solid #EEF3F0; font-variant-numeric: tabular-nums;">
-          ${item.total === 0 ? 'KSh 0.00' : fmt(item.total)}
+        <td style="padding: 12px 14px; font-size: 13px; color: ${palette.primaryText}; text-align: right; font-weight: 700; border-bottom: 1px solid ${palette.ruleLineColor}; font-variant-numeric: tabular-nums;">
+          ${idx === 0 ? fmt(data.grandTotal) : fmt(item.total)}
         </td>
       </tr>
     `
-    )
-    .join('');
+    ),
+    ...Array.from({ length: blankRowsCount }).map(
+      () => `
+      <tr>
+        <td colspan="5" style="height: 36px; border-bottom: 1px solid ${palette.ruleLineColor};">&nbsp;</td>
+      </tr>
+    `
+    ),
+  ].join('');
 
   const totalLedgerBilled = data.ledgerEntries.reduce((s, e) => s + e.billed, 0);
   const totalLedgerPaid = data.ledgerEntries.reduce((s, e) => s + e.paid, 0);
@@ -478,83 +507,55 @@ export function generateStandaloneInvoiceHtml(
   const ledgerSectionHtml =
     includeLedger && data.ledgerEntries.length > 0
       ? `
-      <div style="margin-top: 34px; padding-top: 26px; border-top: 1.5px dashed #B8CEC2;">
-        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px;">
-          <div>
-            <div style="font-size: 13px; font-weight: 800; color: ${primary}; letter-spacing: 0.08em; text-transform: uppercase;">
-              TENANT STATEMENT OF ACCOUNT LEDGER (${data.tenantRef})
-            </div>
-            <div style="font-size: 12px; color: #4A6358; margin-top: 2px;">
-              Chronological billing, payment allocation &amp; running balance history for ${data.tenantName}
-            </div>
+      <div style="margin-top: 32px; padding-top: 22px; border-top: 1px dashed ${palette.ruleLineColor};">
+        <div style="margin-bottom: 10px;">
+          <div style="font-size: 12px; font-weight: 800; color: ${palette.sectionLabelColor}; letter-spacing: 0.06em; text-transform: uppercase;">
+            TENANT ACCOUNT LEDGER STATEMENT (${data.tenantRef})
+          </div>
+          <div style="font-size: 11.5px; color: ${palette.mutedText}; margin-top: 2px;">
+            Billing &amp; payment history for ${data.tenantName} — ${data.propertyName} (${data.unitNumber})
           </div>
         </div>
 
-        <div style="background: #FFFFFF; border-radius: 18px; overflow: hidden; box-shadow: 0 8px 24px rgba(23, 35, 30, 0.05); border: 1px solid #DCE7E1;">
-          <table style="width: 100%; border-collapse: collapse; text-align: left;">
-            <thead>
-              <tr style="background: linear-gradient(90deg, ${primary} 0%, ${forest} 60%, #1E704D 100%); color: #FFFFFF; font-size: 11px; font-weight: 800; letter-spacing: 0.07em; text-transform: uppercase;">
-                <th style="padding: 12px 16px; color: ${accent};">Ref / Code</th>
-                <th style="padding: 12px 14px;">Period / Due</th>
-                <th style="padding: 12px 14px;">Ledger Description</th>
-                <th style="padding: 12px 14px; text-align: right;">Billed</th>
-                <th style="padding: 12px 14px; text-align: right;">Paid</th>
-                <th style="padding: 12px 14px; text-align: right;">Balance</th>
-                <th style="padding: 12px 16px; text-align: center;">Status</th>
+        <table style="width: 100%; border-collapse: collapse; text-align: left; border: 1px solid ${palette.ruleLineColor};">
+          <thead>
+            <tr style="background: ${palette.barBg}; color: ${palette.barText}; font-size: 10.5px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase;">
+              <th style="padding: 9px 12px;">Ref / Code</th>
+              <th style="padding: 9px 10px;">Period</th>
+              <th style="padding: 9px 10px;">Description</th>
+              <th style="padding: 9px 10px; text-align: right;">Billed</th>
+              <th style="padding: 9px 10px; text-align: right;">Paid</th>
+              <th style="padding: 9px 10px; text-align: right;">Balance</th>
+              <th style="padding: 9px 12px; text-align: center;">Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${data.ledgerEntries
+              .map(
+                (entry) => `
+              <tr style="border-bottom: 1px solid ${palette.ruleLineColor}; font-size: 12px; color: ${palette.primaryText};">
+                <td style="padding: 9px 12px; font-weight: 700; font-family: monospace; color: ${palette.titleColor};">${entry.code}</td>
+                <td style="padding: 9px 10px; color: ${palette.mutedText};">${entry.period}</td>
+                <td style="padding: 9px 10px;">${entry.description}</td>
+                <td style="padding: 9px 10px; text-align: right; font-weight: 600;">${fmt(entry.billed)}</td>
+                <td style="padding: 9px 10px; text-align: right; font-weight: 700; color: #145338;">${fmt(entry.paid)}</td>
+                <td style="padding: 9px 10px; text-align: right; font-weight: 700; color: ${entry.balance > 0 ? '#B91C1C' : palette.primaryText};">${fmt(entry.balance)}</td>
+                <td style="padding: 9px 12px; text-align: center; font-weight: 700; font-size: 11px;">${entry.status}</td>
               </tr>
-            </thead>
-            <tbody>
-              ${data.ledgerEntries
-                .map(
-                  (entry) => `
-                <tr style="border-bottom: 1px solid #EEF3F0; font-size: 12.5px; color: ${primary};">
-                  <td style="padding: 11px 16px; font-weight: 700; font-family: monospace; color: ${forest};">${entry.code}</td>
-                  <td style="padding: 11px 14px; color: #5A6762;">${entry.period}</td>
-                  <td style="padding: 11px 14px;">${entry.description}</td>
-                  <td style="padding: 11px 14px; text-align: right; font-weight: 600;">${fmt(entry.billed)}</td>
-                  <td style="padding: 11px 14px; text-align: right; font-weight: 700; color: ${forest};">${fmt(entry.paid)}</td>
-                  <td style="padding: 11px 14px; text-align: right; font-weight: 700; color: ${
-                    entry.balance > 0 ? '#B91C1C' : primary
-                  };">${fmt(entry.balance)}</td>
-                  <td style="padding: 11px 16px; text-align: center;">
-                    <span style="display: inline-block; padding: 3px 9px; border-radius: 999px; font-size: 10.5px; font-weight: 800; background: ${
-                      entry.status === 'Paid'
-                        ? mint
-                        : entry.status === 'Overdue'
-                        ? '#FEE2E2'
-                        : accent
-                    }; color: ${
-                    entry.status === 'Paid'
-                      ? forest
-                      : entry.status === 'Overdue'
-                      ? '#991B1B'
-                      : primary
-                  };">
-                      ${entry.status}
-                    </span>
-                  </td>
-                </tr>
-              `
-                )
-                .join('')}
-            </tbody>
-            <tfoot>
-              <tr style="background: #F4F8F6; font-size: 12.5px; font-weight: 800; color: ${primary};">
-                <td colspan="3" style="padding: 12px 16px; text-transform: uppercase; letter-spacing: 0.05em;">
-                  Cumulative Account Ledger Totals
-                </td>
-                <td style="padding: 12px 14px; text-align: right;">${fmt(totalLedgerBilled)}</td>
-                <td style="padding: 12px 14px; text-align: right; color: ${forest};">${fmt(totalLedgerPaid)}</td>
-                <td style="padding: 12px 14px; text-align: right; color: ${
-                  totalLedgerBalance > 0 ? '#B91C1C' : forest
-                };">${fmt(totalLedgerBalance)}</td>
-                <td style="padding: 12px 16px; text-align: center;">
-                  ${totalLedgerBalance <= 0 ? 'CLEARED' : 'DUE'}
-                </td>
-              </tr>
-            </tfoot>
-          </table>
-        </div>
+            `
+              )
+              .join('')}
+          </tbody>
+          <tfoot>
+            <tr style="background: ${palette.softBg}; font-size: 12px; font-weight: 800; color: ${palette.primaryText};">
+              <td colspan="3" style="padding: 9px 12px; text-transform: uppercase; letter-spacing: 0.04em;">Cumulative Ledger Totals</td>
+              <td style="padding: 9px 10px; text-align: right;">${fmt(totalLedgerBilled)}</td>
+              <td style="padding: 9px 10px; text-align: right; color: #145338;">${fmt(totalLedgerPaid)}</td>
+              <td style="padding: 9px 10px; text-align: right; color: ${totalLedgerBalance > 0 ? '#B91C1C' : '#145338'};">${fmt(totalLedgerBalance)}</td>
+              <td style="padding: 9px 12px; text-align: center;">${totalLedgerBalance <= 0 ? 'CLEARED' : 'DUE'}</td>
+            </tr>
+          </tfoot>
+        </table>
       </div>
     `
       : '';
@@ -567,241 +568,201 @@ export function generateStandaloneInvoiceHtml(
   <title>Invoice ${data.invoiceNumber} - ${data.tenantName} (${data.tenantRef})</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&family=IBM+Plex+Sans:wght@400;500;600;700&family=Inter:wght@400;500;600;700;800&family=Manrope:wght@400;500;600;700;800&family=Outfit:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      background: #DCE6E0;
-      color: ${primary};
+      font-family: ${fontStack};
+      background: #EDF1F0;
+      color: ${palette.primaryText};
       padding: 28px 16px;
       -webkit-print-color-adjust: exact !important;
       print-color-adjust: exact !important;
     }
     .toolbar {
       max-width: 820px;
-      margin: 0 auto 16px;
+      margin: 0 auto 14px;
       display: flex;
       justify-content: space-between;
       align-items: center;
-      background: ${primary};
+      background: #17231E;
       color: #FFFFFF;
       padding: 12px 20px;
-      border-radius: 16px;
-      box-shadow: 0 8px 24px rgba(23,35,30,0.18);
+      border-radius: 12px;
+      box-shadow: 0 8px 20px rgba(0,0,0,0.14);
     }
     .toolbar-btn {
-      background: ${accent};
-      color: ${primary};
-      border: none;
-      padding: 9px 18px;
-      border-radius: 999px;
-      font-weight: 800;
+      background: ${palette.barBg};
+      color: ${palette.barText};
+      border: 1px solid ${palette.barBorder};
+      padding: 8px 16px;
+      border-radius: 8px;
+      font-weight: 700;
       font-size: 13px;
       cursor: pointer;
-      text-decoration: none;
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
     }
     .invoice-sheet {
       max-width: 820px;
       margin: 0 auto;
-      background: linear-gradient(165deg, #F8FBF9 0%, #EEF4F1 55%, #E0EBE5 100%);
-      border-radius: 24px;
+      background: #FFFFFF;
+      border-radius: 6px;
       overflow: hidden;
-      position: relative;
-      box-shadow: 0 20px 55px rgba(23, 35, 30, 0.14);
-      border: 1px solid #D5E2DB;
+      box-shadow: 0 18px 45px rgba(23, 35, 30, 0.12);
+      border: 1px solid ${palette.ruleLineColor};
     }
-    .decorative-ring {
-      position: absolute;
-      top: -90px;
-      right: -95px;
-      width: 410px;
-      height: 410px;
-      border-radius: 50%;
-      border: 48px solid transparent;
-      background:
-        linear-gradient(165deg, #F8FBF9, #EEF4F1) padding-box,
-        linear-gradient(135deg, rgba(216,243,229,0.25) 0%, ${accent} 52%, ${forest} 100%) border-box;
-      pointer-events: none;
-      z-index: 0;
+    .top-accent-bar {
+      height: 5px;
+      width: 100%;
+      background: ${palette.barBg};
     }
     .invoice-content {
-      position: relative;
-      z-index: 1;
-      padding: 54px 56px 40px;
+      padding: 44px 48px 36px;
     }
     @media print {
-      body { background: #F8FBF9; padding: 0; }
+      body { background: #FFFFFF; padding: 0; }
       .toolbar { display: none !important; }
       .invoice-sheet { box-shadow: none; border-radius: 0; max-width: 100%; border: none; }
     }
     @media (max-width: 640px) {
-      .invoice-content { padding: 32px 22px 28px; }
+      .invoice-content { padding: 28px 20px 24px; }
     }
   </style>
 </head>
 <body>
   <div class="toolbar">
     <div style="font-size: 13px; font-weight: 600;">
-      ${data.companyName} Official Invoice &amp; Tenant Statement • <strong style="color: ${accent};">${data.invoiceNumber}</strong> (${data.tenantRef})
+      ${data.companyName} Invoice • <strong>${data.invoiceNumber}</strong> (${data.tenantRef})
     </div>
-    <button class="toolbar-btn" onclick="window.print()">
-      Print / Save as PDF
-    </button>
+    <button class="toolbar-btn" onclick="window.print()">Print / Save as PDF</button>
   </div>
 
   <div class="invoice-sheet">
-    <div class="decorative-ring"></div>
-
+    <div class="top-accent-bar"></div>
     <div class="invoice-content">
-      <!-- Top System Brand Logo & INVOICE Title Row -->
-      <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; flex-wrap: wrap;">
-        ${buildSystemLogoHtml(data)}
-
-        <!-- Right INVOICE Title -->
-        <div style="text-align: right;">
-          <div style="font-size: 42px; font-weight: 800; color: ${primary}; letter-spacing: 0.06em; line-height: 1;">
+      <!-- Top Row: Logo + Website Name + INVOICE Title (Left) | INVOICE AMOUNT + Status (Right) -->
+      <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; flex-wrap: wrap; padding-bottom: 20px; border-bottom: 1px solid ${palette.ruleLineColor};">
+        <div>
+          ${buildSystemLogoHtml(data)}
+          <div style="font-size: 34px; font-weight: 800; color: ${palette.titleColor}; letter-spacing: 0.04em; line-height: 1.05; margin-top: 10px;">
             INVOICE
           </div>
         </div>
-      </div>
 
-      <!-- Payable To / Bank Details & Invoice Number / Date Row -->
-      <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-top: 46px; gap: 24px; flex-wrap: wrap;">
-        <div>
-          <div style="font-size: 15px; font-weight: 800; color: ${primary}; letter-spacing: 0.05em; text-transform: uppercase;">
-            PAYABLE TO
+        <div style="text-align: right;">
+          <div style="font-size: 11px; font-weight: 800; color: ${palette.sectionLabelColor}; letter-spacing: 0.08em; text-transform: uppercase;">
+            INVOICE AMOUNT
           </div>
-          <div style="font-size: 15.5px; color: ${primary}; font-weight: 700; margin-top: 8px;">
-            ${data.tenantName}
+          <div style="font-size: 28px; font-weight: 800; color: ${palette.titleColor}; margin-top: 4px; font-variant-numeric: tabular-nums;">
+            ${fmt(billedDisplayAmount)}
           </div>
-          <div style="font-size: 14px; color: #46544E; margin-top: 4px;">
-            ${data.unitNumber} • ${data.propertyName} (Ref: <strong style="color: ${forest};">${data.tenantRef}</strong>)
-          </div>
-
-          <div style="font-size: 15px; font-weight: 800; color: ${primary}; letter-spacing: 0.05em; text-transform: uppercase; margin-top: 26px;">
-            BANK DETAILS
-          </div>
-          <div style="font-size: 14.5px; color: ${primary}; font-weight: 600; margin-top: 8px;">
-            ${data.bankName}
-          </div>
-          <div style="font-size: 14px; color: #46544E; margin-top: 4px; font-variant-numeric: tabular-nums;">
-            ${data.bankAccount}
-          </div>
-        </div>
-
-        <div style="text-align: right; min-width: 220px;">
-          <div style="font-size: 14.5px; color: ${primary}; font-weight: 500;">
-            Invoice Number: <strong style="font-weight: 800;">${data.invoiceNumber}</strong>
-          </div>
-          <div style="font-size: 14.5px; color: ${primary}; font-weight: 500; margin-top: 5px;">
-            Invoice Date: <strong style="font-weight: 700;">${data.issueDate}</strong>
-          </div>
-          <div style="font-size: 14px; color: #46544E; font-weight: 500; margin-top: 5px;">
-            Payment Due Date: <strong style="font-weight: 700; color: ${forest};">${data.dueDate}</strong>
-          </div>
-          <div style="margin-top: 8px;">
-            <span style="display: inline-block; padding: 4px 12px; border-radius: 999px; font-size: 11.5px; font-weight: 800; background: ${statusColor.bg}; color: ${statusColor.text};">
-              Payment Status: ${data.status}
+          <div style="margin-top: 6px;">
+            <span style="display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 800; background: ${statusColor.bg}; color: ${statusColor.text};">
+              Payment Status: ${statusColor.label}
             </span>
           </div>
         </div>
       </div>
 
-      <!-- Dedicated Billing Period Card -->
-      <div style="margin-top: 22px; background: #FFFFFF; border-radius: 16px; padding: 14px 22px; border: 1px solid #DCE7E1; display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap;">
+      <!-- 2-Column Metadata Row (ISSUED BY | OCCUPANT NAME) -->
+      <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; margin-top: 24px;">
         <div>
-          <div style="font-size: 10.5px; font-weight: 800; color: #5A6762; letter-spacing: 0.06em; text-transform: uppercase;">Billing Period Start</div>
-          <div style="font-size: 14px; font-weight: 800; color: ${primary}; margin-top: 2px;">${data.billingPeriodStart}</div>
+          <div style="font-size: 11px; font-weight: 800; color: ${palette.sectionLabelColor}; letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: 8px;">
+            ISSUED BY
+          </div>
+          <div style="font-size: 12.5px; color: ${palette.primaryText}; font-weight: 700; line-height: 1.65;">
+            ${data.companyName}
+          </div>
+          <div style="font-size: 12px; color: ${palette.mutedText}; line-height: 1.65;">
+            ${data.businessAddress || 'Westlands, Nairobi, Kenya'}
+          </div>
+          <div style="font-size: 12px; color: ${palette.mutedText}; line-height: 1.65;">
+            ${data.supportPhone}
+          </div>
+          <div style="font-size: 12px; color: ${palette.mutedText}; line-height: 1.65;">
+            ${data.supportEmail}
+          </div>
         </div>
-        <div>
-          <div style="font-size: 10.5px; font-weight: 800; color: #5A6762; letter-spacing: 0.06em; text-transform: uppercase;">Billing Period End</div>
-          <div style="font-size: 14px; font-weight: 800; color: ${primary}; margin-top: 2px;">${data.billingPeriodEnd}</div>
-        </div>
+
         <div style="text-align: right;">
-          <div style="font-size: 10.5px; font-weight: 800; color: #5A6762; letter-spacing: 0.06em; text-transform: uppercase;">Monthly Rent</div>
-          <div style="font-size: 14px; font-weight: 800; color: ${forest}; margin-top: 2px;">${fmt(data.monthlyRent || data.subTotal)}</div>
+          <div style="font-size: 11px; font-weight: 800; color: ${palette.sectionLabelColor}; letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: 8px;">
+            OCCUPANT NAME
+          </div>
+          <div style="font-size: 12.5px; color: ${palette.primaryText}; font-weight: 700; line-height: 1.65;">
+            ${data.tenantName}
+          </div>
+          <div style="font-size: 12px; color: ${palette.mutedText}; line-height: 1.65;">
+            ${data.propertyName}
+          </div>
+          <div style="font-size: 12px; color: ${palette.primaryText}; font-weight: 600; line-height: 1.65;">
+            ${data.unitNumber} (Ref: ${data.tenantRef})
+          </div>
+          <div style="font-size: 12px; color: ${palette.mutedText}; line-height: 1.65;">
+            ${data.tenantPhone || data.tenantEmail || 'Verified Resident Account'}
+          </div>
         </div>
       </div>
 
-      <!-- System Forest-to-Emerald Pill Header Bar -->
-      <div style="margin-top: 24px; background: linear-gradient(90deg, ${primary} 0%, ${forest} 58%, #1E704D 100%); border-radius: 999px; padding: 15px 32px; color: #FFFFFF; box-shadow: 0 8px 20px rgba(20, 83, 56, 0.2);">
+      <!-- Sharp Rectangular Theme-Colored Line Items Table -->
+      <div style="margin-top: 26px;">
         <table style="width: 100%; border-collapse: collapse;">
-          <tr>
-            <th style="text-align: left; font-size: 14px; font-weight: 800; letter-spacing: 0.08em; width: 48%; color: ${accent};">ITEM DESCRIPTION</th>
-            <th style="text-align: center; font-size: 14px; font-weight: 800; letter-spacing: 0.08em; width: 12%; color: #FFFFFF;">QTY</th>
-            <th style="text-align: right; font-size: 14px; font-weight: 800; letter-spacing: 0.08em; width: 20%; color: #FFFFFF;">PRICE</th>
-            <th style="text-align: right; font-size: 14px; font-weight: 800; letter-spacing: 0.08em; width: 20%; color: ${accent};">TOTAL</th>
-          </tr>
-        </table>
-      </div>
-
-      <!-- White Rounded Line Items Container -->
-      <div style="margin-top: 16px; background: #FFFFFF; border-radius: 22px; padding: 18px 24px; box-shadow: 0 10px 28px rgba(23, 35, 30, 0.05); border: 1px solid #E4ECE8;">
-        <table style="width: 100%; border-collapse: collapse;">
-          <colgroup>
-            <col style="width: 48%;" />
-            <col style="width: 12%;" />
-            <col style="width: 20%;" />
-            <col style="width: 20%;" />
-          </colgroup>
+          <thead>
+            <tr style="background: ${palette.barBg}; color: ${palette.barText}; border: 1px solid ${palette.barBorder};">
+              <th style="padding: 10px 14px; text-align: left; font-size: 11px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; width: 9%; border-top-left-radius: 4px; border-bottom-left-radius: 4px;">S.NO.</th>
+              <th style="padding: 10px 14px; text-align: left; font-size: 11px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; width: 45%;">DESCRIPTION</th>
+              <th style="padding: 10px 14px; text-align: right; font-size: 11px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; width: 16%;">MONTHLY RENT</th>
+              <th style="padding: 10px 14px; text-align: right; font-size: 11px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; width: 15%;">PAID</th>
+              <th style="padding: 10px 14px; text-align: right; font-size: 11px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; width: 15%; border-top-right-radius: 4px; border-bottom-right-radius: 4px;">BALANCE</th>
+            </tr>
+          </thead>
           <tbody>
             ${itemsRowsHtml}
           </tbody>
         </table>
       </div>
 
-      <!-- Notes & Sub Total / Grand Total Row -->
-      <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 32px; margin-top: 28px; flex-wrap: wrap;">
-        <div style="flex: 1; min-width: 240px; max-width: 350px; padding-top: 6px;">
-          <div style="font-size: 14.5px; font-weight: 800; color: ${primary}; letter-spacing: 0.05em; text-transform: uppercase;">
-            NOTES:
+      <!-- Right-Aligned Totals Summary Stack with Solid Theme Total Bar -->
+      <div style="display: flex; justify-content: flex-end; margin-top: 26px;">
+        <div style="width: 280px; max-width: 100%;">
+          <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 10px; border-bottom: 1px solid ${palette.ruleLineColor}; font-size: 12px;">
+            <span style="font-weight: 700; color: ${palette.primaryText}; letter-spacing: 0.04em;">MONTHLY RENT</span>
+            <span style="font-weight: 700; color: ${palette.primaryText}; font-variant-numeric: tabular-nums;">${fmt(data.monthlyRent || data.subTotal)}</span>
           </div>
-          <p style="font-size: 12.5px; color: #46544E; line-height: 1.65; margin-top: 10px;">
-            ${data.notes}
-          </p>
-        </div>
+          <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 10px; border-bottom: 1px solid ${palette.ruleLineColor}; font-size: 12px;">
+            <span style="font-weight: 700; color: ${palette.primaryText}; letter-spacing: 0.04em;">AMOUNT PAID</span>
+            <span style="font-weight: 700; color: #145338; font-variant-numeric: tabular-nums;">${fmt(data.amountPaid)}</span>
+          </div>
+          <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 10px; font-size: 12px;">
+            <span style="font-weight: 700; color: ${palette.primaryText}; letter-spacing: 0.04em;">PAYMENT STATUS</span>
+            <span style="font-weight: 800; color: ${statusColor.text};">${statusColor.label.toUpperCase()}</span>
+          </div>
 
-        <div style="background: #FFFFFF; border-radius: 20px; padding: 22px 30px; min-width: 310px; box-shadow: 0 10px 28px rgba(23, 35, 30, 0.05); border: 1px solid #E4ECE8;">
-          <div style="display: flex; justify-content: space-between; align-items: center; padding: 6px 0; font-size: 14px;">
-            <span style="font-weight: 800; color: ${primary}; letter-spacing: 0.04em;">MONTHLY RENT</span>
-            <span style="font-weight: 700; color: ${primary}; font-variant-numeric: tabular-nums;">${fmt(data.monthlyRent || data.subTotal)}</span>
-          </div>
-          <div style="display: flex; justify-content: space-between; align-items: center; padding: 7px 0; font-size: 14px;">
-            <span style="font-weight: 800; color: ${primary}; letter-spacing: 0.04em;">AMOUNT PAID</span>
-            <span style="font-weight: 700; color: ${forest}; font-variant-numeric: tabular-nums;">${fmt(data.amountPaid)}</span>
-          </div>
-          <div style="display: flex; justify-content: space-between; align-items: center; padding: 7px 0; font-size: 14px;">
-            <span style="font-weight: 800; color: ${primary}; letter-spacing: 0.04em;">PAYMENT STATUS</span>
-            <span style="font-weight: 800; color: ${statusColor.text};">${data.status}</span>
-          </div>
-          <div style="display: flex; justify-content: space-between; align-items: center; padding: 10px 0 4px; margin-top: 4px; border-top: 1.5px solid #E4ECE8; font-size: 15px;">
-            <span style="font-weight: 800; color: ${primary}; letter-spacing: 0.04em;">OUTSTANDING BALANCE</span>
-            <span style="font-weight: 800; color: ${primary}; background: ${accent}; padding: 3px 10px; border-radius: 8px; font-variant-numeric: tabular-nums;">${fmt(data.grandTotal)}</span>
+          <div style="margin-top: 6px; background: ${palette.barBg}; color: ${palette.barText}; border: 1px solid ${palette.barBorder}; border-radius: 4px; padding: 11px 12px; display: flex; justify-content: space-between; align-items: center; font-size: 12.5px;">
+            <span style="font-weight: 800; letter-spacing: 0.04em;">OUTSTANDING BALANCE</span>
+            <span style="font-weight: 800; font-variant-numeric: tabular-nums; font-size: 14px;">${fmt(data.grandTotal)}</span>
           </div>
         </div>
       </div>
 
       ${ledgerSectionHtml}
-    </div>
 
-    <!-- Bottom System Forest-to-Lime Wave Banner with Dark Forest Contact Pill Bar -->
-    <div style="margin-top: 26px; background: linear-gradient(90deg, ${forest} 0%, #1F7A53 45%, ${accent} 100%); padding: 30px 44px;">
-      <div style="background: ${primary}; border-radius: 999px; padding: 15px 32px; color: #FFFFFF; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 14px; box-shadow: 0 10px 24px rgba(23, 35, 30, 0.28);">
-        <div style="display: flex; align-items: center; gap: 10px; font-size: 13.5px; font-weight: 600;">
-          <span style="display: inline-flex; width: 26px; height: 26px; border-radius: 50%; background: ${accent}; color: ${primary}; align-items: center; justify-content: center; font-weight: 800; font-size: 12px;">🌐</span>
-          <span>${data.website}</span>
+      <!-- Signature & Subtle Brand Footer -->
+      <div style="margin-top: 34px; display: flex; justify-content: flex-end;">
+        <div style="width: 190px; text-align: center;">
+          <div style="border-top: 1px solid ${palette.mutedText}; padding-top: 6px; font-size: 11.5px; font-weight: 700; color: ${palette.primaryText};">
+            Authorized Signature
+          </div>
+          <div style="font-size: 10.5px; color: ${palette.mutedText}; margin-top: 2px;">
+            ${data.companyName}
+          </div>
         </div>
-        <div style="display: flex; align-items: center; gap: 10px; font-size: 13.5px; font-weight: 600;">
-          <span style="display: inline-flex; width: 26px; height: 26px; border-radius: 50%; background: ${accent}; color: ${primary}; align-items: center; justify-content: center; font-weight: 800; font-size: 12px;">📞</span>
-          <span>${data.supportPhone}</span>
+      </div>
+
+      <div style="margin-top: 24px; padding: 10px 14px; background: ${palette.softBg}; border: 1px solid ${palette.softBorder}; border-radius: 4px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; font-size: 11px;">
+        <div style="font-weight: 700; color: ${palette.sectionLabelColor};">
+          ${data.companyName}
         </div>
-        <div style="display: flex; align-items: center; gap: 10px; font-size: 13.5px; font-weight: 600;">
-          <span style="display: inline-flex; width: 26px; height: 26px; border-radius: 50%; background: ${accent}; color: ${primary}; align-items: center; justify-content: center; font-weight: 800; font-size: 12px;">✉️</span>
-          <span>${data.supportEmail}</span>
+        <div style="color: ${palette.mutedText};">
+          ${data.supportPhone} &bull; ${data.supportEmail}
         </div>
       </div>
     </div>
@@ -816,7 +777,7 @@ export function generateStandaloneInvoiceHtml(
 }
 
 /**
- * Triggers a direct browser download of the designed System-Theme Invoice as a full-color PDF file (.pdf).
+ * Triggers a direct browser download of the clean Theme-Synced Invoice as a vector PDF file (.pdf).
  */
 export function downloadDesignedInvoiceFile(data: InvoiceDocumentData, filenamePrefix = 'Invoice'): void {
   const pdfBytes = buildDesignedInvoicePdfBytes({
@@ -829,10 +790,14 @@ export function downloadDesignedInvoiceFile(data: InvoiceDocumentData, filenameP
     monthlyRent: data.monthlyRent || data.subTotal,
     tenantName: data.tenantName,
     tenantRef: data.tenantRef,
+    tenantEmail: data.tenantEmail,
+    tenantPhone: data.tenantPhone,
     propertyName: data.propertyName,
     unitNumber: data.unitNumber,
     companyName: data.companyName,
     companySubtitle: data.companySubtitle,
+    businessAddress: data.businessAddress,
+    accentTheme: data.accentTheme,
     bankName: data.bankName,
     bankAccount: data.bankAccount,
     paybillNumber: data.paybillNumber,
@@ -858,21 +823,27 @@ export function downloadDesignedInvoiceFile(data: InvoiceDocumentData, filenameP
 }
 
 /**
- * Renders the Invoice & Tenant Ledger directly onto an HTML5 Canvas using the System Theme colors
- * (#17231E Deep Forest, #145338 Emerald, #D5F267 Lime, #D8F3E5 Mint) and System Logo, and downloads a PNG image.
+ * Renders the minimalist white-paper Invoice & Tenant Ledger directly onto an HTML5 Canvas
+ * styled dynamically to the active website theme, logo mark & website name, and downloads PNG.
  */
 export function downloadDesignedInvoicePng(data: InvoiceDocumentData, filenamePrefix = 'Invoice'): void {
   const canvas = document.createElement('canvas');
   const width = 1000;
+  const palette = resolveInvoiceThemePalette(data.accentTheme);
+  const fontFace = `"${data.fontFamily || 'Plus Jakarta Sans'}", "Inter", sans-serif`;
+
   const ledgerRowsCount = Math.min(8, data.ledgerEntries.length);
-  const cardY = 478;
-  const cardH = Math.max(195, data.items.length * 56 + 44);
-  const notesY = cardY + cardH + 38;
-  const ledgerY = notesY + 178;
-  const tblY = ledgerY + 16;
-  const tblH = 50 + ledgerRowsCount * 40;
-  const contentBottom = ledgerRowsCount > 0 ? tblY + tblH + 38 : notesY + 178;
-  const height = contentBottom + 115;
+  const itemRowsCount = Math.max(data.items.length, 4);
+  const tableHeaderY = 345;
+  const rowsStartY = tableHeaderY + 46;
+  const rowHeight = 48;
+  const bottomY = rowsStartY + itemRowsCount * rowHeight + 44;
+  const ledgerY = bottomY + 210;
+  const tblY = ledgerY + 24;
+  const tblH = 44 + ledgerRowsCount * 38;
+  const sigStartY = ledgerRowsCount > 0 ? tblY + tblH + 54 : bottomY + 225;
+  const height = sigStartY + 125;
+
   canvas.width = width;
   canvas.height = height;
   const ctx = canvas.getContext('2d');
@@ -882,251 +853,265 @@ export function downloadDesignedInvoicePng(data: InvoiceDocumentData, filenamePr
   }
 
   const fmt = (n: number) => `KSh ${Number(n || 0).toLocaleString()}`;
-  const primary = data.primaryColor || '#17231E';
-  const forest = data.forestColor || '#145338';
-  const accent = data.accentColor || '#D5F267';
+  const margin = 70;
 
-  // 1. System Sage-Alabaster Background Gradient
-  const bgGrad = ctx.createLinearGradient(0, 0, width, height);
-  bgGrad.addColorStop(0, '#F8FBF9');
-  bgGrad.addColorStop(0.55, '#EEF4F1');
-  bgGrad.addColorStop(1, '#E0EBE5');
-  ctx.fillStyle = bgGrad;
+  // 1. Crisp White Sheet & Top Accent Hairline
+  ctx.fillStyle = '#FFFFFF';
   ctx.fillRect(0, 0, width, height);
+  ctx.fillStyle = palette.barBg;
+  ctx.fillRect(0, 0, width, 7);
 
-  // 2. Top-right decorative System Lime-to-Emerald gradient ring
-  ctx.save();
+  // 2. Top-Left: System Logo Mark + Website/Company Name + INVOICE
+  const [b1, b2, b3] = palette.emblemBars;
+  ctx.fillStyle = b1;
   ctx.beginPath();
-  ctx.arc(width - 90, 110, 225, 0, Math.PI * 2);
-  ctx.lineWidth = 54;
-  const ringGrad = ctx.createLinearGradient(width - 320, 0, width, 340);
-  ringGrad.addColorStop(0, 'rgba(216, 243, 229, 0.35)');
-  ringGrad.addColorStop(0.52, accent);
-  ringGrad.addColorStop(1, forest);
-  ctx.strokeStyle = ringGrad;
+  ctx.roundRect(margin, 72, 7, 18, 3);
+  ctx.fill();
+  ctx.fillStyle = b2;
+  ctx.beginPath();
+  ctx.roundRect(margin + 10, 62, 7, 28, 3);
+  ctx.fill();
+  ctx.fillStyle = b3;
+  ctx.beginPath();
+  ctx.roundRect(margin + 20, 67, 7, 23, 3);
+  ctx.fill();
+
+  ctx.textAlign = 'left';
+  ctx.fillStyle = palette.sectionLabelColor;
+  ctx.font = `800 19px ${fontFace}`;
+  ctx.fillText(String(data.companyName || 'ARabella agency').toUpperCase(), margin + 38, 84);
+
+  ctx.fillStyle = palette.titleColor;
+  ctx.font = `800 46px ${fontFace}`;
+  ctx.fillText('INVOICE', margin, 148);
+
+  // 3. Top-Right: INVOICE AMOUNT & Status Badge
+  ctx.textAlign = 'right';
+  ctx.fillStyle = palette.sectionLabelColor;
+  ctx.font = `800 14px ${fontFace}`;
+  ctx.fillText('INVOICE AMOUNT', width - margin, 80);
+
+  ctx.fillStyle = palette.titleColor;
+  ctx.font = `800 36px ${fontFace}`;
+  ctx.fillText(fmt(data.monthlyRent || data.subTotal), width - margin, 120);
+
+  const normStatus = String(data.status || 'Pending').trim();
+  const statusBg = normStatus === 'Paid' ? '#D8F3E5' : normStatus === 'Overdue' ? '#FEE2E2' : palette.badgeBg;
+  const statusFg = normStatus === 'Paid' ? '#145338' : normStatus === 'Overdue' ? '#991B1B' : palette.badgeText;
+  const statusLabel = `Payment Status: ${normStatus}`;
+  ctx.font = `800 13.5px ${fontFace}`;
+  const pillW = ctx.measureText(statusLabel).width + 26;
+  ctx.fillStyle = statusBg;
+  ctx.beginPath();
+  ctx.roundRect(width - margin - pillW, 134, pillW, 28, 14);
+  ctx.fill();
+  ctx.fillStyle = statusFg;
+  ctx.fillText(statusLabel, width - margin - 13, 153);
+
+  // Header Divider Rule
+  ctx.strokeStyle = palette.ruleLineColor;
+  ctx.lineWidth = 1.2;
+  ctx.beginPath();
+  ctx.moveTo(margin, 180);
+  ctx.lineTo(width - margin, 180);
   ctx.stroke();
-  ctx.restore();
 
-  // 3. System Brand Emblem (3 Ascending System Bars — no star badge)
-  ctx.save();
-  ctx.fillStyle = '#9FE249';
-  ctx.beginPath();
-  ctx.roundRect(70, 86, 7, 22, 3.5);
-  ctx.fill();
-  ctx.fillStyle = accent;
-  ctx.beginPath();
-  ctx.roundRect(81, 76, 7, 32, 3.5);
-  ctx.fill();
-  ctx.fillStyle = forest;
-  ctx.beginPath();
-  ctx.roundRect(92, 82, 7, 26, 3.5);
-  ctx.fill();
-  ctx.restore();
+  // 4. 2-Column Clean Metadata Row (ISSUED BY | OCCUPANT NAME)
+  const mY = 212;
 
-  // Brand name & subtitle from System Settings
   ctx.textAlign = 'left';
-  ctx.fillStyle = primary;
-  ctx.font = '800 27px "Plus Jakarta Sans", sans-serif';
-  ctx.fillText(data.companyName || 'ARabella agency', 112, 92);
-  ctx.fillStyle = forest;
-  ctx.font = '700 15px "Plus Jakarta Sans", sans-serif';
-  ctx.fillText(data.companySubtitle || 'Smart Property Management', 112, 115);
+  ctx.fillStyle = palette.sectionLabelColor;
+  ctx.font = `800 14px ${fontFace}`;
+  ctx.fillText('ISSUED BY', margin, mY);
+  ctx.fillStyle = palette.primaryText;
+  ctx.font = `700 14.5px ${fontFace}`;
+  ctx.fillText(data.companyName || 'ARabella agency', margin, mY + 26);
+  ctx.fillStyle = palette.mutedText;
+  ctx.font = `500 14px ${fontFace}`;
+  ctx.fillText((data.businessAddress || 'Westlands, Nairobi, Kenya').slice(0, 42), margin, mY + 48);
+  ctx.fillText(data.supportPhone, margin, mY + 70);
+  ctx.fillText(data.supportEmail.slice(0, 42), margin, mY + 92);
 
-  // Right: INVOICE heading
   ctx.textAlign = 'right';
-  ctx.fillStyle = primary;
-  ctx.font = '800 48px "Plus Jakarta Sans", sans-serif';
-  ctx.fillText('INVOICE', width - 70, 108);
+  ctx.fillStyle = palette.sectionLabelColor;
+  ctx.font = `800 14px ${fontFace}`;
+  ctx.fillText('OCCUPANT NAME', width - margin, mY);
+  ctx.fillStyle = palette.primaryText;
+  ctx.font = `700 14.5px ${fontFace}`;
+  ctx.fillText(data.tenantName, width - margin, mY + 26);
+  ctx.fillStyle = palette.mutedText;
+  ctx.font = `500 14px ${fontFace}`;
+  ctx.fillText(data.propertyName.slice(0, 40), width - margin, mY + 48);
+  ctx.fillStyle = palette.primaryText;
+  ctx.font = `700 14px ${fontFace}`;
+  ctx.fillText(`${data.unitNumber} (Ref: ${data.tenantRef})`, width - margin, mY + 70);
+  ctx.fillStyle = palette.mutedText;
+  ctx.font = `500 13.5px ${fontFace}`;
+  ctx.fillText((data.tenantPhone || data.tenantEmail || 'Verified Resident Account').slice(0, 40), width - margin, mY + 92);
 
-  // Number & Date
-  ctx.fillStyle = primary;
-  ctx.font = '700 17px "Plus Jakarta Sans", sans-serif';
-  ctx.fillText(`Number: ${data.invoiceNumber}`, width - 70, 210);
-  ctx.font = '600 16.5px "Plus Jakarta Sans", sans-serif';
-  ctx.fillText(`Date: ${data.issueDate}`, width - 70, 238);
-  ctx.fillStyle = forest;
-  ctx.fillText(`Due Date: ${data.dueDate}`, width - 70, 266);
-
-  // Left: PAYABLE TO & BANK DETAILS
-  ctx.textAlign = 'left';
-  ctx.fillStyle = primary;
-  ctx.font = '800 17px "Plus Jakarta Sans", sans-serif';
-  ctx.fillText('PAYABLE TO', 70, 205);
-  ctx.fillStyle = primary;
-  ctx.font = '700 17px "Plus Jakarta Sans", sans-serif';
-  ctx.fillText(data.tenantName, 70, 233);
-  ctx.fillStyle = '#46544E';
-  ctx.font = '600 15.5px "Plus Jakarta Sans", sans-serif';
-  ctx.fillText(`${data.unitNumber} • ${data.propertyName} (Ref: ${data.tenantRef})`, 70, 258);
-
-  ctx.fillStyle = primary;
-  ctx.font = '800 17px "Plus Jakarta Sans", sans-serif';
-  ctx.fillText('BANK DETAILS', 70, 305);
-  ctx.fillStyle = primary;
-  ctx.font = '600 16px "Plus Jakarta Sans", sans-serif';
-  ctx.fillText(data.bankName, 70, 332);
-  ctx.fillStyle = '#46544E';
-  ctx.font = '600 15.5px "Plus Jakarta Sans", sans-serif';
-  ctx.fillText(data.bankAccount, 70, 356);
-
-  // 4. System Forest-to-Emerald Pill Header Bar
-  const pillY = 405;
-  const pillGrad = ctx.createLinearGradient(70, pillY, width - 70, pillY);
-  pillGrad.addColorStop(0, primary);
-  pillGrad.addColorStop(0.58, forest);
-  pillGrad.addColorStop(1, '#1E704D');
-  ctx.fillStyle = pillGrad;
+  // 5. Rectangular Theme Table Header Bar
+  ctx.fillStyle = palette.barBg;
   ctx.beginPath();
-  ctx.roundRect(70, pillY, width - 140, 54, 27);
+  ctx.roundRect(margin, tableHeaderY, width - margin * 2, 44, 5);
   ctx.fill();
+  ctx.strokeStyle = palette.barBorder;
+  ctx.lineWidth = 1;
+  ctx.stroke();
 
-  ctx.fillStyle = accent;
-  ctx.font = '800 15.5px "Plus Jakarta Sans", sans-serif';
+  ctx.fillStyle = palette.barText;
+  ctx.font = `800 13.5px ${fontFace}`;
   ctx.textAlign = 'left';
-  ctx.fillText('ITEM DESCRIPTION', 104, pillY + 33);
-  ctx.fillStyle = '#FFFFFF';
-  ctx.textAlign = 'center';
-  ctx.fillText('QTY', 560, pillY + 33);
+  ctx.fillText('S.NO.', margin + 18, tableHeaderY + 27);
+  ctx.fillText('DESCRIPTION', margin + 84, tableHeaderY + 27);
   ctx.textAlign = 'right';
-  ctx.fillText('PRICE', 730, pillY + 33);
-  ctx.fillStyle = accent;
-  ctx.fillText('TOTAL', width - 104, pillY + 33);
+  ctx.fillText('MONTHLY RENT', width - margin - 270, tableHeaderY + 27);
+  ctx.fillText('PAID', width - margin - 140, tableHeaderY + 27);
+  ctx.fillText('BALANCE', width - margin - 18, tableHeaderY + 27);
 
-  // 5. White Rounded Line Items Card
-  ctx.fillStyle = '#FFFFFF';
-  ctx.beginPath();
-  ctx.roundRect(70, cardY, width - 140, cardH, 24);
-  ctx.fill();
+  // 6. Ruled Item Rows
+  for (let i = 0; i < itemRowsCount; i++) {
+    const rTop = rowsStartY + i * rowHeight;
+    if (i < data.items.length) {
+      const item = data.items[i];
+      const textY = rTop + 30;
+      ctx.textAlign = 'left';
+      ctx.fillStyle = palette.mutedText;
+      ctx.font = `600 14.5px ${fontFace}`;
+      ctx.fillText(String(i + 1), margin + 22, textY);
+      ctx.fillStyle = palette.primaryText;
+      ctx.font = `600 14.5px ${fontFace}`;
+      ctx.fillText(item.description.slice(0, 44), margin + 84, textY);
+      ctx.textAlign = 'right';
+      ctx.fillText(fmt(item.price || data.monthlyRent), width - margin - 270, textY);
+      ctx.fillStyle = '#145338';
+      ctx.fillText(i === 0 ? fmt(data.amountPaid) : fmt(0), width - margin - 140, textY);
+      ctx.fillStyle = palette.primaryText;
+      ctx.font = `800 14.5px ${fontFace}`;
+      ctx.fillText(i === 0 ? fmt(data.grandTotal) : fmt(item.total), width - margin - 18, textY);
+    }
+    ctx.strokeStyle = palette.ruleLineColor;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(margin, rTop + rowHeight);
+    ctx.lineTo(width - margin, rTop + rowHeight);
+    ctx.stroke();
+  }
 
-  data.items.forEach((item, idx) => {
-    const rowY = cardY + 46 + idx * 54;
-    ctx.fillStyle = primary;
-    ctx.font = '600 15.5px "Plus Jakarta Sans", sans-serif';
+  // 7. Right-Aligned Summary Stack (Terms & Conditions and Payment Information removed)
+
+  // Right Summary Stack
+  const sumX = width - margin - 350;
+  const sumW = 350;
+
+  const drawSumRow = (label: string, val: string, y: number, valColor: string) => {
     ctx.textAlign = 'left';
-    ctx.fillText(item.description.slice(0, 56), 104, rowY);
-    ctx.textAlign = 'center';
-    ctx.fillStyle = '#46544E';
-    ctx.fillText(String(item.qty), 560, rowY);
+    ctx.fillStyle = palette.primaryText;
+    ctx.font = `700 14px ${fontFace}`;
+    ctx.fillText(label, sumX + 12, y);
     ctx.textAlign = 'right';
-    ctx.fillText(item.price === 0 ? 'Included' : fmt(item.price), 730, rowY);
-    ctx.fillStyle = primary;
-    ctx.font = '800 15.5px "Plus Jakarta Sans", sans-serif';
-    ctx.fillText(item.total === 0 ? 'KSh 0.00' : fmt(item.total), width - 104, rowY);
-  });
+    ctx.fillStyle = valColor;
+    ctx.font = `800 14.5px ${fontFace}`;
+    ctx.fillText(val, width - margin - 12, y);
+    ctx.strokeStyle = palette.ruleLineColor;
+    ctx.beginPath();
+    ctx.moveTo(sumX, y + 14);
+    ctx.lineTo(width - margin, y + 14);
+    ctx.stroke();
+  };
 
-  // 6. Notes & Totals Box
-  ctx.textAlign = 'left';
-  ctx.fillStyle = primary;
-  ctx.font = '800 16px "Plus Jakarta Sans", sans-serif';
-  ctx.fillText('NOTES:', 75, notesY + 24);
-  ctx.fillStyle = '#46544E';
-  ctx.font = '500 13.5px "Plus Jakarta Sans", sans-serif';
-  const noteLines = [
-    `We prioritize resident satisfaction. Our team at ${data.companyName}`,
-    'is dedicated to delivering exceptional property service and',
-    `ensuring your comfort. Quote Account Ref ${data.tenantRef} on all`,
-    `M-Pesa PayBill (${data.paybillNumber}) or Bank payments.`,
-  ];
-  noteLines.forEach((line, i) => {
-    ctx.fillText(line, 75, notesY + 52 + i * 22);
-  });
+  drawSumRow('MONTHLY RENT', fmt(data.monthlyRent || data.subTotal), bottomY + 12, palette.primaryText);
+  drawSumRow('AMOUNT PAID', fmt(data.amountPaid), bottomY + 52, '#145338');
+  drawSumRow('PAYMENT STATUS', normStatus.toUpperCase(), bottomY + 92, statusFg);
 
-  // White Totals Card
-  const totCardX = width - 430;
-  ctx.fillStyle = '#FFFFFF';
+  // Solid Theme OUTSTANDING BALANCE Bar
+  const barY = bottomY + 118;
+  ctx.fillStyle = palette.barBg;
   ctx.beginPath();
-  ctx.roundRect(totCardX, notesY, 360, 146, 22);
+  ctx.roundRect(sumX, barY, sumW, 46, 5);
   ctx.fill();
+  ctx.strokeStyle = palette.barBorder;
+  ctx.stroke();
 
   ctx.textAlign = 'left';
-  ctx.fillStyle = primary;
-  ctx.font = '800 15px "Plus Jakarta Sans", sans-serif';
-  ctx.fillText('SUB TOTAL', totCardX + 28, notesY + 42);
-  ctx.fillText('AMOUNT PAID', totCardX + 28, notesY + 80);
-  ctx.fillText('GRAND TOTAL', totCardX + 28, notesY + 120);
-
+  ctx.fillStyle = palette.barText;
+  ctx.font = `800 14px ${fontFace}`;
+  ctx.fillText('OUTSTANDING BALANCE', sumX + 14, barY + 28);
   ctx.textAlign = 'right';
-  ctx.font = '700 15.5px "Plus Jakarta Sans", sans-serif';
-  ctx.fillText(fmt(data.subTotal), width - 98, notesY + 42);
-  ctx.fillStyle = forest;
-  ctx.fillText(fmt(data.amountPaid), width - 98, notesY + 80);
-  ctx.fillStyle = primary;
-  ctx.font = '800 17px "Plus Jakarta Sans", sans-serif';
-  ctx.fillText(fmt(data.grandTotal), width - 98, notesY + 120);
+  ctx.font = `800 17px ${fontFace}`;
+  ctx.fillText(fmt(data.grandTotal), width - margin - 14, barY + 29);
 
-  // 7. Tenant Account Ledger Section on Canvas
+  // 8. Optional Ledger Table
   if (ledgerRowsCount > 0) {
     ctx.textAlign = 'left';
-    ctx.fillStyle = primary;
-    ctx.font = '800 15px "Plus Jakarta Sans", sans-serif';
-    ctx.fillText(`TENANT ACCOUNT LEDGER STATEMENT (${data.tenantRef})`, 75, ledgerY);
+    ctx.fillStyle = palette.sectionLabelColor;
+    ctx.font = `800 14px ${fontFace}`;
+    ctx.fillText(`TENANT ACCOUNT LEDGER STATEMENT (${data.tenantRef})`, margin, ledgerY);
 
-    ctx.fillStyle = '#FFFFFF';
+    ctx.fillStyle = palette.barBg;
     ctx.beginPath();
-    ctx.roundRect(70, tblY, width - 140, tblH, 16);
+    ctx.roundRect(margin, tblY, width - margin * 2, 40, [4, 4, 0, 0]);
     ctx.fill();
 
-    ctx.fillStyle = pillGrad;
-    ctx.beginPath();
-    ctx.roundRect(70, tblY, width - 140, 42, [16, 16, 0, 0]);
-    ctx.fill();
-
-    ctx.fillStyle = accent;
-    ctx.font = '800 12.5px "Plus Jakarta Sans", sans-serif';
-    ctx.fillText('REF / CODE', 94, tblY + 26);
-    ctx.fillStyle = '#FFFFFF';
-    ctx.fillText('PERIOD', 235, tblY + 26);
-    ctx.fillText('DESCRIPTION', 375, tblY + 26);
+    ctx.fillStyle = palette.barText;
+    ctx.font = `800 12px ${fontFace}`;
+    ctx.fillText('REF / CODE', margin + 16, tblY + 25);
+    ctx.fillText('PERIOD', margin + 150, tblY + 25);
+    ctx.fillText('DESCRIPTION', margin + 300, tblY + 25);
     ctx.textAlign = 'right';
-    ctx.fillText('BILLED', 705, tblY + 26);
-    ctx.fillText('PAID', 815, tblY + 26);
-    ctx.fillStyle = accent;
-    ctx.fillText('STATUS', width - 94, tblY + 26);
+    ctx.fillText('BILLED', width - margin - 190, tblY + 25);
+    ctx.fillText('PAID', width - margin - 95, tblY + 25);
+    ctx.fillText('STATUS', width - margin - 16, tblY + 25);
 
     data.ledgerEntries.slice(0, ledgerRowsCount).forEach((entry, idx) => {
-      const rY = tblY + 68 + idx * 40;
+      const rY = tblY + 64 + idx * 36;
       ctx.textAlign = 'left';
-      ctx.fillStyle = forest;
-      ctx.font = '700 12.5px monospace';
-      ctx.fillText(entry.code, 94, rY);
-      ctx.font = '500 12.5px "Plus Jakarta Sans", sans-serif';
-      ctx.fillStyle = '#5A6762';
-      ctx.fillText(entry.period.slice(0, 16), 235, rY);
-      ctx.fillStyle = primary;
-      ctx.fillText(entry.description.slice(0, 32), 375, rY);
+      ctx.fillStyle = palette.titleColor;
+      ctx.font = '700 12px monospace';
+      ctx.fillText(entry.code, margin + 16, rY);
+      ctx.font = `500 12px ${fontFace}`;
+      ctx.fillStyle = palette.mutedText;
+      ctx.fillText(entry.period.slice(0, 18), margin + 150, rY);
+      ctx.fillStyle = palette.primaryText;
+      ctx.fillText(entry.description.slice(0, 30), margin + 300, rY);
       ctx.textAlign = 'right';
-      ctx.fillText(fmt(entry.billed), 705, rY);
-      ctx.fillStyle = forest;
-      ctx.fillText(fmt(entry.paid), 815, rY);
-      ctx.fillStyle = entry.status === 'Paid' ? forest : '#92400E';
-      ctx.font = '800 12px "Plus Jakarta Sans", sans-serif';
-      ctx.fillText(entry.status.toUpperCase(), width - 94, rY);
+      ctx.fillText(fmt(entry.billed), width - margin - 190, rY);
+      ctx.fillStyle = '#145338';
+      ctx.fillText(fmt(entry.paid), width - margin - 95, rY);
+      ctx.fillStyle = entry.status === 'Paid' ? '#145338' : '#92400E';
+      ctx.font = `800 11.5px ${fontFace}`;
+      ctx.fillText(entry.status.toUpperCase(), width - margin - 16, rY);
     });
   }
 
-  // 8. Bottom System Forest-to-Lime Gradient Footer & Deep Forest Contact Pill
-  const footerH = 115;
-  const footerY = height - footerH;
-  const footGrad = ctx.createLinearGradient(0, footerY, width, footerY);
-  footGrad.addColorStop(0, forest);
-  footGrad.addColorStop(0.5, '#1F7A53');
-  footGrad.addColorStop(1, accent);
-  ctx.fillStyle = footGrad;
-  ctx.fillRect(0, footerY, width, footerH);
-
-  ctx.fillStyle = primary;
+  // 9. Signature & Clean Footer Strip
+  ctx.strokeStyle = palette.mutedText;
+  ctx.lineWidth = 1.2;
   ctx.beginPath();
-  ctx.roundRect(70, footerY + 28, width - 140, 58, 29);
-  ctx.fill();
+  ctx.moveTo(width - margin - 210, sigStartY);
+  ctx.lineTo(width - margin, sigStartY);
+  ctx.stroke();
 
-  ctx.fillStyle = '#FFFFFF';
-  ctx.font = '600 15px "Plus Jakarta Sans", sans-serif';
-  ctx.textAlign = 'left';
-  ctx.fillText(`🌐  ${data.website}`, 112, footerY + 63);
   ctx.textAlign = 'center';
-  ctx.fillText(`📞  ${data.supportPhone}`, width / 2, footerY + 63);
+  ctx.fillStyle = palette.primaryText;
+  ctx.font = `700 13px ${fontFace}`;
+  ctx.fillText('Authorized Signature', width - margin - 105, sigStartY + 20);
+  ctx.fillStyle = palette.mutedText;
+  ctx.font = `500 12px ${fontFace}`;
+  ctx.fillText(data.companyName || 'ARabella agency', width - margin - 105, sigStartY + 38);
+
+  const footY = height - 62;
+  ctx.fillStyle = palette.softBg;
+  ctx.beginPath();
+  ctx.roundRect(margin, footY, width - margin * 2, 36, 5);
+  ctx.fill();
+  ctx.textAlign = 'left';
+  ctx.fillStyle = palette.sectionLabelColor;
+  ctx.font = `700 12.5px ${fontFace}`;
+  ctx.fillText(`${data.companyName}`, margin + 16, footY + 22);
   ctx.textAlign = 'right';
-  ctx.fillText(`✉️  ${data.supportEmail}`, width - 112, footerY + 63);
+  ctx.fillStyle = palette.mutedText;
+  ctx.font = `500 12px ${fontFace}`;
+  ctx.fillText(`${data.supportPhone}  •  ${data.supportEmail}`, width - margin - 16, footY + 22);
 
   canvas.toBlob((blob) => {
     if (!blob) return;

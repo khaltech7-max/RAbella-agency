@@ -1287,6 +1287,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                       { id: 'olive' as const, label: 'Sage Olive Green', hex: '#849B74', primary: '#1F2E16' },
                       { id: 'charcoal' as const, label: 'Charcoal Gray', hex: '#374151', primary: '#1F242B' },
                       { id: 'brown' as const, label: 'Brown', hex: '#6B4423', primary: '#3B2311' },
+                      { id: 'white' as const, label: 'Pure White', hex: '#FFFFFF', primary: '#17231E' },
                     ].map((acc) => {
                       const active = prefDraft.accentTheme === acc.id;
                       return (

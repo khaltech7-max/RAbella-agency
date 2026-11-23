@@ -696,7 +696,8 @@ export interface UserAppearancePreferences {
     | 'camel'
     | 'olive'
     | 'charcoal'
-    | 'brown';
+    | 'brown'
+    | 'white';
   primaryColor: string;
   accentColor: string;
   layoutDensity: 'comfortable' | 'compact';

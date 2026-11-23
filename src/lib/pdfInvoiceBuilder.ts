@@ -1,3 +1,5 @@
+import { hexToPdfRgb, resolveInvoiceThemePalette } from './invoiceTheme';
+
 export interface PdfInvoiceItem {
   description: string;
   qty: number;
@@ -15,10 +17,14 @@ export interface PdfInvoicePayload {
   monthlyRent: number;
   tenantName: string;
   tenantRef: string;
+  tenantEmail?: string;
+  tenantPhone?: string;
   propertyName: string;
   unitNumber: string;
   companyName: string;
   companySubtitle: string;
+  businessAddress?: string;
+  accentTheme?: string;
   bankName: string;
   bankAccount: string;
   paybillNumber: string;
@@ -76,20 +82,14 @@ function pdfRoundedRectPath(x: number, yBottom: number, w: number, h: number, r:
   ].join(' ');
 }
 
-function pdfCirclePath(cx: number, cy: number, r: number): string {
-  const k = 0.552284749831 * r;
-  return [
-    `${(cx + r).toFixed(2)} ${cy.toFixed(2)} m`,
-    `${(cx + r).toFixed(2)} ${(cy + k).toFixed(2)} ${(cx + k).toFixed(2)} ${(cy + r).toFixed(2)} ${cx.toFixed(2)} ${(cy + r).toFixed(2)} c`,
-    `${(cx - k).toFixed(2)} ${(cy + r).toFixed(2)} ${(cx - r).toFixed(2)} ${(cy + k).toFixed(2)} ${(cx - r).toFixed(2)} ${cy.toFixed(2)} c`,
-    `${(cx - r).toFixed(2)} ${(cy - k).toFixed(2)} ${(cx - k).toFixed(2)} ${(cy - r).toFixed(2)} ${cx.toFixed(2)} ${(cy - r).toFixed(2)} c`,
-    `${(cx + k).toFixed(2)} ${(cy - r).toFixed(2)} ${(cx + r).toFixed(2)} ${(cy - k).toFixed(2)} ${(cx + r).toFixed(2)} ${cy.toFixed(2)} c`,
-    'h',
-  ].join(' ');
+function truncateToFit(text: string, maxChars: number): string {
+  const str = String(text || '').trim();
+  return str.length > maxChars ? `${str.slice(0, maxChars - 1)}...` : str;
 }
 
 /**
- * Generates a full-color vector PDF (Uint8Array) in the System Theme colors
+ * Generates a clean, minimalist white-paper vector PDF (Uint8Array) styled dynamically
+ * with the active website Accent Theme, company logo mark & website name,
  * displaying all 11 required anniversary rental billing fields:
  * 1. Invoice number        2. Tenant name           3. Property & unit
  * 4. Invoice date          5. Payment due date      6. Billing period start date
@@ -99,21 +99,31 @@ function pdfCirclePath(cx: number, cy: number, r: number): string {
 export function buildDesignedInvoicePdfBytes(data: PdfInvoicePayload): Uint8Array {
   const pageW = 595.28;
   const pageH = 841.89;
+  const margin = 48;
+  const contentW = pageW - margin * 2;
   const topY = (yFromTop: number, h = 0) => pageH - yFromTop - h;
   const fmt = (n: number) => `KSh ${Number(n || 0).toLocaleString()}`;
 
-  // System Theme RGB values (0..1)
-  const cPrimary = '0.090 0.137 0.118'; // #17231E Deep Forest
-  const cForest = '0.078 0.325 0.220';  // #145338 Emerald
-  const cAccent = '0.835 0.949 0.404';  // #D5F267 Electric Lime
-  const cBar1 = '0.624 0.886 0.286';    // #9FE249 Soft Lime
-  const cCanvas = '0.933 0.957 0.945';  // #EEF4F1 Soft Sage Canvas
-  const cCanvasTop = '0.969 0.980 0.973'; // #F7FAF8 Alabaster Sage
-  const cBorder = '0.847 0.890 0.867';  // #D8E3DD Card Border
-  const cMuted = '0.275 0.329 0.306';   // #46544E Muted Slate
-  const cRed = '0.600 0.106 0.106';     // #991B1B Overdue Red
-  const cRedBg = '0.996 0.886 0.886';   // #FEE2E2 Soft Red
-  const cMintBg = '0.847 0.953 0.898';  // #D8F3E5 Soft Mint
+  const palette = resolveInvoiceThemePalette(data.accentTheme);
+  const cTitle = hexToPdfRgb(palette.titleColor);
+  const cBarBg = hexToPdfRgb(palette.barBg);
+  const cBarText = hexToPdfRgb(palette.barText);
+  const cBarBorder = hexToPdfRgb(palette.barBorder);
+  const cSectionLabel = hexToPdfRgb(palette.sectionLabelColor);
+  const cPrimaryText = hexToPdfRgb(palette.primaryText);
+  const cMuted = hexToPdfRgb(palette.mutedText);
+  const cRule = hexToPdfRgb(palette.ruleLineColor);
+  const cSoftBg = hexToPdfRgb(palette.softBg);
+  const cBadgeBg = hexToPdfRgb(palette.badgeBg);
+  const cBadgeText = hexToPdfRgb(palette.badgeText);
+  const cBar1 = hexToPdfRgb(palette.emblemBars[0]);
+  const cBar2 = hexToPdfRgb(palette.emblemBars[1]);
+  const cBar3 = hexToPdfRgb(palette.emblemBars[2]);
+
+  const cRed = '0.600 0.106 0.106';
+  const cRedBg = '0.996 0.886 0.886';
+  const cGreen = '0.078 0.325 0.220';
+  const cGreenBg = '0.847 0.953 0.898';
   const cWhite = '1 1 1';
 
   const cmds: string[] = [];
@@ -138,198 +148,189 @@ export function buildDesignedInvoicePdfBytes(data: PdfInvoicePayload): Uint8Arra
     );
   };
 
-  // 1. Sage Canvas Background
-  cmds.push(`${cCanvas} rg 0 0 ${pageW.toFixed(2)} ${pageH.toFixed(2)} re f`);
-  cmds.push(`${cCanvasTop} rg 0 ${(pageH - 315).toFixed(2)} ${pageW.toFixed(2)} 315 re f`);
+  const drawRule = (x1: number, x2: number, yFromTop: number, width = 0.75, rgb = cRule) => {
+    const y = pageH - yFromTop;
+    cmds.push(`q ${width} w ${rgb} RG ${x1.toFixed(2)} ${y.toFixed(2)} m ${x2.toFixed(2)} ${y.toFixed(2)} l S Q`);
+  };
 
-  // 2. Top-Right Decorative System Lime & Emerald Ring
-  const ringCx = pageW - 48;
-  const ringCy = pageH - 82;
-  cmds.push(`q 32 w ${cAccent} RG ${pdfCirclePath(ringCx, ringCy, 128)} S Q`);
-  cmds.push(`q 16 w ${cForest} RG ${pdfCirclePath(ringCx + 10, ringCy - 8, 126)} S Q`);
+  // 1. Clean Crisp White Sheet
+  cmds.push(`${cWhite} rg 0 0 ${pageW.toFixed(2)} ${pageH.toFixed(2)} re f`);
+  // Subtle thin theme bar along the very top edge
+  cmds.push(`${cBarBg} rg 0 ${(pageH - 4).toFixed(2)} ${pageW.toFixed(2)} 4 re f`);
 
-  // 3. System 3-Bar Emblem + Brand Name & Tagline
-  cmds.push(`${cBar1} rg ${pdfRoundedRectPath(46, topY(62, 15), 4.8, 15, 2.4)} f`);
-  cmds.push(`${cAccent} rg ${pdfRoundedRectPath(54, topY(54, 23), 4.8, 23, 2.4)} f`);
-  cmds.push(`${cForest} rg ${pdfRoundedRectPath(62, topY(58, 19), 4.8, 19, 2.4)} f`);
+  // 2. Top-Left: System Logo Mark + Website/Company Name above INVOICE
+  const companyLabel = (data.companyName || 'ARabella agency').toUpperCase();
 
-  addText(data.companyName || 'ARabella agency', 75, 65, 18.5, cPrimary, true, 'left');
-  addText(data.companySubtitle || 'Smart Property Management', 75, 81, 9.5, cForest, true, 'left');
+  cmds.push(`${cBar1} rg ${pdfRoundedRectPath(margin, topY(52, 12), 4.2, 12, 2)} f`);
+  cmds.push(`${cBar2} rg ${pdfRoundedRectPath(margin + 6.5, topY(46, 18), 4.2, 18, 2)} f`);
+  cmds.push(`${cBar3} rg ${pdfRoundedRectPath(margin + 13, topY(49, 15), 4.2, 15, 2)} f`);
 
-  // 4. Top-Right INVOICE Title
-  addText('INVOICE', pageW - 46, 74, 30, cPrimary, true, 'right');
+  addText(companyLabel, margin + 24, 59, 9.8, cSectionLabel, true, 'left');
+  addText('INVOICE', margin, 94, 28, cTitle, true, 'left');
 
-  // 5. Left: PAYABLE TO & BANK DETAILS
-  addText('PAYABLE TO', 46, 128, 10, cPrimary, true, 'left');
-  addText(data.tenantName || 'Resident', 46, 145, 11, cPrimary, true, 'left');
-  addText(
-    `Property: ${data.propertyName} | Unit: ${data.unitNumber} (Ref: ${data.tenantRef})`,
-    46,
-    161,
-    9.2,
-    cMuted,
-    false,
-    'left'
-  );
-
-  addText('BANK DETAILS', 46, 192, 10, cPrimary, true, 'left');
-  addText(data.bankName || 'ARabella agency Trust Account', 46, 208, 9.8, cPrimary, true, 'left');
-  addText(
-    data.bankAccount || `M-Pesa PayBill ${data.paybillNumber} - Account: ${data.tenantRef}`,
-    46,
-    223,
-    9.2,
-    cMuted,
-    false,
-    'left'
-  );
-
-  // Right: Invoice Number, Invoice Date, Payment Due Date, Payment Status
-  addText(`Invoice Number: ${data.invoiceNumber}`, pageW - 46, 128, 10, cPrimary, true, 'right');
-  addText(`Invoice Date: ${data.issueDate}`, pageW - 46, 144, 9.5, cPrimary, false, 'right');
-  addText(`Payment Due Date: ${data.dueDate}`, pageW - 46, 160, 9.5, cForest, true, 'right');
+  // 3. Top-Right: INVOICE AMOUNT & Status Pill
+  const invoiceAmountValue = Number(data.monthlyRent || data.subTotal || 0);
+  addText('INVOICE AMOUNT', pageW - margin, 57, 8.8, cSectionLabel, true, 'right');
+  addText(fmt(invoiceAmountValue), pageW - margin, 83, 22, cTitle, true, 'right');
 
   const normStatus = String(data.paymentStatus || 'Pending').trim();
-  const statusText = `Payment Status: ${normStatus}`;
-  const statusBg =
-    normStatus === 'Paid' ? cMintBg : normStatus === 'Overdue' ? cRedBg : cAccent;
-  const statusFg =
-    normStatus === 'Paid' ? cForest : normStatus === 'Overdue' ? cRed : cPrimary;
-  const statusW = estimateHelveticaWidth(statusText, 9, true) + 18;
+  const statusPillBg =
+    normStatus === 'Paid' ? cGreenBg : normStatus === 'Overdue' ? cRedBg : cBadgeBg;
+  const statusPillFg =
+    normStatus === 'Paid' ? cGreen : normStatus === 'Overdue' ? cRed : cBadgeText;
+  const statusText = `Status: ${normStatus}`;
+  const statusW = estimateHelveticaWidth(statusText, 8.2, true) + 16;
   cmds.push(
-    `${statusBg} rg ${pdfRoundedRectPath(pageW - 46 - statusW, topY(170, 20), statusW, 20, 10)} f`
+    `${statusPillBg} rg ${pdfRoundedRectPath(pageW - margin - statusW, topY(91, 17), statusW, 17, 8.5)} f`
   );
-  addText(statusText, pageW - 55, 183, 9, statusFg, true, 'right');
+  addText(statusText, pageW - margin - 8, 102.5, 8.2, statusPillFg, true, 'right');
 
-  // 5b. Dedicated Billing Period Banner Card (Start Date & End Date clearly displayed)
-  const bpYTop = 242;
-  const bpH = 44;
+  drawRule(margin, pageW - margin, 122, 0.9, cRule);
+
+  // 4. Two-Column Clean Metadata Row (ISSUED BY | OCCUPANT NAME)
+  const metaY = 142;
+  const colLeftX = margin;
+  const colRightX = pageW - margin;
+
+  // Column 1 (Left): ISSUED BY
+  addText('ISSUED BY', colLeftX, metaY, 9.2, cSectionLabel, true, 'left');
+  addText(truncateToFit(data.companyName || 'ARabella agency', 36), colLeftX, metaY + 17, 9, cPrimaryText, true, 'left');
+  addText(
+    truncateToFit(data.businessAddress || 'Westlands, Nairobi, Kenya', 42),
+    colLeftX,
+    metaY + 31,
+    8.5,
+    cMuted,
+    false,
+    'left'
+  );
+  addText(truncateToFit(data.supportPhone || '+254 712 345 678', 36), colLeftX, metaY + 45, 8.5, cMuted, false, 'left');
+  addText(truncateToFit(data.supportEmail || 'billing@arabella.co.ke', 40), colLeftX, metaY + 59, 8.4, cMuted, false, 'left');
+
+  // Column 2 (Right): OCCUPANT NAME
+  addText('OCCUPANT NAME', colRightX, metaY, 9.2, cSectionLabel, true, 'right');
+  addText(truncateToFit(data.tenantName || 'Resident', 36), colRightX, metaY + 17, 9, cPrimaryText, true, 'right');
+  addText(truncateToFit(data.propertyName || 'Managed Property', 40), colRightX, metaY + 31, 8.5, cMuted, false, 'right');
+  addText(
+    truncateToFit(`${data.unitNumber} (Ref: ${data.tenantRef})`, 38),
+    colRightX,
+    metaY + 45,
+    8.5,
+    cPrimaryText,
+    true,
+    'right'
+  );
+  const occupantContact = data.tenantPhone || data.tenantEmail || 'Verified Resident Account';
+  addText(truncateToFit(occupantContact, 40), colRightX, metaY + 59, 8.4, cMuted, false, 'right');
+
+  // 5. Rectangular Solid Theme Table Header Bar
+  const tblHeaderY = 230;
+  const tblHeaderH = 28;
   cmds.push(
-    `q 1 w ${cWhite} rg ${cBorder} RG ${pdfRoundedRectPath(46, topY(bpYTop, bpH), pageW - 92, bpH, 12)} B Q`
+    `q 0.8 w ${cBarBg} rg ${cBarBorder} RG ${pdfRoundedRectPath(margin, topY(tblHeaderY, tblHeaderH), contentW, tblHeaderH, 3.5)} B Q`
   );
-  addText('BILLING PERIOD START', 64, bpYTop + 17, 8, cMuted, true, 'left');
-  addText(data.billingPeriodStart || data.dueDate, 64, bpYTop + 33, 10.5, cPrimary, true, 'left');
 
-  addText('BILLING PERIOD END', 245, bpYTop + 17, 8, cMuted, true, 'left');
-  addText(data.billingPeriodEnd || data.dueDate, 245, bpYTop + 33, 10.5, cPrimary, true, 'left');
+  const thTextY = tblHeaderY + 17.5;
+  addText('S.NO.', margin + 12, thTextY, 8.4, cBarText, true, 'left');
+  addText('DESCRIPTION', margin + 52, thTextY, 8.4, cBarText, true, 'left');
+  addText('MONTHLY RENT', margin + 322, thTextY, 8.4, cBarText, true, 'right');
+  addText('PAID', margin + 408, thTextY, 8.4, cBarText, true, 'right');
+  addText('BALANCE', pageW - margin - 12, thTextY, 8.4, cBarText, true, 'right');
 
-  addText('MONTHLY RENT', pageW - 64, bpYTop + 17, 8, cMuted, true, 'right');
-  addText(fmt(data.monthlyRent || data.subTotal), pageW - 64, bpYTop + 33, 10.5, cForest, true, 'right');
-
-  // 6. Forest-to-Emerald Rounded Pill Table Header Bar
-  const pillYTop = 302;
-  const pillH = 34;
-  cmds.push(`${cForest} rg ${pdfRoundedRectPath(46, topY(pillYTop, pillH), pageW - 92, pillH, 17)} f`);
-
-  const headerTextY = pillYTop + 21;
-  addText('ITEM DESCRIPTION', 66, headerTextY, 9.5, cAccent, true, 'left');
-  addText('QTY', 336, headerTextY, 9.5, cWhite, true, 'center');
-  addText('PRICE', 435, headerTextY, 9.5, cWhite, true, 'right');
-  addText('TOTAL', pageW - 66, headerTextY, 9.5, cAccent, true, 'right');
-
-  // 7. White Rounded Line Items Card
+  // 6. Clean White Ruled Line-Item Rows
   const items =
     data.items && data.items.length > 0
       ? data.items
       : [
           {
-            description: `Monthly Rent (${data.billingPeriodStart} - ${data.billingPeriodEnd})`,
+            description: `Monthly Rent (${data.billingPeriodStart} - ${data.billingPeriodEnd}) - ${data.unitNumber}`,
             qty: 1,
             price: data.monthlyRent || data.subTotal,
             total: data.monthlyRent || data.subTotal,
           },
         ];
 
-  const cardYTop = 348;
-  const rowH = 34;
-  const cardH = Math.max(76, items.length * rowH + 28);
-  cmds.push(
-    `q 1 w ${cWhite} rg ${cBorder} RG ${pdfRoundedRectPath(46, topY(cardYTop, cardH), pageW - 92, cardH, 14)} B Q`
-  );
+  const minRows = Math.max(items.length, 5);
+  const rowH = 31;
+  const rowsStartY = tblHeaderY + tblHeaderH;
 
-  items.forEach((item, idx) => {
-    const rY = cardYTop + 28 + idx * rowH;
-    if (idx > 0) {
-      const divY = pageH - (rY - 19);
-      cmds.push(
-        `q 0.6 w 0.93 0.95 0.94 RG 64 ${divY.toFixed(2)} m ${(pageW - 64).toFixed(2)} ${divY.toFixed(2)} l S Q`
-      );
+  for (let i = 0; i < minRows; i++) {
+    const rowTop = rowsStartY + i * rowH;
+    const textY = rowTop + 20;
+    if (i < items.length) {
+      const item = items[i];
+      const itemPaid = i === 0 ? Number(data.amountPaid || 0) : 0;
+      const itemBalance = i === 0 ? Number(data.grandTotal || 0) : Number(item.total || 0);
+      addText(String(i + 1), margin + 16, textY, 9, cMuted, false, 'left');
+      addText(truncateToFit(item.description, 46), margin + 52, textY, 9, cPrimaryText, true, 'left');
+      addText(fmt(item.price || data.monthlyRent), margin + 322, textY, 9, cPrimaryText, false, 'right');
+      addText(fmt(itemPaid), margin + 408, textY, 9, cGreen, false, 'right');
+      addText(fmt(itemBalance), pageW - margin - 12, textY, 9, cPrimaryText, true, 'right');
     }
-    const desc = String(item.description || '').slice(0, 56);
-    addText(desc, 66, rY, 9.8, cPrimary, true, 'left');
-    addText(String(item.qty || 1), 336, rY, 9.8, cMuted, false, 'center');
-    addText(fmt(item.price), 435, rY, 9.8, cMuted, false, 'right');
-    addText(fmt(item.total), pageW - 66, rY, 9.8, cPrimary, true, 'right');
-  });
+    drawRule(margin, pageW - margin, rowTop + rowH, 0.7, cRule);
+  }
 
-  // 8. Notes (Left) & White Rounded Totals Card (Right)
-  const notesYTop = cardYTop + cardH + 26;
-  addText('NOTES:', 48, notesYTop + 14, 10, cPrimary, true, 'left');
+  // 7. Right-Aligned Summary Stack with Solid Theme Total Bar
+  const bottomY = rowsStartY + minRows * rowH + 28;
+  const sumX = pageW - margin - 230;
+  const sumW = 230;
 
-  const noteLines = [
-    `Billing Cycle: ${data.billingPeriodStart} to ${data.billingPeriodEnd}.`,
-    `Payment is due on your monthly move-in anniversary (${data.dueDate}).`,
-    `Kindly quote Account Ref ${data.tenantRef} on all M-Pesa PayBill`,
-    `(${data.paybillNumber}) or Bank payments for automatic reconciliation.`,
-  ];
-  noteLines.forEach((line, idx) => {
-    addText(line, 48, notesYTop + 32 + idx * 14, 8.8, cMuted, false, 'left');
-  });
+  // Row 1: MONTHLY RENT
+  addText('MONTHLY RENT', sumX + 10, bottomY + 4, 8.5, cPrimaryText, true, 'left');
+  addText(fmt(data.monthlyRent || data.subTotal), pageW - margin - 10, bottomY + 4, 9, cPrimaryText, true, 'right');
+  drawRule(sumX, pageW - margin, bottomY + 13, 0.65, cRule);
 
-  const totCardW = 240;
-  const totCardH = 114;
-  const totCardX = pageW - 46 - totCardW;
+  // Row 2: AMOUNT PAID
+  addText('AMOUNT PAID', sumX + 10, bottomY + 29, 8.5, cPrimaryText, true, 'left');
+  addText(fmt(data.amountPaid), pageW - margin - 10, bottomY + 29, 9, cGreen, true, 'right');
+  drawRule(sumX, pageW - margin, bottomY + 38, 0.65, cRule);
+
+  // Row 3: PAYMENT STATUS
+  addText('PAYMENT STATUS', sumX + 10, bottomY + 54, 8.5, cPrimaryText, true, 'left');
+  addText(normStatus.toUpperCase(), pageW - margin - 10, bottomY + 54, 8.6, statusPillFg, true, 'right');
+
+  // Row 4: Solid Theme OUTSTANDING BALANCE Bar
+  const totalBarY = bottomY + 68;
+  const totalBarH = 30;
   cmds.push(
-    `q 1 w ${cWhite} rg ${cBorder} RG ${pdfRoundedRectPath(totCardX, topY(notesYTop, totCardH), totCardW, totCardH, 14)} B Q`
+    `q 0.8 w ${cBarBg} rg ${cBarBorder} RG ${pdfRoundedRectPath(sumX, topY(totalBarY, totalBarH), sumW, totalBarH, 3.5)} B Q`
   );
+  addText('OUTSTANDING BALANCE', sumX + 10, totalBarY + 18.5, 8.3, cBarText, true, 'left');
+  addText(fmt(data.grandTotal), pageW - margin - 10, totalBarY + 19, 10.2, cBarText, true, 'right');
 
-  addText('MONTHLY RENT', totCardX + 16, notesYTop + 24, 9.2, cPrimary, true, 'left');
-  addText(fmt(data.monthlyRent || data.subTotal), pageW - 62, notesYTop + 24, 9.2, cPrimary, true, 'right');
+  // 8. Right-Aligned Signature Rule + Minimalist Footer
+  const sigY = Math.max(totalBarY + 76, 695);
+  drawRule(pageW - margin - 155, pageW - margin, sigY, 0.8, cMuted);
+  addText('Authorized Signature', pageW - margin - 77.5, sigY + 14, 8.5, cPrimaryText, true, 'center');
+  addText(truncateToFit(data.companyName || 'ARabella agency', 28), pageW - margin - 77.5, sigY + 26, 7.8, cMuted, false, 'center');
 
-  addText('AMOUNT PAID', totCardX + 16, notesYTop + 45, 9.2, cPrimary, true, 'left');
-  addText(fmt(data.amountPaid), pageW - 62, notesYTop + 45, 9.2, cForest, true, 'right');
+  // Subtle Soft Brand Footer Strip (No domain)
+  const footerLineY = pageH - 58;
+  drawRule(margin, pageW - margin, footerLineY, 0.75, cRule);
 
-  addText('PAYMENT STATUS', totCardX + 16, notesYTop + 65, 9.2, cPrimary, true, 'left');
-  addText(normStatus.toUpperCase(), pageW - 62, notesYTop + 65, 9.2, statusFg, true, 'right');
+  cmds.push(`${cSoftBg} rg ${pdfRoundedRectPath(margin, topY(footerLineY + 10, 24), contentW, 24, 4)} f`);
+  cmds.push(`${cBar1} rg ${pdfRoundedRectPath(margin + 10, topY(footerLineY + 16, 10), 3.2, 10, 1.5)} f`);
+  cmds.push(`${cBar2} rg ${pdfRoundedRectPath(margin + 15, topY(footerLineY + 13, 14), 3.2, 14, 1.5)} f`);
+  cmds.push(`${cBar3} rg ${pdfRoundedRectPath(margin + 20, topY(footerLineY + 15, 11.5), 3.2, 11.5, 1.5)} f`);
 
-  const totDivY = pageH - (notesYTop + 76);
-  cmds.push(
-    `q 0.8 w ${cBorder} RG ${(totCardX + 16).toFixed(2)} ${totDivY.toFixed(2)} m ${(pageW - 62).toFixed(2)} ${totDivY.toFixed(2)} l S Q`
+  addText(
+    `${data.companyName || 'ARabella agency'}`,
+    margin + 30,
+    footerLineY + 25,
+    8.2,
+    cSectionLabel,
+    true,
+    'left'
   );
-
-  addText('OUTSTANDING BALANCE', totCardX + 16, notesYTop + 97, 9.2, cPrimary, true, 'left');
-
-  // Electric Lime pill behind Outstanding Balance value
-  const grandStr = fmt(data.grandTotal);
-  const grandW = estimateHelveticaWidth(grandStr, 10, true) + 14;
-  cmds.push(
-    `${cAccent} rg ${pdfRoundedRectPath(pageW - 58 - grandW, topY(notesYTop + 83, 20), grandW, 20, 6)} f`
+  addText(
+    `${data.supportPhone}  •  ${data.supportEmail}`,
+    pageW - margin - 10,
+    footerLineY + 25,
+    8,
+    cMuted,
+    false,
+    'right'
   );
-  addText(grandStr, pageW - 65, notesYTop + 97, 10, cPrimary, true, 'right');
-
-  // 9. Bottom System Forest-to-Lime Wave Footer & Deep Forest Contact Pill Bar
-  const footerH = 78;
-  cmds.push(`${cForest} rg 0 0 ${pageW.toFixed(2)} ${footerH.toFixed(2)} re f`);
-  cmds.push(`${cAccent} rg 0 ${(footerH - 4).toFixed(2)} ${pageW.toFixed(2)} 4 re f`);
-
-  const contactPillYTop = pageH - footerH + 20;
-  const contactPillH = 38;
-  cmds.push(
-    `${cPrimary} rg ${pdfRoundedRectPath(46, topY(contactPillYTop, contactPillH), pageW - 92, contactPillH, 19)} f`
-  );
-
-  const contactTextY = contactPillYTop + 23;
-  cmds.push(`${cAccent} rg ${pdfCirclePath(68, pageH - (contactPillYTop + 19), 8)} f`);
-  addText('W', 68, contactPillYTop + 22, 7.5, cPrimary, true, 'center');
-  addText(data.website || 'www.arabella-agency.co.ke', 82, contactTextY, 8.8, cWhite, true, 'left');
-
-  cmds.push(`${cAccent} rg ${pdfCirclePath(252, pageH - (contactPillYTop + 19), 8)} f`);
-  addText('P', 252, contactPillYTop + 22, 7.5, cPrimary, true, 'center');
-  addText(data.supportPhone || '+254 712 345 678', 266, contactTextY, 8.8, cWhite, true, 'left');
-
-  cmds.push(`${cAccent} rg ${pdfCirclePath(404, pageH - (contactPillYTop + 19), 8)} f`);
-  addText('@', 404, contactPillYTop + 22, 7.5, cPrimary, true, 'center');
-  addText(data.supportEmail || 'billing@arabella.co.ke', 418, contactTextY, 8.8, cWhite, true, 'left');
 
   const streamContent = cmds.join('\n');
   const encoder = new TextEncoder();

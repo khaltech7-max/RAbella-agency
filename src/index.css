@@ -398,6 +398,37 @@
     --rms-accent-btn-glow: 0 4px 18px -4px rgba(168, 114, 72, 0.25), inset 0 1px 0 rgba(252, 236, 224, 0.16);
     --rms-accent-btn-glow-hover: 0 6px 22px -3px rgba(168, 114, 72, 0.35), inset 0 1px 0 rgba(252, 236, 224, 0.22);
   }
+  html[data-accent-theme="white"] {
+    --rms-accent: #FFFFFF;
+    --rms-accent-hover: #F3F4F6;
+    --rms-accent-on-dark: #FFFFFF;
+    --rms-soft-bg: #F4F6F5;
+    --rms-soft-border: #D5DDD8;
+    --rms-soft-ink: #1F2937;
+    --rms-soft-alt-bg: #FAFAFA;
+    --rms-soft-alt-border: #E5E7EB;
+    --rms-soft-alt-ink: #111827;
+    --rms-ring: rgba(107, 114, 128, 0.38);
+  }
+  html.dark[data-accent-theme="white"] {
+    --rms-accent: #FFFFFF;
+    --rms-accent-hover: #E5E7EB;
+    --rms-accent-ink: #FFFFFF;
+    --rms-accent-on-dark: #FFFFFF;
+    --rms-soft-bg: rgba(255, 255, 255, 0.11);
+    --rms-soft-border: rgba(255, 255, 255, 0.22);
+    --rms-soft-ink: #F4F5F4;
+    --rms-soft-alt-bg: rgba(255, 255, 255, 0.07);
+    --rms-soft-alt-border: rgba(255, 255, 255, 0.16);
+    --rms-soft-alt-ink: #E5E7EB;
+    --rms-ring: rgba(255, 255, 255, 0.42);
+    --rms-accent-btn-bg: linear-gradient(135deg, rgba(255, 255, 255, 0.2) 0%, rgba(255, 255, 255, 0.1) 100%);
+    --rms-accent-btn-bg-hover: linear-gradient(135deg, rgba(255, 255, 255, 0.28) 0%, rgba(255, 255, 255, 0.15) 100%);
+    --rms-accent-btn-border: rgba(255, 255, 255, 0.36);
+    --rms-accent-btn-border-hover: rgba(255, 255, 255, 0.54);
+    --rms-accent-btn-glow: 0 4px 18px -4px rgba(255, 255, 255, 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+    --rms-accent-btn-glow-hover: 0 6px 22px -3px rgba(255, 255, 255, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.28);
+  }
 
   body {
     background-color: var(--rms-bg);
@@ -1063,6 +1094,13 @@ html:not(.dark)[data-accent-theme="olive"] .bg-\[\#D5F267\],
 html:not(.dark)[data-accent-theme="olive"] .bg-\[\#D6F45A\],
 html:not(.dark)[data-accent-theme="olive"] .bg-\[\#BFEF43\] {
   color: #141F11 !important;
+}
+html:not(.dark)[data-accent-theme="white"] .bg-\[\#D5F267\]:not([data-invoice-paper="true"] *),
+html:not(.dark)[data-accent-theme="white"] .bg-\[\#D6F45A\]:not([data-invoice-paper="true"] *),
+html:not(.dark)[data-accent-theme="white"] .bg-\[\#BFEF43\]:not([data-invoice-paper="true"] *) {
+  color: #17231E !important;
+  border: 1px solid #D5DDD8 !important;
+  box-shadow: 0 2px 6px rgba(23, 35, 30, 0.08) !important;
 }
 
 html:not(.dark)[data-accent-theme="sienna"] .bg-\[\#D5F267\],

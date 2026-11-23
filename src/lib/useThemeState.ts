@@ -12,7 +12,8 @@ export type AccentThemeKey =
   | 'camel'
   | 'olive'
   | 'charcoal'
-  | 'brown';
+  | 'brown'
+  | 'white';
 
 export interface ThemeChartPalette {
   isDark: boolean;
@@ -55,6 +56,7 @@ const VALID_ACCENTS = new Set<AccentThemeKey>([
   'olive',
   'charcoal',
   'brown',
+  'white',
 ]);
 
 function readIsDarkFromDom(): boolean {
@@ -470,6 +472,39 @@ export function getThemeChartPalette(
             areaStroke: '#6B4423',
             areaGrad: '#D8BFA9',
             donutPalette: ['#6B4423', '#9C6B43', '#C49A76', '#D8BFA9', '#4E3119', '#8A6F5A'],
+          };
+
+    case 'white':
+      return isDark
+        ? {
+            ...baseDark,
+            primary: '#F4F5F4',
+            secondary: '#6B7280',
+            tertiary: '#D1D5DB',
+            tooltipAccentBorder: '1px solid #4B5563',
+            tooltipAccentValue: '#FFFFFF',
+            calloutBg: '#262626',
+            calloutBorder: '#3F3F46',
+            calloutLabel: '#FFFFFF',
+            areaStroke: '#FFFFFF',
+            areaGrad: '#9CA3AF',
+            donutPalette: ['#FFFFFF', '#D1D5DB', '#9CA3AF', '#6B7280', '#E5E7EB', '#4B5563'],
+          }
+        : {
+            ...baseLight,
+            primary: '#6B7280',
+            secondary: '#E5E7EB',
+            tertiary: '#D1D5DB',
+            neutral: '#F3F4F6',
+            tooltipAccentBg: '#F9FAFB',
+            tooltipAccentBorder: '1px solid #D1D5DB',
+            tooltipAccentValue: '#17231E',
+            calloutBg: '#F9FAFB',
+            calloutBorder: '#D1D5DB',
+            calloutLabel: '#374151',
+            areaStroke: '#4B5563',
+            areaGrad: '#E5E7EB',
+            donutPalette: ['#4B5563', '#9CA3AF', '#D1D5DB', '#6B7280', '#E5E7EB', '#374151'],
           };
 
     case 'lime':
