@@ -172,6 +172,20 @@ function markSupabaseIfQuotaRestricted(err: any): boolean {
   return false;
 }
 
+async function withTimeout<T>(promise: PromiseLike<T>, ms = 2500, fallback: T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      Promise.resolve(promise),
+      new Promise<T>((resolve) => {
+        timer = setTimeout(() => resolve(fallback), ms);
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 let cachedAuthUsersList = [];
 let cachedAuthUsersExpiresAt = 0;
 const AUTH_USERS_CACHE_TTL_MS = 60 * 1e3;
@@ -1684,6 +1698,7 @@ async function getEmailNotificationSettings(forceRefresh = false) {
       }
     }
   } catch {}
+  emailSettingsLastFetchedAt = Date.now();
   return cachedEmailSettings;
 }
 
@@ -1842,6 +1857,55 @@ function mapRowToBrandedEmail(r: any) {
 
 let emailLogsHistoryCache: any[] | null = null;
 let emailLogsFetchedAt = 0;
+let emailLogsCountCache: number | null = null;
+let emailLogsCountFetchedAt = 0;
+
+async function getEmailLogsCount(forceRefresh = false): Promise<number> {
+  if (!forceRefresh && emailLogsHistoryCache && Date.now() - emailLogsFetchedAt < 120000) {
+    emailLogsCountCache = Math.max(emailLogsHistoryCache.length, brandedEmailsStore.length);
+    emailLogsCountFetchedAt = emailLogsFetchedAt;
+    return emailLogsCountCache;
+  }
+  if (!forceRefresh && emailLogsCountCache !== null && Date.now() - emailLogsCountFetchedAt < 120000) {
+    return Math.max(emailLogsCountCache, brandedEmailsStore.length);
+  }
+  let dbCount = 0;
+  const tasks: Promise<void>[] = [];
+  if (supabaseAdmin && !isSupabaseQuotaRestricted()) {
+    tasks.push(
+      (async () => {
+        try {
+          const { count, error } = await withTimeout(
+            supabaseAdmin.from("branded_emails").select("id", { count: "exact", head: true }),
+            2200,
+            { count: null, error: new Error("timeout") } as any
+          );
+          if (error) markSupabaseIfQuotaRestricted(error);
+          if (!error && typeof count === "number") {
+            dbCount = Math.max(dbCount, count);
+          }
+        } catch (err) {
+          markSupabaseIfQuotaRestricted(err);
+        }
+      })()
+    );
+  }
+  if (pg) {
+    tasks.push(
+      (async () => {
+        try {
+          const pgRes = await pg.query(`SELECT COUNT(*)::int AS cnt FROM public.branded_emails;`);
+          const cnt = Number(pgRes.rows?.[0]?.cnt || 0);
+          dbCount = Math.max(dbCount, cnt);
+        } catch {}
+      })()
+    );
+  }
+  await Promise.allSettled(tasks);
+  emailLogsCountCache = Math.max(dbCount, brandedEmailsStore.length);
+  emailLogsCountFetchedAt = Date.now();
+  return emailLogsCountCache;
+}
 
 async function getEmailLogsHistory(forceRefresh = false): Promise<any[]> {
   if (!forceRefresh && emailLogsHistoryCache && Date.now() - emailLogsFetchedAt < 120000) {
@@ -1853,36 +1917,52 @@ async function getEmailLogsHistory(forceRefresh = false): Promise<any[]> {
   }
   const EMAIL_LIST_COLS =
     "id, template_type, recipient_email, recipient_name, tenant_id, tenant_ref, property_name, unit_number, amount_due, due_date, subject, status, resend_id, delivery_status, error_message, dedupe_key, payment_id, lease_id, retry_count, last_retried_at, sent_by, created_at";
+  const queries: Promise<void>[] = [];
   if (supabaseAdmin && !isSupabaseQuotaRestricted()) {
-    try {
-      const { data, error } = await supabaseAdmin
-        .from("branded_emails")
-        .select(EMAIL_LIST_COLS)
-        .order("created_at", { ascending: false })
-        .limit(80);
-      if (error) markSupabaseIfQuotaRestricted(error);
-      if (!error && Array.isArray(data)) {
-        for (const row of data) {
-          const mapped = mapRowToBrandedEmail(row);
-          if (!byId.has(mapped.id)) byId.set(mapped.id, mapped);
+    queries.push(
+      (async () => {
+        try {
+          const { data, error } = await withTimeout(
+            supabaseAdmin
+              .from("branded_emails")
+              .select(EMAIL_LIST_COLS)
+              .order("created_at", { ascending: false })
+              .limit(80),
+            2500,
+            { data: null, error: new Error("timeout") } as any
+          );
+          if (error) markSupabaseIfQuotaRestricted(error);
+          if (!error && Array.isArray(data)) {
+            for (const row of data) {
+              const mapped = mapRowToBrandedEmail(row);
+              if (!byId.has(mapped.id)) byId.set(mapped.id, mapped);
+            }
+          }
+        } catch (err) {
+          markSupabaseIfQuotaRestricted(err);
         }
-      }
-    } catch (err) {
-      markSupabaseIfQuotaRestricted(err);
-    }
+      })()
+    );
   }
   if (pg) {
-    try {
-      const pgRes = await pg.query(`SELECT ${EMAIL_LIST_COLS} FROM public.branded_emails ORDER BY created_at DESC LIMIT 100;`);
-      for (const row of pgRes.rows) {
-        const mapped = mapRowToBrandedEmail(row);
-        if (!byId.has(mapped.id)) byId.set(mapped.id, mapped);
-      }
-    } catch {}
+    queries.push(
+      (async () => {
+        try {
+          const pgRes = await pg.query(`SELECT ${EMAIL_LIST_COLS} FROM public.branded_emails ORDER BY created_at DESC LIMIT 100;`);
+          for (const row of pgRes.rows) {
+            const mapped = mapRowToBrandedEmail(row);
+            if (!byId.has(mapped.id)) byId.set(mapped.id, mapped);
+          }
+        } catch {}
+      })()
+    );
   }
+  await Promise.allSettled(queries);
   const list = Array.from(byId.values());
   emailLogsHistoryCache = list;
   emailLogsFetchedAt = Date.now();
+  emailLogsCountCache = list.length;
+  emailLogsCountFetchedAt = emailLogsFetchedAt;
   return list;
 }
 const smsLogsMemoryCache = [];
@@ -1964,7 +2044,11 @@ async function getSmsNotificationSettings(forceRefresh = false) {
   );
   try {
     if (supabaseAdmin && !isSupabaseQuotaRestricted()) {
-      const { data: supaRow, error } = await supabaseAdmin.from("sms_notification_settings").select("*").eq("id", "default").maybeSingle();
+      const { data: supaRow, error } = await withTimeout(
+        supabaseAdmin.from("sms_notification_settings").select("*").eq("id", "default").maybeSingle(),
+        2500,
+        { data: null, error: new Error("timeout") } as any
+      );
       if (error) markSupabaseIfQuotaRestricted(error);
       if (!error && supaRow) {
         const effectiveEnv =
@@ -2020,10 +2104,10 @@ async function getSmsNotificationSettings(forceRefresh = false) {
         updatedBy: row.updated_by || "Super Admin",
         updatedAt: row.updated_at || (/* @__PURE__ */ new Date()).toISOString()
       };
-      smsSettingsLastFetchedAt = Date.now();
     }
   } catch {
   }
+  smsSettingsLastFetchedAt = Date.now();
   return cachedSmsSettings;
 }
 
@@ -2128,7 +2212,57 @@ function mapRowToSmsLog(row) {
 }
 let smsLogsHistoryCache = null;
 let smsLogsHistoryFetchedAt = 0;
+let smsLogsCountCache: number | null = null;
+let smsLogsCountFetchedAt = 0;
 const SMS_LOGS_CACHE_TTL_MS = 45 * 1e3;
+
+async function getSmsLogsCount(forceRefresh = false): Promise<number> {
+  if (!forceRefresh && smsLogsHistoryCache && Date.now() - smsLogsHistoryFetchedAt < SMS_LOGS_CACHE_TTL_MS) {
+    smsLogsCountCache = Math.max(smsLogsHistoryCache.length, smsLogsMemoryCache.length);
+    smsLogsCountFetchedAt = smsLogsHistoryFetchedAt;
+    return smsLogsCountCache;
+  }
+  if (!forceRefresh && smsLogsCountCache !== null && Date.now() - smsLogsCountFetchedAt < SMS_LOGS_CACHE_TTL_MS) {
+    return Math.max(smsLogsCountCache, smsLogsMemoryCache.length);
+  }
+  let dbCount = 0;
+  const tasks: Promise<void>[] = [];
+  if (supabaseAdmin && !isSupabaseQuotaRestricted()) {
+    tasks.push(
+      (async () => {
+        try {
+          const { count, error } = await withTimeout(
+            supabaseAdmin.from("sms_logs").select("id", { count: "exact", head: true }),
+            2200,
+            { count: null, error: new Error("timeout") } as any
+          );
+          if (error) markSupabaseIfQuotaRestricted(error);
+          if (!error && typeof count === "number") {
+            dbCount = Math.max(dbCount, count);
+          }
+        } catch (err) {
+          markSupabaseIfQuotaRestricted(err);
+        }
+      })()
+    );
+  }
+  if (pg) {
+    tasks.push(
+      (async () => {
+        try {
+          const pgRes = await pg.query(`SELECT COUNT(*)::int AS cnt FROM public.sms_logs;`);
+          const cnt = Number(pgRes.rows?.[0]?.cnt || 0);
+          dbCount = Math.max(dbCount, cnt);
+        } catch {}
+      })()
+    );
+  }
+  await Promise.allSettled(tasks);
+  smsLogsCountCache = Math.max(dbCount, smsLogsMemoryCache.length);
+  smsLogsCountFetchedAt = Date.now();
+  return smsLogsCountCache;
+}
+
 async function getSmsLogsHistory(forceRefresh = false) {
   if (!forceRefresh && smsLogsHistoryCache && Date.now() - smsLogsHistoryFetchedAt < SMS_LOGS_CACHE_TTL_MS) {
     const byIdCached = /* @__PURE__ */ new Map();
@@ -2142,35 +2276,51 @@ async function getSmsLogsHistory(forceRefresh = false) {
   for (const item of smsLogsMemoryCache) {
     byId.set(item.id, item);
   }
+  const queries: Promise<void>[] = [];
   if (supabaseAdmin && !isSupabaseQuotaRestricted()) {
-    try {
-      const { data: supaLogs, error } = await supabaseAdmin.from("sms_logs").select("*").order("created_at", { ascending: false }).limit(200);
-      if (error) markSupabaseIfQuotaRestricted(error);
-      if (!error && Array.isArray(supaLogs)) {
-        for (const r of supaLogs) {
-          const mapped = mapRowToSmsLog(r);
-          byId.set(mapped.id, mapped);
+    queries.push(
+      (async () => {
+        try {
+          const { data: supaLogs, error } = await withTimeout(
+            supabaseAdmin.from("sms_logs").select("*").order("created_at", { ascending: false }).limit(200),
+            2500,
+            { data: null, error: new Error("timeout") } as any
+          );
+          if (error) markSupabaseIfQuotaRestricted(error);
+          if (!error && Array.isArray(supaLogs)) {
+            for (const r of supaLogs) {
+              const mapped = mapRowToSmsLog(r);
+              byId.set(mapped.id, mapped);
+            }
+          }
+        } catch (err) {
+          markSupabaseIfQuotaRestricted(err);
         }
-      }
-    } catch (err) {
-      markSupabaseIfQuotaRestricted(err);
-    }
+      })()
+    );
   }
   if (pg) {
-    try {
-      const pgRes = await pg.query(`SELECT * FROM public.sms_logs ORDER BY created_at DESC LIMIT 200;`);
-      for (const r of pgRes.rows) {
-        const mapped = mapRowToSmsLog(r);
-        if (!byId.has(mapped.id)) {
-          byId.set(mapped.id, mapped);
+    queries.push(
+      (async () => {
+        try {
+          const pgRes = await pg.query(`SELECT * FROM public.sms_logs ORDER BY created_at DESC LIMIT 200;`);
+          for (const r of pgRes.rows) {
+            const mapped = mapRowToSmsLog(r);
+            if (!byId.has(mapped.id)) {
+              byId.set(mapped.id, mapped);
+            }
+          }
+        } catch {
         }
-      }
-    } catch {
-    }
+      })()
+    );
   }
+  await Promise.allSettled(queries);
   const sorted = Array.from(byId.values()).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   smsLogsHistoryCache = sorted;
   smsLogsHistoryFetchedAt = Date.now();
+  smsLogsCountCache = sorted.length;
+  smsLogsCountFetchedAt = smsLogsHistoryFetchedAt;
   return sorted;
 }
 async function persistSmsLogRecord(record) {
@@ -2180,6 +2330,9 @@ async function persistSmsLogRecord(record) {
   }
   if (smsLogsHistoryCache) {
     smsLogsHistoryCache = [record, ...smsLogsHistoryCache.filter((r) => r.id !== record.id)].slice(0, 250);
+  }
+  if (smsLogsCountCache !== null) {
+    smsLogsCountCache += 1;
   }
   void Promise.allSettled([
     pg.query(`INSERT INTO public.sms_logs (
@@ -4521,7 +4674,11 @@ async function resolveUserMiddleware(req, res, next) {
     }
     if (!verifiedSession && bearerToken.split(".").length === 3) {
       if (supabaseAdmin && !isSupabaseQuotaRestricted()) {
-        const { data: jwtUser, error: jwtErr } = await supabaseAdmin.auth.getUser(bearerToken);
+        const { data: jwtUser, error: jwtErr } = await withTimeout(
+          supabaseAdmin.auth.getUser(bearerToken),
+          2500,
+          { data: { user: null }, error: new Error("Supabase auth timeout") } as any
+        );
         if (jwtErr) markSupabaseIfQuotaRestricted(jwtErr);
         if (!jwtErr && jwtUser?.user?.email) {
           const now = Date.now();
@@ -6052,14 +6209,19 @@ async function createApp() {
   });
   app.get("/api/bootstrap", async (req, res) => {
     try {
-      const [state, allSmsLogs, smsSettings, allEmailLogs, emailSettings] = await Promise.all([
+      const reqUserId = req.currentUser?.id || "";
+      const reqUserEmail = req.currentUser?.email || "";
+      const [state, allSmsLogs, smsSettings, allEmailLogs, emailSettings, systemSettings, userPreferences] = await Promise.all([
         fetchFullDatabaseState(),
         getSmsLogsHistory().catch(() => []),
         getSmsNotificationSettings().catch(() => null),
         getEmailLogsHistory().catch(() => []),
-        getEmailNotificationSettings().catch(() => null)
+        getEmailNotificationSettings().catch(() => null),
+        getSystemSettingsRecord().catch(() => null),
+        reqUserId ? getUserPreferencesForUser(reqUserId, reqUserEmail).catch(() => null) : Promise.resolve(null)
       ]);
       const user = req.currentUser || state.users[0];
+      const resolvedUserPreferences = userPreferences || (user?.id ? await getUserPreferencesForUser(user.id, user.email).catch(() => null) : null);
       const isAdminViewer = user && (user.role === "super_admin" || user.role === "owner" || user.role === "administrator");
       const sanitizedUsers = (state.users || []).map((u) => isAdminViewer ? u : { ...u, inviteToken: void 0 });
       if (user && user.role === "tenant") {
@@ -6070,7 +6232,7 @@ async function createApp() {
         const myThreads = myRef ? state.threads.filter((th) => th.tenantRef === myRef) : [];
         const mySmsLogs = myRef ? allSmsLogs.filter((s) => String(s?.tenantRef || '').toUpperCase() === myRef.toUpperCase()) : [];
         const myEmails = myRef ? allEmailLogs.filter((e) => String(e?.tenantRef || '').toUpperCase() === myRef.toUpperCase()) : [];
-        return res.json({ user, users: [], properties: state.properties, unitTypes: state.unitTypes, tenants: myTenants, payments: myPayments, maintenance: myMaintenance, threads: myThreads, expenses: [], tasks: state.tasks, reviews: state.reviews, activities: state.activities.filter((a) => !a.tenantRef || a.tenantRef === myRef), securityLogs: [], brandedEmails: myEmails, emailSettings, smsLogs: mySmsLogs, smsSettings, analytics: state.analytics });
+        return res.json({ user, users: [], properties: state.properties, unitTypes: state.unitTypes, tenants: myTenants, payments: myPayments, maintenance: myMaintenance, threads: myThreads, expenses: [], tasks: state.tasks, reviews: state.reviews, activities: state.activities.filter((a) => !a.tenantRef || a.tenantRef === myRef), securityLogs: [], brandedEmails: myEmails, emailSettings, smsLogs: mySmsLogs, smsSettings, systemSettings, userPreferences: resolvedUserPreferences, analytics: state.analytics });
       }
       const isNonFinancialOpsRole = user && (user.role === "caretaker" || user.role === "maintenance_staff");
       const isScopedStaffRole = user && !isAdminViewer && (user.role === "property_manager" || user.role === "caretaker" || user.role === "maintenance_staff") && Boolean(user.assignedPropertyId || user.assignedPropertyName && user.assignedPropertyName !== "All Properties");
@@ -6091,10 +6253,10 @@ async function createApp() {
           const scopedAnalytics = computeRealAnalytics(scopedProperties, scopedUnitTypes, scopedTenants, scopedPayments, scopedExpenses, scopedMaintenance, scopedReviews);
           const scopedSmsLogs = allSmsLogs.filter((s) => allowedNames.has(String(s?.propertyName || "").trim().toLowerCase()));
           const scopedEmails = allEmailLogs.filter((e) => !e?.propertyName || allowedNames.has(String(e.propertyName || "").trim().toLowerCase()));
-          return res.json({ user, users: sanitizedUsers, properties: scopedProperties, unitTypes: scopedUnitTypes, tenants: scopedTenants, payments: scopedPayments, maintenance: scopedMaintenance, threads: scopedThreads, expenses: scopedExpenses, tasks: state.tasks, reviews: scopedReviews, activities: state.activities, securityLogs: [], brandedEmails: scopedEmails, emailSettings, smsLogs: scopedSmsLogs, smsSettings, analytics: scopedAnalytics });
+          return res.json({ user, users: sanitizedUsers, properties: scopedProperties, unitTypes: scopedUnitTypes, tenants: scopedTenants, payments: scopedPayments, maintenance: scopedMaintenance, threads: scopedThreads, expenses: scopedExpenses, tasks: state.tasks, reviews: scopedReviews, activities: state.activities, securityLogs: [], brandedEmails: scopedEmails, emailSettings, smsLogs: scopedSmsLogs, smsSettings, systemSettings, userPreferences: resolvedUserPreferences, analytics: scopedAnalytics });
         }
       }
-      return res.json({ user, users: sanitizedUsers, properties: state.properties, unitTypes: state.unitTypes, tenants: state.tenants, payments: isNonFinancialOpsRole ? [] : state.payments, maintenance: state.maintenance, threads: state.threads, expenses: isNonFinancialOpsRole ? [] : state.expenses, tasks: state.tasks, reviews: state.reviews, activities: state.activities, securityLogs: isAdminViewer ? securityAuditLogsStore : [], brandedEmails: allEmailLogs, emailSettings, smsLogs: allSmsLogs, smsSettings, analytics: state.analytics });
+      return res.json({ user, users: sanitizedUsers, properties: state.properties, unitTypes: state.unitTypes, tenants: state.tenants, payments: isNonFinancialOpsRole ? [] : state.payments, maintenance: state.maintenance, threads: state.threads, expenses: isNonFinancialOpsRole ? [] : state.expenses, tasks: state.tasks, reviews: state.reviews, activities: state.activities, securityLogs: isAdminViewer ? securityAuditLogsStore : [], brandedEmails: allEmailLogs, emailSettings, smsLogs: allSmsLogs, smsSettings, systemSettings, userPreferences: resolvedUserPreferences, analytics: state.analytics });
     } catch (err: any) {
       console.error("[Bootstrap Error]", err);
       return res.status(500).json({ error: err?.message || "Failed to load dashboard bootstrap state." });
@@ -8383,28 +8545,48 @@ async function createApp() {
     };
   }
 
+  const SETTINGS_CACHE_TTL_MS = 60 * 1000;
   let inMemorySystemSettingsStore: any = { ...DEFAULT_SYSTEM_SETTINGS };
+  let systemSettingsLastFetchedAt = 0;
   const inMemoryUserPreferencesStore = new Map<string, any>();
+  const userPreferencesFetchedAt = new Map<string, number>();
+  let paybillsCache: any[] | null = null;
+  let paybillsLastFetchedAt = 0;
+  let payheroTransactionsCache: any[] | null = null;
+  let payheroTransactionsLastFetchedAt = 0;
 
-  async function getSystemSettingsRecord() {
+  async function getSystemSettingsRecord(forceRefresh = false) {
+    if (!forceRefresh && systemSettingsLastFetchedAt > 0 && Date.now() - systemSettingsLastFetchedAt < SETTINGS_CACHE_TTL_MS) {
+      return inMemorySystemSettingsStore;
+    }
     if (supabaseAdmin && !isSupabaseQuotaRestricted()) {
       try {
-        const { data, error } = await supabaseAdmin.from("system_settings").select("*").eq("id", "default").maybeSingle();
+        const { data, error } = await withTimeout(
+          supabaseAdmin.from("system_settings").select("*").eq("id", "default").maybeSingle(),
+          2500,
+          { data: null, error: new Error("timeout") } as any
+        );
+        if (error) markSupabaseIfQuotaRestricted(error);
         if (!error && data) {
           inMemorySystemSettingsStore = mapDbSystemSettingsRow(data);
+          systemSettingsLastFetchedAt = Date.now();
           return inMemorySystemSettingsStore;
         }
-      } catch {}
+      } catch (err) {
+        markSupabaseIfQuotaRestricted(err);
+      }
     }
     if (pg) {
       try {
         const res = await pg.query(`SELECT * FROM public.system_settings WHERE id = 'default' LIMIT 1;`);
         if (res.rows?.[0]) {
           inMemorySystemSettingsStore = mapDbSystemSettingsRow(res.rows[0]);
+          systemSettingsLastFetchedAt = Date.now();
           return inMemorySystemSettingsStore;
         }
       } catch {}
     }
+    systemSettingsLastFetchedAt = Date.now();
     return { ...inMemorySystemSettingsStore };
   }
 
@@ -8447,6 +8629,7 @@ async function createApp() {
     };
 
     inMemorySystemSettingsStore = next;
+    systemSettingsLastFetchedAt = Date.now();
 
     const dbRecord = {
       id: "default",
@@ -8467,8 +8650,15 @@ async function createApp() {
 
     if (supabaseAdmin && !isSupabaseQuotaRestricted()) {
       try {
-        await supabaseAdmin.from("system_settings").upsert(dbRecord);
-      } catch {}
+        const { error } = await withTimeout(
+          supabaseAdmin.from("system_settings").upsert(dbRecord),
+          2500,
+          { error: null } as any
+        );
+        if (error) markSupabaseIfQuotaRestricted(error);
+      } catch (err) {
+        markSupabaseIfQuotaRestricted(err);
+      }
     }
     if (pg) {
       try {
@@ -8525,8 +8715,12 @@ async function createApp() {
     return next;
   }
 
-  async function getUserPreferencesForUser(userId: string, userEmail?: string) {
+  async function getUserPreferencesForUser(userId: string, userEmail?: string, forceRefresh = false) {
     const cacheKey = String(userId || userEmail || "anonymous").toLowerCase();
+    const lastFetched = userPreferencesFetchedAt.get(cacheKey) || 0;
+    if (!forceRefresh && inMemoryUserPreferencesStore.has(cacheKey) && Date.now() - lastFetched < SETTINGS_CACHE_TTL_MS) {
+      return inMemoryUserPreferencesStore.get(cacheKey);
+    }
     const defaultPref = {
       userId: userId || "anonymous",
       userEmail: userEmail || "",
@@ -8571,13 +8765,21 @@ async function createApp() {
 
     if (supabaseAdmin && !isSupabaseQuotaRestricted() && userId) {
       try {
-        const { data, error } = await supabaseAdmin.from("user_preferences").select("*").eq("user_id", userId).maybeSingle();
+        const { data, error } = await withTimeout(
+          supabaseAdmin.from("user_preferences").select("*").eq("user_id", userId).maybeSingle(),
+          2500,
+          { data: null, error: new Error("timeout") } as any
+        );
+        if (error) markSupabaseIfQuotaRestricted(error);
         if (!error && data) {
           const mapped = mapRow(data);
           inMemoryUserPreferencesStore.set(cacheKey, mapped);
+          userPreferencesFetchedAt.set(cacheKey, Date.now());
           return mapped;
         }
-      } catch {}
+      } catch (err) {
+        markSupabaseIfQuotaRestricted(err);
+      }
     }
     if (pg && userId) {
       try {
@@ -8585,13 +8787,17 @@ async function createApp() {
         if (res.rows?.[0]) {
           const mapped = mapRow(res.rows[0]);
           inMemoryUserPreferencesStore.set(cacheKey, mapped);
+          userPreferencesFetchedAt.set(cacheKey, Date.now());
           return mapped;
         }
       } catch {}
     }
     if (inMemoryUserPreferencesStore.has(cacheKey)) {
+      userPreferencesFetchedAt.set(cacheKey, Date.now());
       return inMemoryUserPreferencesStore.get(cacheKey);
     }
+    inMemoryUserPreferencesStore.set(cacheKey, defaultPref);
+    userPreferencesFetchedAt.set(cacheKey, Date.now());
     return defaultPref;
   }
 
@@ -8611,6 +8817,7 @@ async function createApp() {
     };
 
     inMemoryUserPreferencesStore.set(cacheKey, merged);
+    userPreferencesFetchedAt.set(cacheKey, Date.now());
 
     const dbRow = {
       user_id: userId,
@@ -8631,8 +8838,15 @@ async function createApp() {
 
     if (supabaseAdmin && !isSupabaseQuotaRestricted()) {
       try {
-        await supabaseAdmin.from("user_preferences").upsert(dbRow);
-      } catch {}
+        const { error } = await withTimeout(
+          supabaseAdmin.from("user_preferences").upsert(dbRow),
+          2500,
+          { error: null } as any
+        );
+        if (error) markSupabaseIfQuotaRestricted(error);
+      } catch (err) {
+        markSupabaseIfQuotaRestricted(err);
+      }
     }
     if (pg) {
       try {
@@ -8678,7 +8892,10 @@ async function createApp() {
     return merged;
   }
 
-  async function listPayHeroPaybills() {
+  async function listPayHeroPaybills(forceRefresh = false) {
+    if (!forceRefresh && paybillsCache && Date.now() - paybillsLastFetchedAt < SETTINGS_CACHE_TTL_MS) {
+      return paybillsCache;
+    }
     const mapRow = (r: any) => ({
       id: r.id,
       paybillNumber: r.paybill_number,
@@ -8698,24 +8915,40 @@ async function createApp() {
 
     if (supabaseAdmin && !isSupabaseQuotaRestricted()) {
       try {
-        const { data, error } = await supabaseAdmin.from("payhero_paybills").select("*").order("created_at", { ascending: true });
+        const { data, error } = await withTimeout(
+          supabaseAdmin.from("payhero_paybills").select("*").order("created_at", { ascending: true }),
+          2500,
+          { data: null, error: new Error("timeout") } as any
+        );
+        if (error) markSupabaseIfQuotaRestricted(error);
         if (!error && Array.isArray(data) && data.length > 0) {
-          return data.map(mapRow);
+          paybillsCache = data.map(mapRow);
+          paybillsLastFetchedAt = Date.now();
+          return paybillsCache;
         }
-      } catch {}
+      } catch (err) {
+        markSupabaseIfQuotaRestricted(err);
+      }
     }
     if (pg) {
       try {
         const res = await pg.query(`SELECT * FROM public.payhero_paybills ORDER BY is_default DESC, created_at ASC;`);
         if (Array.isArray(res.rows)) {
-          return res.rows.map(mapRow);
+          paybillsCache = res.rows.map(mapRow);
+          paybillsLastFetchedAt = Date.now();
+          return paybillsCache;
         }
       } catch {}
     }
-    return [];
+    paybillsCache = paybillsCache || [];
+    paybillsLastFetchedAt = Date.now();
+    return paybillsCache;
   }
 
-  async function listPayHeroTransactions() {
+  async function listPayHeroTransactions(forceRefresh = false) {
+    if (!forceRefresh && payheroTransactionsCache && Date.now() - payheroTransactionsLastFetchedAt < SETTINGS_CACHE_TTL_MS) {
+      return payheroTransactionsCache;
+    }
     const mapRow = (r: any) => ({
       id: r.id,
       transactionReference: r.transaction_reference,
@@ -8741,21 +8974,34 @@ async function createApp() {
 
     if (supabaseAdmin && !isSupabaseQuotaRestricted()) {
       try {
-        const { data, error } = await supabaseAdmin.from("payhero_transactions").select("*").order("created_at", { ascending: false }).limit(50);
+        const { data, error } = await withTimeout(
+          supabaseAdmin.from("payhero_transactions").select("*").order("created_at", { ascending: false }).limit(50),
+          2500,
+          { data: null, error: new Error("timeout") } as any
+        );
+        if (error) markSupabaseIfQuotaRestricted(error);
         if (!error && Array.isArray(data)) {
-          return data.map(mapRow);
+          payheroTransactionsCache = data.map(mapRow);
+          payheroTransactionsLastFetchedAt = Date.now();
+          return payheroTransactionsCache;
         }
-      } catch {}
+      } catch (err) {
+        markSupabaseIfQuotaRestricted(err);
+      }
     }
     if (pg) {
       try {
         const res = await pg.query(`SELECT * FROM public.payhero_transactions ORDER BY created_at DESC LIMIT 50;`);
         if (Array.isArray(res.rows)) {
-          return res.rows.map(mapRow);
+          payheroTransactionsCache = res.rows.map(mapRow);
+          payheroTransactionsLastFetchedAt = Date.now();
+          return payheroTransactionsCache;
         }
       } catch {}
     }
-    return [];
+    payheroTransactionsCache = payheroTransactionsCache || [];
+    payheroTransactionsLastFetchedAt = Date.now();
+    return payheroTransactionsCache;
   }
 
   async function reconcileAndRecordPayHeroC2B(input: {
@@ -9056,6 +9302,8 @@ async function createApp() {
       } catch {}
     }
 
+    payheroTransactionsLastFetchedAt = 0;
+
     void logActivity(
       "payment",
       `PayHero C2B ${reconciliationStatus} (${cleanAccRef})`,
@@ -9097,15 +9345,16 @@ async function createApp() {
   app.get("/api/settings/all", async (req, res) => {
     const userId = req.currentUser?.id || "anonymous";
     const userEmail = req.currentUser?.email || "";
-    const [systemSettings, userPreferences, paybills, transactions, emailSettings, smsSettings, emailLogs, smsLogs] = await Promise.all([
-      getSystemSettingsRecord(),
-      getUserPreferencesForUser(userId, userEmail),
-      listPayHeroPaybills(),
-      listPayHeroTransactions(),
-      getEmailNotificationSettings(true),
-      getSmsNotificationSettings(),
-      getEmailLogsHistory(true),
-      getSmsLogsHistory()
+    const forceRefresh = req.query.refresh === "1" || req.query.refresh === "true";
+    const [systemSettings, userPreferences, paybills, transactions, emailSettings, smsSettings, emailCount, smsCount] = await Promise.all([
+      getSystemSettingsRecord(forceRefresh),
+      getUserPreferencesForUser(userId, userEmail, forceRefresh),
+      listPayHeroPaybills(forceRefresh),
+      listPayHeroTransactions(forceRefresh),
+      getEmailNotificationSettings(forceRefresh),
+      getSmsNotificationSettings(forceRefresh),
+      getEmailLogsCount(forceRefresh),
+      getSmsLogsCount(forceRefresh)
     ]);
 
     const integrations = {
@@ -9123,7 +9372,7 @@ async function createApp() {
         fromEmail: emailSettings.fromEmail,
         senderName: emailSettings.senderName,
         masterEnabled: Boolean(emailSettings.masterEnabled),
-        dispatchedCount: emailLogs.length
+        dispatchedCount: emailCount
       },
       sms: {
         configured: Boolean(smsSettings.apiKeyConfigured),
@@ -9131,7 +9380,7 @@ async function createApp() {
         senderId: smsSettings.senderId || "ARABELLA",
         environment: smsSettings.environment || "sandbox",
         masterEnabled: Boolean(smsSettings.masterEnabled),
-        dispatchedCount: smsLogs.length
+        dispatchedCount: smsCount
       },
       database: {
         engine: isSupabaseLive ? "Supabase PostgreSQL (Cloud)" : "PostgreSQL (Local PGlite Engine)",
@@ -9298,7 +9547,7 @@ async function createApp() {
       } catch {}
     }
 
-    const paybills = await listPayHeroPaybills();
+    const paybills = await listPayHeroPaybills(true);
     void logActivity(
       "payment",
       `PayHero PayBill Mapped (${record.paybill_number})`,
@@ -9327,7 +9576,7 @@ async function createApp() {
         await pg.query(`DELETE FROM public.payhero_paybills WHERE id = $1;`, [id]);
       } catch {}
     }
-    const paybills = await listPayHeroPaybills();
+    const paybills = await listPayHeroPaybills(true);
     return res.json({ paybills, message: "PayBill mapping removed." });
   });
 
@@ -9361,7 +9610,7 @@ async function createApp() {
       processedBy: req.currentUser?.fullName || "Administrator"
     });
 
-    const transactions = await listPayHeroTransactions();
+    const transactions = await listPayHeroTransactions(true);
     return res.json({
       success: true,
       transaction: result.transaction,

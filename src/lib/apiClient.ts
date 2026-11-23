@@ -155,6 +155,57 @@ export function setAuthContext(session: UserSession, rememberMe?: boolean) {
   }
 }
 
+export const SETTINGS_BUNDLE_CACHE_KEY = 'rms_settings_bundle_cache_v1';
+
+export interface AllSettingsBundle {
+  systemSettings: SystemSettingsRecord;
+  userPreferences: UserAppearancePreferences;
+  paybills: PayHeroPaybillMapping[];
+  transactions: PayHeroTransactionRecord[];
+  emailSettings: EmailNotificationSettings;
+  smsSettings: SmsNotificationSettings;
+  integrations: IntegrationStatusSummary;
+}
+
+export function getCachedSettingsBundle(userId?: string): AllSettingsBundle | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(SETTINGS_BUNDLE_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { userId?: string; bundle?: AllSettingsBundle };
+    if (!parsed?.bundle) return null;
+    if (userId && parsed.userId && parsed.userId !== userId) return null;
+    return parsed.bundle;
+  } catch {
+    return null;
+  }
+}
+
+export function setCachedSettingsBundle(bundle: AllSettingsBundle, userId?: string) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(
+      SETTINGS_BUNDLE_CACHE_KEY,
+      JSON.stringify({
+        userId: userId || bundle?.userPreferences?.userId || currentUserId || '',
+        cachedAt: Date.now(),
+        bundle,
+      })
+    );
+  } catch {
+    // Ignore storage quota errors
+  }
+}
+
+export function clearCachedSettingsBundle() {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.removeItem(SETTINGS_BUNDLE_CACHE_KEY);
+  } catch {
+    // Ignore
+  }
+}
+
 let isClearingAuth = false;
 
 export async function clearAuthContext(options?: { skipSupabaseSignOut?: boolean }) {
@@ -162,6 +213,7 @@ export async function clearAuthContext(options?: { skipSupabaseSignOut?: boolean
   currentUserId = '';
   currentEmail = '';
   currentTenantRef = undefined;
+  clearCachedSettingsBundle();
   if (typeof window !== 'undefined') {
     window.sessionStorage.removeItem(AUTH_STORAGE_KEY);
     window.localStorage.removeItem(AUTH_STORAGE_KEY);
@@ -1608,9 +1660,12 @@ async function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T
   const method = (options.method || 'GET').toUpperCase();
   let bearerToken = getStoredToken();
   if ((!bearerToken || !isRealSessionToken(bearerToken)) && supabase) {
-    const { data } = await supabase.auth.getSession();
-    if (data?.session?.access_token) {
-      bearerToken = data.session.access_token;
+    const sessionRes = await Promise.race([
+      supabase.auth.getSession().catch(() => ({ data: null })),
+      new Promise<{ data: null }>((resolve) => setTimeout(() => resolve({ data: null }), 2500)),
+    ]);
+    if (sessionRes?.data?.session?.access_token) {
+      bearerToken = sessionRes.data.session.access_token;
     }
   }
 
@@ -1624,31 +1679,57 @@ async function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T
     ...((options.headers as Record<string, string>) || {}),
   });
 
+  const fetchWithTimeout = async (tokenOverride?: string | null): Promise<Response> => {
+    const controller = new AbortController();
+    const timeoutMs = 15000;
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const externalSignal = options.signal;
+    const onExternalAbort = () => controller.abort();
+    if (externalSignal) {
+      if (externalSignal.aborted) controller.abort();
+      else externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+    }
+    try {
+      return await fetch(path, {
+        ...options,
+        signal: controller.signal,
+        headers: buildHeaders(tokenOverride),
+      });
+    } finally {
+      clearTimeout(timer);
+      if (externalSignal) {
+        externalSignal.removeEventListener('abort', onExternalAbort);
+      }
+    }
+  };
+
   let response: Response;
   try {
-    response = await fetch(path, {
-      ...options,
-      headers: buildHeaders(bearerToken),
-    });
+    response = await fetchWithTimeout(bearerToken);
     if (response.status === 401 && supabase) {
-      const { data } = await supabase.auth.getSession();
+      const { data } = await Promise.race([
+        supabase.auth.getSession().catch(() => ({ data: null })),
+        new Promise<{ data: null }>((resolve) => setTimeout(() => resolve({ data: null }), 2500)),
+      ]);
       const freshJwt = data?.session?.access_token;
       if (freshJwt && freshJwt !== bearerToken) {
         bearerToken = freshJwt;
-        response = await fetch(path, {
-          ...options,
-          headers: buildHeaders(freshJwt),
-        });
+        response = await fetchWithTimeout(freshJwt);
       }
     }
   } catch (networkErr: any) {
+    const isAbort = networkErr?.name === 'AbortError';
     throw createDiagnosticError({
       failedRequest: `${method} ${path}`,
-      statusCode: 'NETWORK_ERROR',
+      statusCode: isAbort ? 'TIMEOUT' : 'NETWORK_ERROR',
       endpoint: path,
-      supabaseError: networkErr?.message || 'Network request failed.',
+      supabaseError: isAbort
+        ? `Request to ${path} timed out after 15 seconds.`
+        : networkErr?.message || 'Network request failed.',
       category: 'Routing',
-      hint: 'Check network connectivity and verify that your Supabase URL and API endpoints are reachable.',
+      hint: isAbort
+        ? 'The server took too long to respond. Retry or verify backend database connectivity.'
+        : 'Check network connectivity and verify that your Supabase URL and API endpoints are reachable.',
     });
   }
 
@@ -1756,6 +1837,8 @@ export interface BootstrapPayload {
   emailSettings?: EmailNotificationSettings;
   smsLogs?: SmsLogRecord[];
   smsSettings?: SmsNotificationSettings;
+  systemSettings?: SystemSettingsRecord | null;
+  userPreferences?: UserAppearancePreferences | null;
   analytics: DashboardAnalytics;
 }
 
@@ -5279,18 +5362,15 @@ export const rentalApi = {
     });
   },
 
-  getAllSettings: async () => {
-    return await apiRequest<{
-      systemSettings: SystemSettingsRecord;
-      userPreferences: UserAppearancePreferences;
-      paybills: PayHeroPaybillMapping[];
-      transactions: PayHeroTransactionRecord[];
-      emailSettings: EmailNotificationSettings;
-      smsSettings: SmsNotificationSettings;
-      integrations: IntegrationStatusSummary;
-    }>('/api/settings/all', {
+  getAllSettings: async (options?: { forceRefresh?: boolean }) => {
+    const endpoint = options?.forceRefresh ? '/api/settings/all?refresh=1' : '/api/settings/all';
+    const res = await apiRequest<AllSettingsBundle>(endpoint, {
       method: 'GET',
     });
+    if (res?.systemSettings && res?.userPreferences) {
+      setCachedSettingsBundle(res, currentUserId);
+    }
+    return res;
   },
 
   updateSystemSettingsSection: async (
@@ -5308,42 +5388,62 @@ export const rentalApi = {
       | 'backup',
     data: Record<string, any>
   ) => {
-    return await apiRequest<{
+    const res = await apiRequest<{
       systemSettings: SystemSettingsRecord;
       message: string;
     }>(`/api/settings/system/${encodeURIComponent(section)}`, {
       method: 'PUT',
       body: JSON.stringify(data),
     });
+    const cached = getCachedSettingsBundle(currentUserId);
+    if (cached && res?.systemSettings) {
+      setCachedSettingsBundle({ ...cached, systemSettings: res.systemSettings }, currentUserId);
+    }
+    return res;
   },
 
   updateUserPreferences: async (data: Partial<UserAppearancePreferences>) => {
-    return await apiRequest<{
+    const res = await apiRequest<{
       userPreferences: UserAppearancePreferences;
       message: string;
     }>('/api/settings/preferences', {
       method: 'PUT',
       body: JSON.stringify(data),
     });
+    const cached = getCachedSettingsBundle(currentUserId);
+    if (cached && res?.userPreferences) {
+      setCachedSettingsBundle({ ...cached, userPreferences: res.userPreferences }, currentUserId);
+    }
+    return res;
   },
 
   upsertPayHeroPaybill: async (data: Partial<PayHeroPaybillMapping>) => {
-    return await apiRequest<{
+    const res = await apiRequest<{
       paybills: PayHeroPaybillMapping[];
       message: string;
     }>('/api/settings/payhero/paybills', {
       method: 'POST',
       body: JSON.stringify(data),
     });
+    const cached = getCachedSettingsBundle(currentUserId);
+    if (cached && Array.isArray(res?.paybills)) {
+      setCachedSettingsBundle({ ...cached, paybills: res.paybills }, currentUserId);
+    }
+    return res;
   },
 
   deletePayHeroPaybill: async (id: string) => {
-    return await apiRequest<{
+    const res = await apiRequest<{
       paybills: PayHeroPaybillMapping[];
       message: string;
     }>(`/api/settings/payhero/paybills/${encodeURIComponent(id)}`, {
       method: 'DELETE',
     });
+    const cached = getCachedSettingsBundle(currentUserId);
+    if (cached && Array.isArray(res?.paybills)) {
+      setCachedSettingsBundle({ ...cached, paybills: res.paybills }, currentUserId);
+    }
+    return res;
   },
 
   recordManualPayHeroC2B: async (data: {
@@ -5356,7 +5456,7 @@ export const rentalApi = {
     payerName?: string;
     notes?: string;
   }) => {
-    return await apiRequest<{
+    const res = await apiRequest<{
       success: boolean;
       transaction: PayHeroTransactionRecord;
       transactions: PayHeroTransactionRecord[];
@@ -5372,6 +5472,11 @@ export const rentalApi = {
       method: 'POST',
       body: JSON.stringify(data),
     });
+    const cached = getCachedSettingsBundle(currentUserId);
+    if (cached && Array.isArray(res?.transactions)) {
+      setCachedSettingsBundle({ ...cached, transactions: res.transactions }, currentUserId);
+    }
+    return res;
   },
 
   exportDatabaseSnapshot: async () => {

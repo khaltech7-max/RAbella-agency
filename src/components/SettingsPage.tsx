@@ -61,7 +61,12 @@ import {
   getAllowedPagesForRole,
   NavPageId,
 } from '../data/rentalData';
-import { settingsApi, emailApi, smsApi } from '../lib/apiClient';
+import {
+  settingsApi,
+  emailApi,
+  smsApi,
+  getCachedSettingsBundle,
+} from '../lib/apiClient';
 import {
   setSystemBrandingForInvoices,
   setPayHeroInvoiceContext,
@@ -334,6 +339,201 @@ export function applyAppearanceToDocument(
   }
 }
 
+function createDefaultSystemSettings(): SystemSettingsRecord {
+  return {
+    id: 'default',
+    general: {
+      companyName: 'ARabella agency',
+      companyTagline: 'Rental Management System',
+      companyLogoUrl: '',
+      faviconUrl: '',
+      businessEmail: 'ochiengpeterson507@gmail.com',
+      businessPhone: '+254 700 000 000',
+      businessAddress: 'Westlands Commercial Center, Nairobi, Kenya',
+      city: 'Nairobi',
+      county: 'Nairobi County',
+      country: 'Kenya',
+      defaultCurrency: 'KES',
+      currencySymbol: 'KSh',
+      timezone: 'Africa/Nairobi',
+      dateFormat: 'MMM DD, YYYY',
+      timeFormat: '12h',
+      language: 'en-KE',
+      fiscalYearStart: 'January',
+    },
+    appearanceDefaults: {
+      defaultTheme: 'light',
+      primaryColor: '#17231E',
+      accentColor: '#D5F267',
+      secondaryAccentColor: '#156943',
+      sidebarDefaultExpanded: false,
+      layoutDensity: 'comfortable',
+      fontFamily: 'Plus Jakarta Sans',
+      showDashboardRatings: true,
+      showDashboardTasks: true,
+      enableAnimations: true,
+    },
+    property: {
+      autoGenerateCodePrefix: true,
+      unitNumberingFormat: 'Unit 101',
+      defaultUnitVariant: 'deluxe',
+      defaultMonthlyRent: 35000,
+      defaultUtilityPackage: 2500,
+      defaultMaintenanceFee: 1500,
+      defaultParkingFee: 1000,
+      propertyCategories: [
+        'Residential Apartments',
+        'Gated Community',
+        'Commercial & Mixed-Use',
+        'Executive Suites',
+        'Student Housing',
+      ],
+      autoSyncOccupancy: true,
+      requireManagerAssignment: true,
+    },
+    tenant: {
+      autoReferenceFormat: 'PREFIX-001',
+      requireNationalId: true,
+      requireEmail: true,
+      requirePhone: true,
+      requireEmergencyContact: false,
+      requireVehicleInfo: false,
+      enableTenantPortal: true,
+      allowTenantMaintenanceRequests: true,
+      allowTenantReceiptDownload: true,
+      autoWelcomeSms: true,
+      autoWelcomeEmail: true,
+      defaultTenantTier: 'Verified Tenant',
+    },
+    payment: {
+      provider: 'PayHero',
+      environment: 'production',
+      accountId: 'PH-KE-88412',
+      channelId: 'CH-101',
+      defaultPaybillNumber: '4098871',
+      accountReferenceFormat: 'TENANT_REF',
+      accountReferencePrefix: '',
+      callbackUrl: '/api/webhooks/payhero',
+      enableManualC2bNotification: true,
+      autoReconcileExactReference: true,
+      autoConfirmOnCallback: true,
+      allowPartialPayments: true,
+      autoReceiptOnConfirm: true,
+      failedPaymentRetryNotify: true,
+      gracePeriodDays: 5,
+      lateFeePercentage: 0,
+      apiCredentialsConfigured: false,
+      maskedApiUsername: 'Server-Managed API Key',
+    },
+    notifications: {
+      enableEmailNotifications: true,
+      enableSmsNotifications: true,
+      rentUpcomingDaysBefore: 3,
+      sendOnDueDate: true,
+      overdueReminderFrequencyDays: 3,
+      sendPaymentConfirmation: true,
+      leaseExpiryNoticeDays: [30, 7],
+      notifyManagerOnMaintenance: true,
+      notifyTenantOnMaintenanceUpdate: true,
+      preferredSendHourEat: '08:00',
+      quietHoursStart: '21:00',
+      quietHoursEnd: '06:30',
+    },
+    lease: {
+      defaultLeaseDurationMonths: 12,
+      autoRenewalEnabled: false,
+      renewalNoticeDays: 30,
+      defaultSecurityDepositMonths: 1,
+      vacateNoticePeriodDays: 30,
+      agreementNumberPrefix: 'LS-',
+      defaultPaymentMethod: 'M-Pesa Paybill / Bank Transfer',
+      standardLeaseTerms:
+        'Rent is payable monthly in advance on or before the agreed due date quoting the assigned Tenant Reference Code (e.g., A-001).',
+    },
+    invoice: {
+      invoicePrefix: 'INV-',
+      receiptPrefix: 'PAY-',
+      defaultDueDayOfMonth: 5,
+      enableVat: false,
+      vatRatePercentage: 16,
+      taxPinNumber: 'P051889234K',
+      receiptFooterNote:
+        'Thank you for choosing ARabella agency. This is an officially verified digital rent receipt.',
+      showCompanyLogoOnReceipt: true,
+      showVerificationQrBadge: true,
+      autoGenerateMonthlyInvoices: true,
+    },
+    maintenance: {
+      categories: [
+        'Plumbing & Water',
+        'Electrical & Power',
+        'HVAC & Ventilation',
+        'Structural & Carpentry',
+        'Appliances',
+        'Painting & Masonry',
+        'Security & Locks',
+        'General Inspection',
+      ],
+      defaultPriority: 'Medium',
+      autoApproveThresholdKes: 5000,
+      requireManagerApprovalAboveThreshold: true,
+      notifyAssignedTechnician: true,
+      notifyTenantOnCompletion: true,
+      serviceProviders: [
+        { name: 'In-House Facilities Team', specialty: 'General & Plumbing', phone: '+254 711 000 111' },
+        { name: 'Metro Electrical Services', specialty: 'Electrical & Backup Power', phone: '+254 722 000 222' },
+      ],
+    },
+    security: {
+      minPasswordLength: 8,
+      requireUppercase: true,
+      requireNumbers: true,
+      requireSpecialChars: false,
+      sessionTimeoutMinutes: 480,
+      maxFailedLoginAttempts: 5,
+      lockoutDurationMinutes: 15,
+      enforce2faForAdmins: true,
+      logAllLoginAttempts: true,
+      logAllSettingsChanges: true,
+      securityAlertEmail: 'ochiengpeterson507@gmail.com',
+    },
+    backup: {
+      autoBackupSchedule: 'daily',
+      backupRetentionDays: 30,
+      includeAuditLogs: true,
+      includePaymentHistory: true,
+      lastBackupAt: null,
+      lastBackupBy: null,
+    },
+    updatedBy: 'System Default',
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function createDefaultUserPreferences(user: UserSession): UserAppearancePreferences {
+  return {
+    userId: user.id,
+    userEmail: user.email,
+    themeMode: 'light',
+    accentTheme: 'lime',
+    primaryColor: '#17231E',
+    accentColor: '#D5F267',
+    layoutDensity: 'comfortable',
+    sidebarMode: 'collapsed',
+    fontScale: 'normal',
+    fontFamily: 'Plus Jakarta Sans',
+    compactTables: false,
+    reducedMotion: false,
+    dashboardLayout: {
+      showRatings: true,
+      showTasks: true,
+      showActivities: true,
+      defaultChartRange: '6M',
+    },
+    updatedAt: new Date().toISOString(),
+  };
+}
+
 export const SettingsPage: React.FC<SettingsPageProps> = ({
   currentUser,
   users,
@@ -357,45 +557,104 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
 }) => {
   const [activeCategory, setActiveCategory] = useState<SettingsCategoryId>('general');
   const [searchQuery, setSearchQuery] = useState(globalSearch || '');
-  const [loading, setLoading] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
   const [savingSection, setSavingSection] = useState<string | null>(null);
   const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
-  // Local editable drafts synced with backend
-  const [sysDraft, setSysDraft] = useState<SystemSettingsRecord | null>(systemSettings);
-  const [prefDraft, setPrefDraft] = useState<UserAppearancePreferences | null>(userPreferences);
-  const [paybills, setPaybills] = useState<PayHeroPaybillMapping[]>([]);
-  const [payheroTxs, setPayheroTxs] = useState<PayHeroTransactionRecord[]>([]);
-  const [emailSettingsDraft, setEmailSettingsDraft] = useState<EmailNotificationSettings>({
-    masterEnabled: true,
-    autoRentUpcoming3d: true,
-    autoRentDueToday: true,
-    autoRentOverdue: true,
-    autoPaymentConfirmed: true,
-    autoLeaseExpiry30d: true,
-    autoLeaseExpiry7d: true,
-    senderName: 'ARabella agency',
-    fromEmail: 'ARabella agency <onboarding@resend.dev>',
-    paymentInstructions:
-      'Remit payment via M-Pesa Paybill or Bank Transfer quoting your Tenant Account Reference (e.g., A-001) as the account number.',
-    preventDuplicatesHours: 24,
-    apiKeyConfigured: true,
-  });
-  const [smsSettingsDraft, setSmsSettingsDraft] = useState<SmsNotificationSettings>({
-    environment: smsSettings?.environment || 'sandbox',
-    senderId: smsSettings?.senderId || 'ARABELLA',
-    username: smsSettings?.username || 'ARAbella agency',
-    provider: smsSettings?.provider || 'Sozuri SMS Gateway',
-    apiKeyConfigured: smsSettings?.apiKeyConfigured ?? false,
-    masterEnabled: smsSettings?.masterEnabled ?? true,
-    autoTenantRegistered: smsSettings?.autoTenantRegistered ?? true,
-    autoRentDueSoon: smsSettings?.autoRentDueSoon ?? true,
-    autoRentOverdue: smsSettings?.autoRentOverdue ?? true,
-    autoPaymentConfirmed: smsSettings?.autoPaymentConfirmed ?? true,
-    autoAdminAnnouncement: smsSettings?.autoAdminAnnouncement ?? true,
-    preventDuplicatesHours: smsSettings?.preventDuplicatesHours ?? 24,
-  });
-  const [integrations, setIntegrations] = useState<IntegrationStatusSummary | null>(null);
+  // Seed drafts synchronously from props -> local cache -> sensible defaults so UI renders immediately in 0ms
+  const initialCachedBundle = useMemo(
+    () => getCachedSettingsBundle(currentUser.id),
+    [currentUser.id]
+  );
+
+  const [sysDraft, setSysDraft] = useState<SystemSettingsRecord>(
+    () => systemSettings || initialCachedBundle?.systemSettings || createDefaultSystemSettings()
+  );
+  const [prefDraft, setPrefDraft] = useState<UserAppearancePreferences>(
+    () =>
+      userPreferences ||
+      getCachedUserPreferences(currentUser.id) ||
+      initialCachedBundle?.userPreferences ||
+      createDefaultUserPreferences(currentUser)
+  );
+  const [paybills, setPaybills] = useState<PayHeroPaybillMapping[]>(
+    () => initialCachedBundle?.paybills || []
+  );
+  const [payheroTxs, setPayheroTxs] = useState<PayHeroTransactionRecord[]>(
+    () => initialCachedBundle?.transactions || []
+  );
+  const [emailSettingsDraft, setEmailSettingsDraft] = useState<EmailNotificationSettings>(
+    () =>
+      initialCachedBundle?.emailSettings || {
+        masterEnabled: true,
+        autoRentUpcoming3d: true,
+        autoRentDueToday: true,
+        autoRentOverdue: true,
+        autoPaymentConfirmed: true,
+        autoLeaseExpiry30d: true,
+        autoLeaseExpiry7d: true,
+        senderName: 'ARabella agency',
+        fromEmail: 'ARabella agency <onboarding@resend.dev>',
+        paymentInstructions:
+          'Remit payment via M-Pesa Paybill or Bank Transfer quoting your Tenant Account Reference (e.g., A-001) as the account number.',
+        preventDuplicatesHours: 24,
+        apiKeyConfigured: true,
+      }
+  );
+  const [smsSettingsDraft, setSmsSettingsDraft] = useState<SmsNotificationSettings>(() => ({
+    environment:
+      smsSettings?.environment ||
+      initialCachedBundle?.smsSettings?.environment ||
+      'sandbox',
+    senderId:
+      smsSettings?.senderId ||
+      initialCachedBundle?.smsSettings?.senderId ||
+      'ARABELLA',
+    username:
+      smsSettings?.username ||
+      initialCachedBundle?.smsSettings?.username ||
+      'ARAbella agency',
+    provider:
+      smsSettings?.provider ||
+      initialCachedBundle?.smsSettings?.provider ||
+      'Sozuri SMS Gateway',
+    apiKeyConfigured:
+      smsSettings?.apiKeyConfigured ??
+      initialCachedBundle?.smsSettings?.apiKeyConfigured ??
+      false,
+    masterEnabled:
+      smsSettings?.masterEnabled ??
+      initialCachedBundle?.smsSettings?.masterEnabled ??
+      true,
+    autoTenantRegistered:
+      smsSettings?.autoTenantRegistered ??
+      initialCachedBundle?.smsSettings?.autoTenantRegistered ??
+      true,
+    autoRentDueSoon:
+      smsSettings?.autoRentDueSoon ??
+      initialCachedBundle?.smsSettings?.autoRentDueSoon ??
+      true,
+    autoRentOverdue:
+      smsSettings?.autoRentOverdue ??
+      initialCachedBundle?.smsSettings?.autoRentOverdue ??
+      true,
+    autoPaymentConfirmed:
+      smsSettings?.autoPaymentConfirmed ??
+      initialCachedBundle?.smsSettings?.autoPaymentConfirmed ??
+      true,
+    autoAdminAnnouncement:
+      smsSettings?.autoAdminAnnouncement ??
+      initialCachedBundle?.smsSettings?.autoAdminAnnouncement ??
+      true,
+    preventDuplicatesHours:
+      smsSettings?.preventDuplicatesHours ??
+      initialCachedBundle?.smsSettings?.preventDuplicatesHours ??
+      24,
+  }));
+  const [integrations, setIntegrations] = useState<IntegrationStatusSummary | null>(
+    () => initialCachedBundle?.integrations || null
+  );
 
   // PayHero credentials inputs (write-only to backend, never echoed back in plain text)
   const [payheroApiUsername, setPayheroApiUsername] = useState('');
@@ -461,57 +720,54 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
     onGlobalSearchChange?.(val);
   };
 
-  // Load complete settings bundle from server on mount
+  const syncSettingsFromServer = async (forceRefresh = false) => {
+    setSyncing(true);
+    setSyncError(null);
+    try {
+      const res = await settingsApi.getAllSettings({ forceRefresh });
+      if (res.systemSettings) {
+        setSysDraft(res.systemSettings);
+        onSystemSettingsChange(res.systemSettings);
+      }
+      if (res.userPreferences) {
+        const cached = getCachedUserPreferences(currentUser.id);
+        const resolvedPrefs = cached
+          ? { ...res.userPreferences, ...cached, userId: currentUser.id, userEmail: currentUser.email }
+          : res.userPreferences;
+        setPrefDraft(resolvedPrefs);
+        onUserPreferencesChange(resolvedPrefs);
+        applyAppearanceToDocument(resolvedPrefs, res.systemSettings);
+      }
+      if (Array.isArray(res.paybills)) {
+        setPaybills(res.paybills);
+        setPayHeroInvoiceContext(res.paybills, res.transactions);
+        const defPb = res.paybills.find((p) => p.isDefault) || res.paybills[0];
+        if (defPb) setC2bPaybillNumber(defPb.paybillNumber);
+      }
+      if (Array.isArray(res.transactions)) {
+        setPayheroTxs(res.transactions);
+        setPayHeroInvoiceContext(res.paybills, res.transactions);
+      }
+      if (res.emailSettings) {
+        setEmailSettingsDraft(res.emailSettings);
+      }
+      if (res.smsSettings) {
+        setSmsSettingsDraft(res.smsSettings);
+        onSmsSettingsChange?.(res.smsSettings);
+      }
+      if (res.integrations) {
+        setIntegrations(res.integrations);
+      }
+    } catch (err: any) {
+      setSyncError(err?.message || 'Could not sync latest settings from server.');
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  // Refresh settings bundle in background without blocking initial render
   useEffect(() => {
-    let active = true;
-    setLoading(true);
-    settingsApi
-      .getAllSettings()
-      .then((res) => {
-        if (!active) return;
-        if (res.systemSettings) {
-          setSysDraft(res.systemSettings);
-          onSystemSettingsChange(res.systemSettings);
-        }
-        if (res.userPreferences) {
-          const cached = getCachedUserPreferences(currentUser.id);
-          const resolvedPrefs = cached
-            ? { ...res.userPreferences, ...cached, userId: currentUser.id, userEmail: currentUser.email }
-            : res.userPreferences;
-          setPrefDraft(resolvedPrefs);
-          onUserPreferencesChange(resolvedPrefs);
-          applyAppearanceToDocument(resolvedPrefs, res.systemSettings);
-        }
-        if (Array.isArray(res.paybills)) {
-          setPaybills(res.paybills);
-          setPayHeroInvoiceContext(res.paybills, res.transactions);
-          const defPb = res.paybills.find((p) => p.isDefault) || res.paybills[0];
-          if (defPb) setC2bPaybillNumber(defPb.paybillNumber);
-        }
-        if (Array.isArray(res.transactions)) {
-          setPayheroTxs(res.transactions);
-          setPayHeroInvoiceContext(res.paybills, res.transactions);
-        }
-        if (res.emailSettings) {
-          setEmailSettingsDraft(res.emailSettings);
-        }
-        if (res.smsSettings) {
-          setSmsSettingsDraft(res.smsSettings);
-          onSmsSettingsChange?.(res.smsSettings);
-        }
-        if (res.integrations) {
-          setIntegrations(res.integrations);
-        }
-      })
-      .catch((err: any) => {
-        showNotice(err?.message || 'Failed to load settings configuration.', 'error');
-      })
-      .finally(() => {
-        if (active) setLoading(false);
-      });
-    return () => {
-      active = false;
-    };
+    void syncSettingsFromServer(false);
   }, []);
 
   useEffect(() => {
@@ -792,27 +1048,35 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
     }
   };
 
-  if (!sysDraft || !prefDraft) {
-    return (
-      <div className="bg-white rounded-2xl p-8 border border-[#E4ECE8] flex items-center justify-center gap-3 text-[13px] text-[#5A6762]">
-        <RefreshCw className="w-4 h-4 animate-spin text-[#156943]" />
-        <span>Loading system configuration & user preferences...</span>
-      </div>
-    );
-  }
-
   return (
     <div className="space-y-4">
       {/* Top Settings Header Bar */}
       <div className="bg-white rounded-2xl p-5 border border-[#E4ECE8] flex flex-col lg:flex-row lg:items-center justify-between gap-4">
         <div>
-          <div className="flex items-center gap-2.5">
+          <div className="flex flex-wrap items-center gap-2.5">
             <h2 className="text-[18px] font-extrabold text-[#17231E] tracking-tight">
               System Configuration & Preferences
             </h2>
             <span className="text-[11.5px] text-[#5A6762]">
               · {sysDraft.general.companyName} ({sysDraft.general.defaultCurrency} · {sysDraft.general.timezone})
             </span>
+            {syncing && (
+              <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-[#156943] bg-[#F4F8F6] px-2 py-0.5 rounded-lg border border-[#E4ECE8]">
+                <RefreshCw className="w-3 h-3 animate-spin" />
+                Syncing…
+              </span>
+            )}
+            {!syncing && syncError && (
+              <button
+                type="button"
+                onClick={() => void syncSettingsFromServer(true)}
+                className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#B91C1C] bg-[#FEE2E2] px-2 py-0.5 rounded-lg border border-[#FECACA] hover:bg-[#FECACA]/60 cursor-pointer"
+                title={syncError}
+              >
+                <RefreshCw className="w-3 h-3" />
+                Retry sync
+              </button>
+            )}
           </div>
           <p className="text-[12px] text-[#6E7A75] mt-0.5">
             Configure global portfolio rules, personal theme preferences, Resend email automation, SMS notifications, and security policies.

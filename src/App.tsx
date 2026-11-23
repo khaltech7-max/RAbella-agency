@@ -34,6 +34,7 @@ import {
   clearAuthContext,
   getStoredToken,
   setOnUnauthorized,
+  getCachedSettingsBundle,
 } from './lib/apiClient';
 import { supabase, isSupabaseConfigured } from './lib/supabaseClient';
 import { realtimeSmsClient } from './lib/realtimeSms';
@@ -135,7 +136,9 @@ export default function App() {
   const [smsLogs, setSmsLogs] = useState<SmsLogRecord[]>([]);
   const [smsSettings, setSmsSettings] = useState<SmsNotificationSettings | null>(null);
   const [analytics, setAnalytics] = useState<DashboardAnalytics | null>(null);
-  const [systemSettings, setSystemSettings] = useState<SystemSettingsRecord | null>(null);
+  const [systemSettings, setSystemSettings] = useState<SystemSettingsRecord | null>(() =>
+    getCachedSettingsBundle()?.systemSettings || null
+  );
   const [userPreferences, setUserPreferences] = useState<UserAppearancePreferences | null>(() =>
     getCachedUserPreferences()
   );
@@ -359,33 +362,61 @@ export default function App() {
           setSmsSettings(data.smsSettings || null);
           setAnalytics(data.analytics);
 
-          // Load system settings & per-user appearance preferences in background
-          void rentalApi
-            .getAllSettings()
-            .then((settingsRes) => {
-              if (settingsRes?.systemSettings) {
-                setSystemSettings(settingsRes.systemSettings);
-              }
-              const cached = getCachedUserPreferences(data.user.id);
-              const resolvedPrefs = cached
-                ? {
-                    ...(settingsRes?.userPreferences || {}),
-                    ...cached,
-                    userId: data.user.id,
-                    userEmail: data.user.email,
-                  }
-                : settingsRes?.userPreferences || null;
-              if (resolvedPrefs) {
-                setUserPreferences(resolvedPrefs as UserAppearancePreferences);
-              }
-              applyAppearanceToDocument(
-                resolvedPrefs as UserAppearancePreferences | null,
-                settingsRes?.systemSettings || null
-              );
-            })
-            .catch(() => {
-              // Non-fatal if settings endpoint fails
-            });
+          // Apply system settings & user appearance preferences immediately if returned by bootstrap
+          if (data.systemSettings) {
+            setSystemSettings(data.systemSettings);
+          }
+          if (data.userPreferences) {
+            const cached = getCachedUserPreferences(data.user.id);
+            const resolvedPrefs = cached
+              ? {
+                  ...data.userPreferences,
+                  ...cached,
+                  userId: data.user.id,
+                  userEmail: data.user.email,
+                }
+              : data.userPreferences;
+            setUserPreferences(resolvedPrefs as UserAppearancePreferences);
+            applyAppearanceToDocument(
+              resolvedPrefs as UserAppearancePreferences,
+              data.systemSettings || systemSettings || null
+            );
+          } else if (data.systemSettings) {
+            applyAppearanceToDocument(
+              getCachedUserPreferences(data.user.id),
+              data.systemSettings
+            );
+          }
+
+          // Background warm-up of full settings bundle only if bootstrap didn't already supply them
+          if (!data.systemSettings || !data.userPreferences) {
+            void rentalApi
+              .getAllSettings()
+              .then((settingsRes) => {
+                if (settingsRes?.systemSettings) {
+                  setSystemSettings(settingsRes.systemSettings);
+                }
+                const cached = getCachedUserPreferences(data.user.id);
+                const resolvedPrefs = cached
+                  ? {
+                      ...(settingsRes?.userPreferences || {}),
+                      ...cached,
+                      userId: data.user.id,
+                      userEmail: data.user.email,
+                    }
+                  : settingsRes?.userPreferences || null;
+                if (resolvedPrefs) {
+                  setUserPreferences(resolvedPrefs as UserAppearancePreferences);
+                }
+                applyAppearanceToDocument(
+                  resolvedPrefs as UserAppearancePreferences | null,
+                  settingsRes?.systemSettings || null
+                );
+              })
+              .catch(() => {
+                // Non-fatal if settings endpoint fails
+              });
+          }
 
           const allowed = getAllowedPagesForRole(data.user.role);
           const defaultPage = getDefaultPageForRole(data.user.role);
