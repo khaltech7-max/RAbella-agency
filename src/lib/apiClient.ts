@@ -1342,8 +1342,14 @@ async function fetchBootstrapFromSupabase(): Promise<BootstrapPayload> {
 
   let unitTypes: UnitTypeItem[] = unitTypesRows.map((u) => {
     const occ = Number(u.occupied_count || 0);
-    const tot = Number(u.total_count || 1);
+    const tot = Number(u.total_count || 0);
     const resolvedProp = u.property_id ? propsById.get(u.property_id) : undefined;
+    const computedStatus: UnitTypeItem['status'] =
+      u.status === 'Inactive' || tot <= 0
+        ? 'Inactive'
+        : occ < tot
+        ? 'Available'
+        : 'Occupied';
     return {
       id: u.id,
       propertyId: u.property_id || resolvedProp?.id,
@@ -1354,8 +1360,8 @@ async function fetchBootstrapFromSupabase(): Promise<BootstrapPayload> {
       bedrooms: u.bedrooms,
       maxTenants: Number(u.max_tenants || 2),
       occupiedCount: occ,
-      totalCount: tot,
-      status: occ < tot ? 'Available' : 'Occupied',
+      totalCount: Math.max(0, tot),
+      status: computedStatus,
       monthlyRent: Number(u.monthly_rent || 0),
       description: u.description,
       longDescription: u.long_description || u.description,
@@ -3724,13 +3730,25 @@ export const rentalApi = {
         data.totalCount !== undefined
           ? Number(data.totalCount)
           : Number(cur?.total_count || 1);
-      const status = occ < tot ? 'Available' : 'Occupied';
+      const status: UnitTypeItem['status'] =
+        data.status === 'Inactive'
+          ? 'Inactive'
+          : data.status === 'Available' || data.status === 'Occupied'
+          ? occ < tot
+            ? 'Available'
+            : 'Occupied'
+          : cur?.status === 'Inactive'
+          ? 'Inactive'
+          : occ < tot
+          ? 'Available'
+          : 'Occupied';
 
       const { data: updated, error } = await supabase
         .from('unit_types')
         .update({
           name: data.name ?? cur?.name,
           property_name: data.property ?? cur?.property_name,
+          variant: data.variant ?? cur?.variant,
           size_sqm:
             data.sizeSqm !== undefined ? Number(data.sizeSqm) : cur?.size_sqm,
           bedrooms: data.bedrooms ?? cur?.bedrooms,

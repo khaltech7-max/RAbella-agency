@@ -4472,9 +4472,10 @@ async function fetchFullDatabaseState(forceRefresh = false) {
   });
   let unitTypes = unitTypesRows.map((u) => {
     const occ = Number(u.occupied_count || 0);
-    const tot = Number(u.total_count || 1);
+    const tot = Number(u.total_count || 0);
     const resolvedProp = u.property_id ? propsById.get(u.property_id) : void 0;
-    return { id: u.id, propertyId: u.property_id || resolvedProp?.id, name: u.name, property: resolvedProp?.name || u.property_name, variant: u.variant || "deluxe", sizeSqm: Number(u.size_sqm || 65), bedrooms: u.bedrooms, maxTenants: Number(u.max_tenants || 2), occupiedCount: occ, totalCount: tot, status: occ < tot ? "Available" : "Occupied", monthlyRent: Number(u.monthly_rent || 0), description: u.description, longDescription: u.long_description || u.description, features: Array.isArray(u.features) ? u.features : [], amenities: Array.isArray(u.amenities) ? u.amenities : [] };
+    const computedStatus = u.status === "Inactive" || tot <= 0 ? "Inactive" : occ < tot ? "Available" : "Occupied";
+    return { id: u.id, propertyId: u.property_id || resolvedProp?.id, name: u.name, property: resolvedProp?.name || u.property_name, variant: u.variant || "deluxe", sizeSqm: Number(u.size_sqm || 65), bedrooms: u.bedrooms, maxTenants: Number(u.max_tenants || 2), occupiedCount: occ, totalCount: Math.max(0, tot), status: computedStatus, monthlyRent: Number(u.monthly_rent || 0), description: u.description, longDescription: u.long_description || u.description, features: Array.isArray(u.features) ? u.features : [], amenities: Array.isArray(u.amenities) ? u.amenities : [] };
   });
   if (unitTypes.length === 0 && properties.length > 0) {
     unitTypes = properties.map((p) => {
@@ -6812,7 +6813,7 @@ async function createApp() {
     }
     const occ = Math.max(0, Number(body.occupiedCount) || 0);
     const tot = Math.max(1, Number(body.totalCount) || 1);
-    const status = occ < tot ? "Available" : "Occupied";
+    const status = body.status === "Inactive" ? "Inactive" : occ < tot ? "Available" : "Occupied";
     const rent = Math.max(0, Number(body.monthlyRent) || 0);
     const features = Array.isArray(body.features) ? body.features : typeof body.features === "string" && body.features.trim() ? body.features.split(",").map((s) => s.trim()).filter(Boolean) : ["Private balcony or patio", "Dedicated workspace layout", "Modern open-concept floorplan", "Smart keyless entry lock"];
     const amenities = Array.isArray(body.amenities) ? body.amenities : typeof body.amenities === "string" && body.amenities.trim() ? body.amenities.split(",").map((s) => s.trim()).filter(Boolean) : ["High-speed Wi-Fi ready", "In-unit laundry connections", "Full kitchen appliances", "Climate control HVAC"];
@@ -6845,7 +6846,7 @@ async function createApp() {
       }
       const occ2 = body.occupiedCount !== void 0 ? Number(body.occupiedCount) : Number(cur2.occupied_count);
       const tot2 = body.totalCount !== void 0 ? Number(body.totalCount) : Number(cur2.total_count);
-      const status2 = occ2 < tot2 ? "Available" : "Occupied";
+      const nextStatus2 = body.status === "Inactive" ? "Inactive" : body.status === "Available" || body.status === "Occupied" ? (occ2 < tot2 ? "Available" : "Occupied") : (cur2.status === "Inactive" ? "Inactive" : occ2 < tot2 ? "Available" : "Occupied");
       let propertyId = cur2.property_id;
       let propertyName = body.property ?? cur2.property_name;
       if (body.property && body.property !== cur2.property_name) {
@@ -6855,11 +6856,11 @@ async function createApp() {
           propertyName = propRow.name;
         }
       }
-      const { data: updated, error: updErr } = await supabaseAdmin.from("unit_types").update({ property_id: propertyId, property_name: propertyName, name: body.name ?? cur2.name, size_sqm: body.sizeSqm !== void 0 ? Number(body.sizeSqm) : cur2.size_sqm, bedrooms: body.bedrooms ?? cur2.bedrooms, max_tenants: body.maxTenants !== void 0 ? Number(body.maxTenants) : cur2.max_tenants, occupied_count: occ2, total_count: tot2, status: status2, monthly_rent: body.monthlyRent !== void 0 ? Number(body.monthlyRent) : cur2.monthly_rent, description: body.description ?? cur2.description, long_description: body.longDescription ?? body.description ?? cur2.long_description }).eq("id", utId).select("*").single();
+      const { data: updated, error: updErr } = await supabaseAdmin.from("unit_types").update({ property_id: propertyId, property_name: propertyName, name: body.name ?? cur2.name, variant: body.variant ?? cur2.variant, size_sqm: body.sizeSqm !== void 0 ? Number(body.sizeSqm) : cur2.size_sqm, bedrooms: body.bedrooms ?? cur2.bedrooms, max_tenants: body.maxTenants !== void 0 ? Number(body.maxTenants) : cur2.max_tenants, occupied_count: occ2, total_count: tot2, status: nextStatus2, monthly_rent: body.monthlyRent !== void 0 ? Number(body.monthlyRent) : cur2.monthly_rent, description: body.description ?? cur2.description, long_description: body.longDescription ?? body.description ?? cur2.long_description }).eq("id", utId).select("*").single();
       if (updErr) {
         return res.status(400).json({ error: updErr.message });
       }
-      return res.json({ id: updated.id, propertyId: updated.property_id, name: updated.name, property: updated.property_name, variant: updated.variant || "deluxe", sizeSqm: Number(updated.size_sqm || 65), bedrooms: updated.bedrooms, maxTenants: Number(updated.max_tenants || 2), occupiedCount: occ2, totalCount: tot2, status: status2, monthlyRent: Number(updated.monthly_rent || 0), description: updated.description, longDescription: updated.long_description || updated.description, features: Array.isArray(updated.features) ? updated.features : [], amenities: Array.isArray(updated.amenities) ? updated.amenities : [] });
+      return res.json({ id: updated.id, propertyId: updated.property_id, name: updated.name, property: updated.property_name, variant: updated.variant || "deluxe", sizeSqm: Number(updated.size_sqm || 65), bedrooms: updated.bedrooms, maxTenants: Number(updated.max_tenants || 2), occupiedCount: occ2, totalCount: tot2, status: nextStatus2, monthlyRent: Number(updated.monthly_rent || 0), description: updated.description, longDescription: updated.long_description || updated.description, features: Array.isArray(updated.features) ? updated.features : [], amenities: Array.isArray(updated.amenities) ? updated.amenities : [] });
     }
     const existingRes = await pg.query(`SELECT * FROM public.unit_types WHERE id = $1 LIMIT 1;`, [utId]);
     if (existingRes.rows.length === 0) {
@@ -6868,21 +6869,22 @@ async function createApp() {
     const cur = existingRes.rows[0];
     const occ = body.occupiedCount !== void 0 ? Number(body.occupiedCount) : Number(cur.occupied_count);
     const tot = body.totalCount !== void 0 ? Number(body.totalCount) : Number(cur.total_count);
-    const status = occ < tot ? "Available" : "Occupied";
+    const status = body.status === "Inactive" ? "Inactive" : body.status === "Available" || body.status === "Occupied" ? (occ < tot ? "Available" : "Occupied") : (cur.status === "Inactive" ? "Inactive" : occ < tot ? "Available" : "Occupied");
     const result = await pg.query(`UPDATE public.unit_types
          SET name = $1,
              property_name = $2,
-             size_sqm = $3,
-             bedrooms = $4,
-             max_tenants = $5,
-             occupied_count = $6,
-             total_count = $7,
-             status = $8,
-             monthly_rent = $9,
-             description = $10,
-             long_description = $11
-         WHERE id = $12
-         RETURNING *;`, [body.name ?? cur.name, body.property ?? cur.property_name, body.sizeSqm !== void 0 ? Number(body.sizeSqm) : cur.size_sqm, body.bedrooms ?? cur.bedrooms, body.maxTenants !== void 0 ? Number(body.maxTenants) : cur.max_tenants, occ, tot, status, body.monthlyRent !== void 0 ? Number(body.monthlyRent) : cur.monthly_rent, body.description ?? cur.description, body.longDescription ?? body.description ?? cur.long_description, utId]);
+             variant = $3,
+             size_sqm = $4,
+             bedrooms = $5,
+             max_tenants = $6,
+             occupied_count = $7,
+             total_count = $8,
+             status = $9,
+             monthly_rent = $10,
+             description = $11,
+             long_description = $12
+         WHERE id = $13
+         RETURNING *;`, [body.name ?? cur.name, body.property ?? cur.property_name, body.variant ?? cur.variant, body.sizeSqm !== void 0 ? Number(body.sizeSqm) : cur.size_sqm, body.bedrooms ?? cur.bedrooms, body.maxTenants !== void 0 ? Number(body.maxTenants) : cur.max_tenants, occ, tot, status, body.monthlyRent !== void 0 ? Number(body.monthlyRent) : cur.monthly_rent, body.description ?? cur.description, body.longDescription ?? body.description ?? cur.long_description, utId]);
     const updated = result.rows[0];
     return res.json({ id: updated.id, propertyId: updated.property_id, name: updated.name, property: updated.property_name, variant: updated.variant || "deluxe", sizeSqm: Number(updated.size_sqm || 65), bedrooms: updated.bedrooms, maxTenants: Number(updated.max_tenants || 2), occupiedCount: occ, totalCount: tot, status, monthlyRent: Number(updated.monthly_rent || 0), description: updated.description, longDescription: updated.long_description || updated.description, features: Array.isArray(updated.features) ? updated.features : [], amenities: Array.isArray(updated.amenities) ? updated.amenities : [] });
   });

@@ -107,7 +107,7 @@ export interface UnitTypeItem {
   sizeSqm: number;
   bedrooms: string;
   maxTenants: number;
-  status: 'Available' | 'Occupied';
+  status: 'Available' | 'Occupied' | 'Inactive';
   occupiedCount: number;
   totalCount: number;
   monthlyRent: number;
