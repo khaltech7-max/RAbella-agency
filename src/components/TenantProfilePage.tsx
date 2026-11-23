@@ -276,6 +276,7 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
   const [editName, setEditName] = useState('');
   const [editPhone, setEditPhone] = useState('');
   const [editEmail, setEditEmail] = useState('');
+  const [editIdNumber, setEditIdNumber] = useState('');
   const [editPropertyId, setEditPropertyId] = useState('');
   const [editUnitNumber, setEditUnitNumber] = useState('');
   const [editUnitType, setEditUnitType] = useState<
@@ -294,6 +295,7 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
     name: string;
     phone: string;
     email: string;
+    idNumber: string;
     propertyId: string;
     unitNumber: string;
     unitType: 'Standard' | 'Deluxe' | 'Suite' | 'Family' | 'Single';
@@ -310,6 +312,7 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
   const [newName, setNewName] = useState('');
   const [newPhone, setNewPhone] = useState('');
   const [newEmail, setNewEmail] = useState('');
+  const [newIdNumber, setNewIdNumber] = useState('');
   const [selectedPropertyId, setSelectedPropertyId] = useState('');
   const [newProperty, setNewProperty] = useState('');
   const [newUnitNumber, setNewUnitNumber] = useState('Unit 101');
@@ -585,6 +588,7 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
       setSelectedPropertyId('');
       setNewProperty('');
     }
+    setNewIdNumber('');
     setNewDeposit('');
     setNewDepositStatus('Held');
     setNewDueDate(getDefaultNairobiDateInput());
@@ -630,6 +634,7 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
         name: newName.trim(),
         phone: newPhone.trim() || 'On file',
         email: cleanEmail,
+        idNumber: newIdNumber.trim() || undefined,
         propertyId: chosenProp?.id,
         property: propName,
         unitNumber: newUnitNumber.trim() || 'Unit 101',
@@ -651,6 +656,7 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
       setNewName('');
       setNewPhone('');
       setNewEmail('');
+      setNewIdNumber('');
       setNewDeposit('');
       setNewDepositStatus('Held');
       setNewDueDate(getDefaultNairobiDateInput());
@@ -671,6 +677,7 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
     const cleanInitName = t.name || '';
     const cleanInitPhone = t.phone || '';
     const cleanInitEmail = t.email || '';
+    const cleanInitIdNumber = t.idNumber || '';
     const matchedProp =
       properties.find((p) => p.id === t.propertyId) ||
       properties.find((p) => p.name.toLowerCase() === t.property.toLowerCase());
@@ -691,6 +698,7 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
     setEditName(cleanInitName);
     setEditPhone(cleanInitPhone);
     setEditEmail(cleanInitEmail);
+    setEditIdNumber(cleanInitIdNumber);
     setEditPropertyId(initPropId);
     setEditUnitNumber(initUnitNumber);
     setEditUnitType(initUnitType);
@@ -705,6 +713,7 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
       name: cleanInitName.trim(),
       phone: cleanInitPhone.trim(),
       email: cleanInitEmail.trim().toLowerCase(),
+      idNumber: cleanInitIdNumber.trim(),
       propertyId: initPropId,
       unitNumber: initUnitNumber.trim(),
       unitType: initUnitType,
@@ -732,6 +741,7 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
 
     const cleanName = editName.trim() || editingTenant.name;
     const cleanPhone = editPhone.trim() || editingTenant.phone;
+    const cleanIdNumber = editIdNumber.trim();
     const cleanUnitNumber = editUnitNumber.trim() || editingTenant.unitNumber;
     const cleanRent = Number(editRent);
     const cleanDeposit = Math.max(0, Number(editDeposit) || 0);
@@ -743,6 +753,9 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
     if (!snap || cleanName !== snap.name) patch.name = cleanName;
     if (!snap || cleanPhone !== snap.phone) patch.phone = cleanPhone;
     if (!snap || cleanEmail !== snap.email) patch.email = cleanEmail;
+    if ((!snap || cleanIdNumber !== snap.idNumber) && cleanIdNumber) {
+      patch.idNumber = cleanIdNumber;
+    }
     if (!snap || editPropertyId !== snap.propertyId) {
       if (chosenProp?.id || editingTenant.propertyId) {
         patch.propertyId = chosenProp?.id || editingTenant.propertyId;
@@ -1720,6 +1733,21 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
                 </div>
                 <div>
                   <label className="block font-bold text-[#172B25] mb-1">
+                    ID / Passport Number
+                  </label>
+                  <input
+                    type="text"
+                    value={newIdNumber}
+                    onChange={(e) => setNewIdNumber(e.target.value)}
+                    placeholder="Enter National ID / Passport (e.g. 12345678)"
+                    className="w-full px-3 py-2 rounded-xl bg-[#F5F7F6] border border-[#E7ECE9] text-xs text-[#172B25] font-mono tabular-nums"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-bold text-[#172B25] mb-1">
                     Unit Number *
                   </label>
                   <input
@@ -1731,9 +1759,6 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
                     className="w-full px-3 py-2 rounded-xl bg-[#F5F7F6] border border-[#E7ECE9] text-xs text-[#172B25]"
                   />
                 </div>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
                   <label className="block font-bold text-[#172B25] mb-1">
                     Unit Type
@@ -1750,6 +1775,9 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
                     <option value="Single">Single</option>
                   </select>
                 </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block font-bold text-[#172B25] mb-1">
                     Monthly Rent (KSh)
@@ -1946,18 +1974,32 @@ export const TenantProfilePage: React.FC<TenantProfilePageProps> = ({
                 </div>
               </div>
 
-              <div>
-                <label className="block font-bold text-[#172B25] mb-1">
-                  Email Address (Email Reminders) *
-                </label>
-                <input
-                  type="email"
-                  required
-                  value={editEmail}
-                  onChange={(e) => setEditEmail(e.target.value)}
-                  placeholder="tenant@example.com"
-                  className="w-full px-3 py-2 rounded-xl bg-[#F5F7F6] border border-[#E7ECE9] text-xs text-[#172B25]"
-                />
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-bold text-[#172B25] mb-1">
+                    Email Address (Email Reminders) *
+                  </label>
+                  <input
+                    type="email"
+                    required
+                    value={editEmail}
+                    onChange={(e) => setEditEmail(e.target.value)}
+                    placeholder="tenant@example.com"
+                    className="w-full px-3 py-2 rounded-xl bg-[#F5F7F6] border border-[#E7ECE9] text-xs text-[#172B25]"
+                  />
+                </div>
+                <div>
+                  <label className="block font-bold text-[#172B25] mb-1">
+                    ID / Passport Number
+                  </label>
+                  <input
+                    type="text"
+                    value={editIdNumber}
+                    onChange={(e) => setEditIdNumber(e.target.value)}
+                    placeholder="Enter National ID / Passport (e.g. 12345678)"
+                    className="w-full px-3 py-2 rounded-xl bg-[#F5F7F6] border border-[#E7ECE9] text-xs text-[#172B25] font-mono tabular-nums"
+                  />
+                </div>
               </div>
 
               <div>
