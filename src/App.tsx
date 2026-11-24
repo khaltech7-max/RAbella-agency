@@ -30,6 +30,7 @@ import {
 } from './data/rentalData';
 import {
   rentalApi,
+  computeRealAnalytics,
   setAuthContext,
   clearAuthContext,
   getStoredToken,
@@ -986,23 +987,118 @@ export default function App() {
                 await runMutation(async () => {
                   const created = await rentalApi.createUnitType(u);
                   if (created && created.id) {
-                    setUnitTypes((prev) => [created, ...prev]);
+                    const nextUnitTypes: UnitTypeItem[] = [created, ...unitTypes];
+                    const nextProperties: PropertyRecord[] = properties.map((p) => {
+                      const matchesProp =
+                        (created.propertyId && p.id === created.propertyId) ||
+                        p.name.trim().toLowerCase() ===
+                          (created.property || '').trim().toLowerCase();
+                      if (!matchesProp) return p;
+                      const propUts = nextUnitTypes.filter(
+                        (ut) =>
+                          (ut.propertyId && ut.propertyId === p.id) ||
+                          ut.property.trim().toLowerCase() === p.name.trim().toLowerCase()
+                      );
+                      const utOcc = propUts.reduce(
+                        (s, ut) => s + Math.max(0, Number(ut.occupiedCount || 0)),
+                        0
+                      );
+                      const utTot = propUts.reduce(
+                        (s, ut) => s + Math.max(0, Number(ut.totalCount || 0)),
+                        0
+                      );
+                      const nextTotal = Math.max(Number(p.totalUnits || 1), utTot);
+                      const nextOcc = Math.max(0, Math.min(nextTotal, utOcc));
+                      const nextStatus: PropertyRecord['status'] =
+                        p.status === 'Under Maintenance'
+                          ? 'Under Maintenance'
+                          : nextOcc >= nextTotal
+                          ? 'Occupied'
+                          : 'Active';
+                      return {
+                        ...p,
+                        totalUnits: nextTotal,
+                        occupiedUnits: nextOcc,
+                        status: nextStatus,
+                      };
+                    });
+                    setUnitTypes(nextUnitTypes);
+                    setProperties(nextProperties);
+                    setAnalytics(
+                      computeRealAnalytics(
+                        nextProperties,
+                        nextUnitTypes,
+                        tenants,
+                        payments,
+                        transactions,
+                        maintenanceItems,
+                        []
+                      )
+                    );
                   }
-                });
+                }, { awaitSync: true });
               }}
               onUpdateUnitType={async (id, updated) => {
                 await runMutation(async () => {
                   const saved = await rentalApi.updateUnitType(id, updated);
                   if (saved && saved.id) {
-                    setUnitTypes((prev) =>
-                      prev.map((item) => (item.id === id ? saved : item))
+                    const nextUnitTypes: UnitTypeItem[] = unitTypes.map((item) =>
+                      item.id === id || item.id === saved.id ? saved : item
+                    );
+                    const nextProperties: PropertyRecord[] = properties.map((p) => {
+                      const matchesProp =
+                        (saved.propertyId && p.id === saved.propertyId) ||
+                        p.name.trim().toLowerCase() ===
+                          (saved.property || '').trim().toLowerCase();
+                      if (!matchesProp) return p;
+                      const propUts = nextUnitTypes.filter(
+                        (ut) =>
+                          (ut.propertyId && ut.propertyId === p.id) ||
+                          ut.property.trim().toLowerCase() === p.name.trim().toLowerCase()
+                      );
+                      const utOcc = propUts.reduce(
+                        (s, ut) => s + Math.max(0, Number(ut.occupiedCount || 0)),
+                        0
+                      );
+                      const utTot = propUts.reduce(
+                        (s, ut) => s + Math.max(0, Number(ut.totalCount || 0)),
+                        0
+                      );
+                      const nextTotal = Math.max(Number(p.totalUnits || 1), utTot);
+                      const nextOcc = Math.max(0, Math.min(nextTotal, utOcc));
+                      const nextStatus: PropertyRecord['status'] =
+                        p.status === 'Under Maintenance'
+                          ? 'Under Maintenance'
+                          : nextOcc >= nextTotal
+                          ? 'Occupied'
+                          : 'Active';
+                      return {
+                        ...p,
+                        totalUnits: nextTotal,
+                        occupiedUnits: nextOcc,
+                        status: nextStatus,
+                      };
+                    });
+                    setUnitTypes(nextUnitTypes);
+                    setProperties(nextProperties);
+                    setAnalytics(
+                      computeRealAnalytics(
+                        nextProperties,
+                        nextUnitTypes,
+                        tenants,
+                        payments,
+                        transactions,
+                        maintenanceItems,
+                        []
+                      )
                     );
                   }
-                });
+                }, { awaitSync: true });
               }}
               onDeleteUnitType={async (id) => {
-                setUnitTypes((prev) => prev.filter((item) => item.id !== id));
-                await runMutation(() => rentalApi.deleteUnitType(id));
+                const nextUnitTypes = unitTypes.filter((item) => item.id !== id);
+                setUnitTypes(nextUnitTypes);
+                await runMutation(() => rentalApi.deleteUnitType(id), { awaitSync: true });
               }}
               globalSearch={globalSearch}
               onGlobalSearchChange={setGlobalSearch}
@@ -1022,19 +1118,98 @@ export default function App() {
                   const res: any = await rentalApi.createTenant(data);
                   if (res && res.id) {
                     const { initialPayment, ...tenantProfile } = res;
-                    setTenants((prev) =>
-                      [...prev.filter((t) => t.id !== tenantProfile.id), tenantProfile].sort((a, b) =>
-                        a.tenantRef.localeCompare(b.tenantRef)
+                    const wasUnitAlreadyActive = tenants.some(
+                      (t) =>
+                        t.tenancyStatus !== 'Vacated' &&
+                        ((tenantProfile.propertyId && t.propertyId === tenantProfile.propertyId) ||
+                          t.property.trim().toLowerCase() ===
+                            String(tenantProfile.property || '').trim().toLowerCase()) &&
+                        t.unitNumber.trim().toLowerCase() ===
+                          String(tenantProfile.unitNumber || '').trim().toLowerCase()
+                    );
+                    const nextTenants = [
+                      ...tenants.filter((t) => t.id !== tenantProfile.id),
+                      tenantProfile,
+                    ].sort((a, b) => a.tenantRef.localeCompare(b.tenantRef));
+                    const nextPayments =
+                      initialPayment && initialPayment.id
+                        ? [initialPayment, ...payments]
+                        : payments;
+
+                    let incrementedUt = false;
+                    const nextUnitTypes: UnitTypeItem[] = unitTypes.map((ut) => {
+                      if (incrementedUt || wasUnitAlreadyActive) return ut;
+                      const propMatch =
+                        (tenantProfile.propertyId && ut.propertyId === tenantProfile.propertyId) ||
+                        ut.property.trim().toLowerCase() ===
+                          String(tenantProfile.property || '').trim().toLowerCase();
+                      const nameMatch =
+                        ut.name.trim().toLowerCase() ===
+                        String(tenantProfile.unitType || '').trim().toLowerCase();
+                      if (propMatch && nameMatch) {
+                        incrementedUt = true;
+                        const nextOcc = Math.min(
+                          ut.totalCount,
+                          Math.max(0, Number(ut.occupiedCount || 0)) + 1
+                        );
+                        const nextUtStatus: UnitTypeItem['status'] =
+                          ut.status === 'Inactive'
+                            ? 'Inactive'
+                            : nextOcc < ut.totalCount
+                            ? 'Available'
+                            : 'Occupied';
+                        return {
+                          ...ut,
+                          occupiedCount: nextOcc,
+                          status: nextUtStatus,
+                        };
+                      }
+                      return ut;
+                    });
+
+                    const nextProperties: PropertyRecord[] = properties.map((p) => {
+                      const propMatch =
+                        (tenantProfile.propertyId && p.id === tenantProfile.propertyId) ||
+                        p.name.trim().toLowerCase() ===
+                          String(tenantProfile.property || '').trim().toLowerCase();
+                      if (!propMatch || wasUnitAlreadyActive) return p;
+                      const nextOcc = Math.min(
+                        p.totalUnits,
+                        Math.max(0, Number(p.occupiedUnits || 0)) + 1
+                      );
+                      const nextPropStatus: PropertyRecord['status'] =
+                        p.status === 'Under Maintenance'
+                          ? 'Under Maintenance'
+                          : nextOcc >= p.totalUnits
+                          ? 'Occupied'
+                          : 'Active';
+                      return {
+                        ...p,
+                        occupiedUnits: nextOcc,
+                        status: nextPropStatus,
+                      };
+                    });
+
+                    setTenants(nextTenants);
+                    setPayments(nextPayments);
+                    setUnitTypes(nextUnitTypes);
+                    setProperties(nextProperties);
+                    setAnalytics(
+                      computeRealAnalytics(
+                        nextProperties,
+                        nextUnitTypes,
+                        nextTenants,
+                        nextPayments,
+                        transactions,
+                        maintenanceItems,
+                        []
                       )
                     );
-                    if (initialPayment && initialPayment.id) {
-                      setPayments((prev) => [initialPayment, ...prev]);
-                    }
                     setSelectedTenantRef(tenantProfile.tenantRef);
                     return tenantProfile as TenantProfile;
                   }
                   return res as TenantProfile;
-                });
+                }, { awaitSync: true });
                 return created as TenantProfile;
               }}
               onUpdateTenant={async (id, data) => {
@@ -1047,26 +1222,117 @@ export default function App() {
                       )
                     );
                   }
-                });
+                }, { awaitSync: true });
               }}
               onVacateTenant={async (id, payload) => {
                 return await runMutation(async () => {
+                  const priorTenant = tenants.find((t) => t.id === id || t.tenantRef === id);
+                  const wasAlreadyVacated = priorTenant?.tenancyStatus === 'Vacated';
                   const res = await rentalApi.vacateTenant(id, payload);
-                  if (res?.tenant) {
-                    setTenants((prev) =>
-                      prev.map((t) =>
-                        t.id === res.tenant.id || t.tenantRef === res.tenant.tenantRef
-                          ? res.tenant
+                  const vacatedTenant = res?.tenant;
+
+                  const nextTenants = vacatedTenant
+                    ? tenants.map((t) =>
+                        t.id === vacatedTenant.id || t.tenantRef === vacatedTenant.tenantRef
+                          ? vacatedTenant
                           : t
+                      )
+                    : tenants;
+                  setTenants(nextTenants);
+
+                  const nextTransactions =
+                    res?.expense && res.expense.id
+                      ? [
+                          res.expense,
+                          ...transactions.filter((tx) => tx.id !== res.expense!.id),
+                        ]
+                      : transactions;
+                  if (res?.expense && res.expense.id) {
+                    setTransactions(nextTransactions);
+                  }
+
+                  if (Array.isArray(res?.unitTypes)) {
+                    setUnitTypes(res.unitTypes);
+                  } else if (vacatedTenant && !wasAlreadyVacated) {
+                    let decremented = false;
+                    setUnitTypes((prev) =>
+                      prev.map((ut) => {
+                        if (decremented) return ut;
+                        const propMatch =
+                          (vacatedTenant.propertyId && ut.propertyId === vacatedTenant.propertyId) ||
+                          ut.property.trim().toLowerCase() ===
+                            vacatedTenant.property.trim().toLowerCase();
+                        const typeMatch =
+                          ut.name.trim().toLowerCase() ===
+                          (vacatedTenant.unitType || '').trim().toLowerCase();
+                        if (propMatch && (typeMatch || ut.occupiedCount > 0)) {
+                          decremented = true;
+                          const nextOcc = Math.max(0, Number(ut.occupiedCount || 0) - 1);
+                          const nextUtStatus: UnitTypeItem['status'] =
+                            ut.status === 'Inactive'
+                              ? 'Inactive'
+                              : nextOcc < ut.totalCount
+                              ? 'Available'
+                              : 'Occupied';
+                          return {
+                            ...ut,
+                            occupiedCount: nextOcc,
+                            status: nextUtStatus,
+                          };
+                        }
+                        return ut;
+                      })
+                    );
+                  }
+
+                  if (Array.isArray(res?.properties)) {
+                    setProperties(res.properties);
+                  } else if (vacatedTenant && !wasAlreadyVacated) {
+                    setProperties((prev) =>
+                      prev.map((p) => {
+                        const propMatch =
+                          (vacatedTenant.propertyId && p.id === vacatedTenant.propertyId) ||
+                          p.name.trim().toLowerCase() ===
+                            vacatedTenant.property.trim().toLowerCase();
+                        if (!propMatch) return p;
+                        const nextOcc = Math.max(0, Number(p.occupiedUnits || 0) - 1);
+                        const nextPropStatus: PropertyRecord['status'] =
+                          p.status === 'Under Maintenance'
+                            ? 'Under Maintenance'
+                            : nextOcc >= p.totalUnits
+                            ? 'Occupied'
+                            : 'Active';
+                        return {
+                          ...p,
+                          occupiedUnits: nextOcc,
+                          status: nextPropStatus,
+                        };
+                      })
+                    );
+                  }
+
+                  if (res?.analytics) {
+                    setAnalytics(res.analytics);
+                  } else {
+                    const resolvedProps = Array.isArray(res?.properties)
+                      ? res.properties
+                      : properties;
+                    const resolvedUts = Array.isArray(res?.unitTypes)
+                      ? res.unitTypes
+                      : unitTypes;
+                    setAnalytics(
+                      computeRealAnalytics(
+                        resolvedProps,
+                        resolvedUts,
+                        nextTenants,
+                        payments,
+                        nextTransactions,
+                        maintenanceItems,
+                        []
                       )
                     );
                   }
-                  if (res?.expense && res.expense.id) {
-                    setTransactions((prev) => [
-                      res.expense!,
-                      ...prev.filter((tx) => tx.id !== res.expense!.id),
-                    ]);
-                  }
+
                   return res;
                 }, { awaitSync: true });
               }}
@@ -1074,7 +1340,7 @@ export default function App() {
                 setTenants((prev) =>
                   prev.filter((t) => t.id !== id && t.tenantRef !== id)
                 );
-                await runMutation(() => rentalApi.deleteTenant(id));
+                await runMutation(() => rentalApi.deleteTenant(id), { awaitSync: true });
               }}
               onRecordTenantPayment={async (tenantRef) => {
                 await runMutation(async () => {

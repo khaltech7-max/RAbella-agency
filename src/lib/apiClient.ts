@@ -275,7 +275,7 @@ function toDbRole(role: UserRole): string {
 /**
  * Computes full dashboard analytics from live database rows.
  */
-function computeRealAnalytics(
+export function computeRealAnalytics(
   properties: PropertyRecord[],
   unitTypes: UnitTypeItem[],
   tenants: TenantProfile[],
@@ -285,6 +285,14 @@ function computeRealAnalytics(
   reviews: PropertyReviewRecord[]
 ): DashboardAnalytics {
   const activeTenants = tenants.filter((t) => t.tenancyStatus !== 'Vacated');
+  // Deduplicate active tenants by physical unit (property + unitNumber) to prevent double-counting co-tenants
+  const activeDistinctUnitSet = new Set<string>();
+  activeTenants.forEach((t) => {
+    const pKey = String(t.propertyId || t.property || '').trim().toLowerCase();
+    const uKey = String(t.unitNumber || '').trim().toLowerCase();
+    activeDistinctUnitSet.add(uKey ? `${pKey}::${uKey}` : `tenant::${t.id || t.tenantRef}`);
+  });
+  const activeOccupiedUnitsCount = activeDistinctUnitSet.size;
 
   // Single-source-of-truth financial accounting engine separating Earned Revenue from Deposit Liabilities
   const finSummary = computePortfolioFinancialSummary(
@@ -354,13 +362,24 @@ function computeRealAnalytics(
       : 0;
   const propTotalUnits = properties.reduce((s, p) => s + Number(p.totalUnits || 0), 0);
   const unitTypeTotalUnits = unitTypes.reduce((s, u) => s + Number(u.totalCount || 0), 0);
-  const totalUnits = Math.max(propTotalUnits, unitTypeTotalUnits, activeTenants.length);
+  const totalUnits =
+    propTotalUnits > 0
+      ? propTotalUnits
+      : unitTypeTotalUnits > 0
+      ? unitTypeTotalUnits
+      : activeOccupiedUnitsCount;
   const propOccupied = properties.reduce((s, p) => s + Number(p.occupiedUnits || 0), 0);
   const unitTypeOccupied = unitTypes.reduce((s, u) => s + Number(u.occupiedCount || 0), 0);
-  const occupied = Math.max(propOccupied, unitTypeOccupied, activeTenants.length);
+  const rawOccupied =
+    properties.length > 0
+      ? propOccupied
+      : unitTypes.length > 0
+      ? unitTypeOccupied
+      : activeOccupiedUnitsCount;
+  const occupied = Math.max(0, Math.min(totalUnits, rawOccupied));
   const notReady = maintenance.filter((m) => m.maintenanceStatus !== 'Completed').length;
   const reserved = pendingOrOverdueRent.length;
-  const available = Math.max(0, totalUnits - occupied - notReady);
+  const available = Math.max(0, totalUnits - occupied);
   const occupancyRatePct =
     totalUnits > 0 ? Number(((occupied / totalUnits) * 100).toFixed(1)) : 0;
 
@@ -470,13 +489,10 @@ function computeRealAnalytics(
   const totalOccupiedAcrossProps = Math.max(
     1,
     properties.reduce((s, p) => s + Math.max(Number(p.occupiedUnits || 0), 0), 0) ||
-      tenants.length
+      activeOccupiedUnitsCount
   );
   const leasesByProperty = properties.map((p, idx) => {
-    const tenantCountForProp = tenants.filter(
-      (t) => t.propertyId === p.id || t.property.toLowerCase() === p.name.toLowerCase()
-    ).length;
-    const occVal = Math.max(Number(p.occupiedUnits || 0), tenantCountForProp);
+    const occVal = Math.max(0, Number(p.occupiedUnits || 0));
     return {
       name: p.name,
       value:
@@ -1345,9 +1361,28 @@ async function fetchBootstrapFromSupabase(): Promise<BootstrapPayload> {
         (t.propertyId === p.id ||
           String(t.property).trim().toLowerCase() === propNameLower)
     );
-    const propOccupiedUnits = unitsRows.filter(
-      (un) => un.property_id === p.id && un.status === 'Occupied'
+    const activeDistinctTenantUnits = new Set(
+      propTenants
+        .map((t) => String(t.unitNumber || '').trim().toLowerCase())
+        .filter(Boolean)
     );
+    const vacatedOnlyUnitKeys = new Set(
+      tenants
+        .filter(
+          (t) =>
+            t.tenancyStatus === 'Vacated' &&
+            (t.propertyId === p.id ||
+              String(t.property).trim().toLowerCase() === propNameLower)
+        )
+        .map((t) => String(t.unitNumber || '').trim().toLowerCase())
+        .filter((uk) => uk && !activeDistinctTenantUnits.has(uk))
+    );
+    const propOccupiedUnits = unitsRows.filter((un) => {
+      if (un.property_id !== p.id || un.status !== 'Occupied') return false;
+      const uNumKey = String(un.unit_number || '').trim().toLowerCase();
+      if (uNumKey && vacatedOnlyUnitKeys.has(uNumKey)) return false;
+      return true;
+    });
     const propPaidPayments = payments.filter(
       (pay) =>
         String(pay.property).trim().toLowerCase() === propNameLower &&
@@ -1355,24 +1390,35 @@ async function fetchBootstrapFromSupabase(): Promise<BootstrapPayload> {
         !isDepositTransaction(pay)
     );
     const unitTypeTotalSum = propUnitTypes.reduce(
-      (s, u) => s + Number(u.total_count || 0),
+      (s, u) => s + Math.max(0, Number(u.total_count || 0)),
       0
     );
     const unitTypeOccSum = propUnitTypes.reduce(
-      (s, u) => s + Number(u.occupied_count || 0),
+      (s, u) => s + Math.max(0, Number(u.occupied_count || 0)),
       0
     );
-    const occupiedUnits = Math.max(
-      Number(p.occupied_units || 0),
-      unitTypeOccSum,
-      propOccupiedUnits.length,
-      propTenants.length
-    );
+    const activeTenantUnitCount =
+      activeDistinctTenantUnits.size > 0
+        ? activeDistinctTenantUnits.size
+        : propTenants.length;
     const totalUnits = Math.max(
       Number(p.total_units || 1),
       unitTypeTotalSum,
-      occupiedUnits
+      activeTenantUnitCount
     );
+    const rawOccupiedUnits =
+      propUnitTypes.length > 0
+        ? Math.max(unitTypeOccSum, activeTenantUnitCount)
+        : unitsRows.some((un) => un.property_id === p.id)
+        ? Math.max(propOccupiedUnits.length, activeTenantUnitCount)
+        : tenants.some(
+            (t) =>
+              t.propertyId === p.id ||
+              String(t.property).trim().toLowerCase() === propNameLower
+          )
+        ? activeTenantUnitCount
+        : Number(p.occupied_units || 0);
+    const occupiedUnits = Math.max(0, Math.min(totalUnits, rawOccupiedUnits));
     const paidSum = propPaidPayments.reduce(
       (s, pay) => s + Number(pay.amount || 0),
       0
@@ -1436,8 +1482,8 @@ async function fetchBootstrapFromSupabase(): Promise<BootstrapPayload> {
   });
 
   let unitTypes: UnitTypeItem[] = unitTypesRows.map((u) => {
-    const occ = Number(u.occupied_count || 0);
-    const tot = Number(u.total_count || 0);
+    const tot = Math.max(0, Number(u.total_count || 0));
+    const occ = Math.max(0, Math.min(tot, Number(u.occupied_count || 0)));
     const resolvedProp = u.property_id ? propsById.get(u.property_id) : undefined;
     const computedStatus: UnitTypeItem['status'] =
       u.status === 'Inactive' || tot <= 0
@@ -1455,7 +1501,7 @@ async function fetchBootstrapFromSupabase(): Promise<BootstrapPayload> {
       bedrooms: u.bedrooms,
       maxTenants: Number(u.max_tenants || 2),
       occupiedCount: occ,
-      totalCount: Math.max(0, tot),
+      totalCount: tot,
       status: computedStatus,
       monthlyRent: Number(u.monthly_rent || 0),
       description: u.description,
@@ -1476,10 +1522,11 @@ async function fetchBootstrapFromSupabase(): Promise<BootstrapPayload> {
       );
       const propTenants = tenants.filter(
         (t) =>
-          t.propertyId === p.id ||
-          String(t.property || '')
-            .trim()
-            .toLowerCase() === String(p.name || '').trim().toLowerCase()
+          t.tenancyStatus !== 'Vacated' &&
+          (t.propertyId === p.id ||
+            String(t.property || '')
+              .trim()
+              .toLowerCase() === String(p.name || '').trim().toLowerCase())
       );
       const primaryUnit = propUnits[0];
       const primaryTenant = propTenants[0];
@@ -1929,6 +1976,86 @@ async function fetchBootstrapFromSupabase(): Promise<BootstrapPayload> {
     smsSettings,
     analytics,
   };
+}
+
+/**
+ * Synchronizes properties.occupied_units in Supabase with the property's unit_types and active leases/tenants
+ * while keeping total_units unchanged.
+ */
+async function syncSupabasePropertyOccupancy(
+  propertyId?: string | null,
+  propertyName?: string | null
+): Promise<void> {
+  if (!isSupabaseConfigured || !supabase || (!propertyId && !propertyName)) return;
+  try {
+    let propRow: any = null;
+    if (propertyId) {
+      const { data } = await supabase
+        .from('properties')
+        .select('*')
+        .eq('id', propertyId)
+        .maybeSingle();
+      propRow = data;
+    }
+    if (!propRow && propertyName) {
+      const { data } = await supabase
+        .from('properties')
+        .select('*')
+        .ilike('name', String(propertyName).trim())
+        .maybeSingle();
+      propRow = data;
+    }
+    if (!propRow) return;
+
+    const [{ data: utRows }, { data: leaseRows }] = await Promise.all([
+      supabase.from('unit_types').select('*').eq('property_id', propRow.id),
+      supabase
+        .from('leases')
+        .select('unit_number, is_active')
+        .ilike('property_name', propRow.name)
+        .eq('is_active', true),
+    ]);
+
+    const utList = Array.isArray(utRows) ? utRows : [];
+    const activeUnitSet = new Set(
+      (Array.isArray(leaseRows) ? leaseRows : [])
+        .map((l: any) => String(l.unit_number || '').trim().toLowerCase())
+        .filter(Boolean)
+    );
+
+    const utTotalSum = utList.reduce(
+      (s: number, u: any) => s + Math.max(0, Number(u.total_count || 0)),
+      0
+    );
+    const utOccSum = utList.reduce(
+      (s: number, u: any) => s + Math.max(0, Number(u.occupied_count || 0)),
+      0
+    );
+    const totalUnits = Math.max(
+      Number(propRow.total_units || 1),
+      utTotalSum,
+      activeUnitSet.size
+    );
+    const rawOcc =
+      utList.length > 0 ? Math.max(utOccSum, activeUnitSet.size) : activeUnitSet.size;
+    const occupiedUnits = Math.max(0, Math.min(totalUnits, rawOcc));
+    const nextStatus =
+      propRow.status === 'Maintenance'
+        ? 'Maintenance'
+        : occupiedUnits >= totalUnits
+        ? 'Occupied'
+        : 'Active';
+
+    await supabase
+      .from('properties')
+      .update({
+        occupied_units: occupiedUnits,
+        status: nextStatus,
+      })
+      .eq('id', propRow.id);
+  } catch {
+    // Non-fatal occupancy sync fallback
+  }
 }
 
 /**
@@ -3901,6 +4028,8 @@ export const rentalApi = {
           .is('unit_type_id', null);
       }
 
+      await syncSupabasePropertyOccupancy(created.property_id || propRow?.id, propRow?.name || created.property_name);
+
       return {
         id: created.id,
         propertyId: created.property_id || propRow?.id,
@@ -4106,6 +4235,8 @@ export const rentalApi = {
               .is('unit_type_id', null);
           }
 
+          await syncSupabasePropertyOccupancy(inserted.property_id, inserted.property_name);
+
           return {
             id: inserted.id,
             propertyId: inserted.property_id,
@@ -4233,6 +4364,29 @@ export const rentalApi = {
           .eq('unit_type_id', updated.id);
       }
 
+      const prevOcc = Math.max(0, Number(cur.occupied_count || 0));
+      if (occ < prevOcc) {
+        const diffToVacate = prevOcc - occ;
+        const { data: occUnitRows } = await supabase
+          .from('units')
+          .select('id, tenant_ref')
+          .eq('unit_type_id', updated.id)
+          .eq('status', 'Occupied')
+          .limit(diffToVacate);
+        if (Array.isArray(occUnitRows) && occUnitRows.length > 0) {
+          const withoutTenant = occUnitRows.filter((u: any) => !u.tenant_ref);
+          const toFree = (withoutTenant.length > 0 ? withoutTenant : occUnitRows).slice(0, diffToVacate);
+          for (const uRow of toFree) {
+            await supabase
+              .from('units')
+              .update({ status: 'Available', tenant_ref: null })
+              .eq('id', uRow.id);
+          }
+        }
+      }
+
+      await syncSupabasePropertyOccupancy(updated.property_id, updated.property_name);
+
       return {
         id: updated.id,
         propertyId: updated.property_id,
@@ -4286,6 +4440,11 @@ export const rentalApi = {
         }
         return { success: true };
       }
+      const { data: existingUt } = await supabase
+        .from('unit_types')
+        .select('property_id, property_name')
+        .eq('id', id)
+        .maybeSingle();
       const { error } = await supabase.from('unit_types').delete().eq('id', id);
       if (error) {
         throw createDiagnosticError({
@@ -4295,6 +4454,9 @@ export const rentalApi = {
           supabaseError: error.message,
           category: 'Database Access',
         });
+      }
+      if (existingUt) {
+        await syncSupabasePropertyOccupancy(existingUt.property_id, existingUt.property_name);
       }
       return { success: true };
     }
@@ -4472,6 +4634,101 @@ export const rentalApi = {
         })
         .select('*')
         .maybeSingle();
+
+      // Synchronize unit status, unit_types.occupied_count, and properties.occupied_units when a vacant unit receives a new active tenant
+      let matchedUtRow: any = null;
+      if (propRow?.id) {
+        const { data: utRows } = await supabase
+          .from('unit_types')
+          .select('*')
+          .eq('property_id', propRow.id);
+        if (Array.isArray(utRows) && utRows.length > 0) {
+          matchedUtRow =
+            utRows.find(
+              (ut: any) =>
+                String(ut.name || '').trim().toLowerCase() ===
+                String(resolvedUnitType).trim().toLowerCase()
+            ) || utRows[0];
+        }
+      }
+      if (!matchedUtRow && propName) {
+        const { data: utRows } = await supabase
+          .from('unit_types')
+          .select('*')
+          .ilike('property_name', propName);
+        if (Array.isArray(utRows) && utRows.length > 0) {
+          matchedUtRow =
+            utRows.find(
+              (ut: any) =>
+                String(ut.name || '').trim().toLowerCase() ===
+                String(resolvedUnitType).trim().toLowerCase()
+            ) || utRows[0];
+        }
+      }
+
+      let existingUnitRow: any = null;
+      if (propRow?.id) {
+        const { data: uRow } = await supabase
+          .from('units')
+          .select('*')
+          .eq('property_id', propRow.id)
+          .ilike('unit_number', cleanUnitNumber)
+          .maybeSingle();
+        existingUnitRow = uRow;
+      } else if (propName) {
+        const { data: uRow } = await supabase
+          .from('units')
+          .select('*')
+          .ilike('property_name', propName)
+          .ilike('unit_number', cleanUnitNumber)
+          .maybeSingle();
+        existingUnitRow = uRow;
+      }
+
+      const wasUnitAlreadyOccupied = existingUnitRow?.status === 'Occupied';
+      if (existingUnitRow) {
+        await supabase
+          .from('units')
+          .update({
+            status: 'Occupied',
+            tenant_ref: generatedRef,
+            unit_type_id: matchedUtRow?.id || existingUnitRow.unit_type_id,
+            unit_type_name: resolvedUnitType,
+            monthly_rent: rentNum,
+          })
+          .eq('id', existingUnitRow.id);
+      } else if (propRow?.id) {
+        await supabase.from('units').insert({
+          property_id: propRow.id,
+          unit_type_id: matchedUtRow?.id || null,
+          unit_number: cleanUnitNumber,
+          unit_type_name: resolvedUnitType,
+          property_name: propName,
+          monthly_rent: rentNum,
+          status: 'Occupied',
+          tenant_ref: generatedRef,
+        });
+      }
+
+      if (matchedUtRow && !wasUnitAlreadyOccupied) {
+        const totCount = Math.max(1, Number(matchedUtRow.total_count || 1));
+        const nextOcc = Math.min(totCount, Math.max(0, Number(matchedUtRow.occupied_count || 0)) + 1);
+        const nextStatus =
+          matchedUtRow.status === 'Inactive'
+            ? 'Inactive'
+            : nextOcc < totCount
+            ? 'Available'
+            : 'Occupied';
+        await supabase
+          .from('unit_types')
+          .update({
+            occupied_count: nextOcc,
+            status: nextStatus,
+          })
+          .eq('id', matchedUtRow.id);
+      }
+
+      await syncSupabasePropertyOccupancy(propRow?.id, propName);
 
       void logSupabaseActivity(
         'lease',
@@ -4736,9 +4993,21 @@ export const rentalApi = {
       expenseCategory?: ExpenseTransaction['category'];
       expenseTitle?: string;
     }
-  ): Promise<{ tenant: TenantProfile; expense?: ExpenseTransaction | null }> => {
+  ): Promise<{
+    tenant: TenantProfile;
+    expense?: ExpenseTransaction | null;
+    properties?: PropertyRecord[];
+    unitTypes?: UnitTypeItem[];
+    analytics?: DashboardAnalytics;
+  }> => {
     try {
-      return await apiRequest<{ tenant: TenantProfile; expense?: ExpenseTransaction | null }>(
+      return await apiRequest<{
+        tenant: TenantProfile;
+        expense?: ExpenseTransaction | null;
+        properties?: PropertyRecord[];
+        unitTypes?: UnitTypeItem[];
+        analytics?: DashboardAnalytics;
+      }>(
         `/api/tenants/${id}/vacate`,
         {
           method: 'POST',
@@ -4799,6 +5068,11 @@ export const rentalApi = {
         depositSettledBy: currentEmail || 'Admin',
       })}]`;
 
+      const wasAlreadyVacated =
+        String(target.tenancy_status || '').toLowerCase() === 'vacated' ||
+        String(target.on_time_streak || '').toLowerCase() === 'vacated' ||
+        (leaseRow && leaseRow.is_active === false);
+
       const { error: tUpdErr } = await supabase
         .from('tenants')
         .update({
@@ -4827,6 +5101,111 @@ export const rentalApi = {
           })
           .eq('id', leaseRow.id);
       }
+
+      // Check if another active lease still occupies the same physical unit
+      let isUnitStillOccupiedByAnother = false;
+      const { data: otherActiveLeases } = await supabase
+        .from('leases')
+        .select('id, tenant_id, tenant_ref')
+        .ilike('property_name', cleanProp)
+        .ilike('unit_number', cleanUnit)
+        .eq('is_active', true);
+      if (Array.isArray(otherActiveLeases)) {
+        isUnitStillOccupiedByAnother = otherActiveLeases.some(
+          (l: any) => l.tenant_id !== target.id && l.tenant_ref !== target.tenant_ref
+        );
+      }
+
+      let vacatedUnitRow: any = null;
+      if (!isUnitStillOccupiedByAnother) {
+        if (leaseRow?.unit_id) {
+          const { data: uRow } = await supabase
+            .from('units')
+            .update({ status: 'Available', tenant_ref: null })
+            .eq('id', leaseRow.unit_id)
+            .select('*')
+            .maybeSingle();
+          vacatedUnitRow = uRow;
+        }
+        if (!vacatedUnitRow && target.property_id) {
+          const { data: uRow } = await supabase
+            .from('units')
+            .update({ status: 'Available', tenant_ref: null })
+            .eq('property_id', target.property_id)
+            .ilike('unit_number', cleanUnit)
+            .select('*')
+            .maybeSingle();
+          vacatedUnitRow = uRow;
+        }
+        if (!vacatedUnitRow) {
+          const { data: uRow } = await supabase
+            .from('units')
+            .update({ status: 'Available', tenant_ref: null })
+            .ilike('property_name', cleanProp)
+            .ilike('unit_number', cleanUnit)
+            .select('*')
+            .maybeSingle();
+          vacatedUnitRow = uRow;
+        }
+      }
+
+      if (!wasAlreadyVacated && !isUnitStillOccupiedByAnother) {
+        let matchedUt: any = null;
+        if (vacatedUnitRow?.unit_type_id) {
+          const { data: ut } = await supabase
+            .from('unit_types')
+            .select('*')
+            .eq('id', vacatedUnitRow.unit_type_id)
+            .maybeSingle();
+          matchedUt = ut;
+        }
+        if (!matchedUt && target.property_id) {
+          const { data: utList } = await supabase
+            .from('unit_types')
+            .select('*')
+            .eq('property_id', target.property_id);
+          if (Array.isArray(utList) && utList.length > 0) {
+            const targetUtName = String(leaseRow?.unit_type || target.unit_type || '').trim().toLowerCase();
+            matchedUt =
+              utList.find((ut: any) => String(ut.name || '').trim().toLowerCase() === targetUtName) ||
+              utList.find((ut: any) => Number(ut.occupied_count || 0) > 0) ||
+              utList[0];
+          }
+        }
+        if (!matchedUt) {
+          const { data: utList } = await supabase
+            .from('unit_types')
+            .select('*')
+            .ilike('property_name', cleanProp);
+          if (Array.isArray(utList) && utList.length > 0) {
+            const targetUtName = String(leaseRow?.unit_type || target.unit_type || '').trim().toLowerCase();
+            matchedUt =
+              utList.find((ut: any) => String(ut.name || '').trim().toLowerCase() === targetUtName) ||
+              utList.find((ut: any) => Number(ut.occupied_count || 0) > 0) ||
+              utList[0];
+          }
+        }
+
+        if (matchedUt) {
+          const nextOcc = Math.max(0, Number(matchedUt.occupied_count || 0) - 1);
+          const totCount = Math.max(1, Number(matchedUt.total_count || 1));
+          const nextStatus =
+            matchedUt.status === 'Inactive'
+              ? 'Inactive'
+              : nextOcc < totCount
+              ? 'Available'
+              : 'Occupied';
+          await supabase
+            .from('unit_types')
+            .update({
+              occupied_count: nextOcc,
+              status: nextStatus,
+            })
+            .eq('id', matchedUt.id);
+        }
+      }
+
+      await syncSupabasePropertyOccupancy(target.property_id, cleanProp);
 
       let createdExpense: ExpenseTransaction | null = null;
       if (payload.recordDamageAsExpense && damageNum > 0) {
@@ -4864,10 +5243,22 @@ export const rentalApi = {
       const state = await fetchBootstrapFromSupabase();
       const updated = state.tenants.find((t) => t.id === target.id || t.tenantRef === target.tenant_ref);
       if (!updated) throw new Error('Tenant not found after vacate.');
-      return { tenant: updated, expense: createdExpense };
+      return {
+        tenant: updated,
+        expense: createdExpense,
+        properties: state.properties,
+        unitTypes: state.unitTypes,
+        analytics: state.analytics,
+      };
     }
 
-    return await apiRequest<{ tenant: TenantProfile; expense?: ExpenseTransaction | null }>(
+    return await apiRequest<{
+      tenant: TenantProfile;
+      expense?: ExpenseTransaction | null;
+      properties?: PropertyRecord[];
+      unitTypes?: UnitTypeItem[];
+      analytics?: DashboardAnalytics;
+    }>(
       `/api/tenants/${id}/vacate`,
       {
         method: 'POST',

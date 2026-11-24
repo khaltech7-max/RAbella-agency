@@ -4453,43 +4453,75 @@ async function fetchFullDatabaseState(forceRefresh = false) {
       paymentHistory,
     };
   });
+  const normalizeUnitKey = (val) => String(val || "").trim().toLowerCase().replace(/\s+/g, " ");
+  let unitTypes = unitTypesRows.map((u) => {
+    const resolvedProp = u.property_id ? propsById.get(u.property_id) : void 0;
+    const propNameLower = String(resolvedProp?.name || u.property_name || "").trim().toLowerCase();
+    const utNameLower = String(u.name || "").trim().toLowerCase();
+    const activeTenantsForUt = tenants.filter(
+      (t) =>
+        t.tenancyStatus !== "Vacated" &&
+        (t.propertyId === u.property_id || String(t.property || "").trim().toLowerCase() === propNameLower) &&
+        String(t.unitType || "").trim().toLowerCase() === utNameLower
+    );
+    const activeDistinctTenantUnitsForUt = new Set(activeTenantsForUt.map((t) => normalizeUnitKey(t.unitNumber)).filter(Boolean)).size;
+    const tot = Math.max(0, Number(u.total_count || 0), activeDistinctTenantUnitsForUt);
+    const rawOcc = Math.max(0, Number(u.occupied_count || 0));
+    const occ = Math.min(tot, Math.max(rawOcc, activeDistinctTenantUnitsForUt));
+    const computedStatus = u.status === "Inactive" || tot <= 0 ? "Inactive" : occ < tot ? "Available" : "Occupied";
+    return { id: u.id, propertyId: u.property_id || resolvedProp?.id, name: u.name, property: resolvedProp?.name || u.property_name, variant: u.variant || "deluxe", sizeSqm: Number(u.size_sqm || 65), bedrooms: u.bedrooms, maxTenants: Number(u.max_tenants || 2), occupiedCount: occ, totalCount: tot, status: computedStatus, monthlyRent: Number(u.monthly_rent || 0), description: u.description, longDescription: u.long_description || u.description, features: Array.isArray(u.features) ? u.features : [], amenities: Array.isArray(u.amenities) ? u.amenities : [] };
+  });
   const properties = propsRows.map((p) => {
     const prefix = String(p.code_prefix || "A").trim();
     const propNameLower = String(p.name).trim().toLowerCase();
-    const propUnitTypes = unitTypesRows.filter((ut) => ut.property_id === p.id || String(ut.property_name).trim().toLowerCase() === propNameLower);
+    const propUnitTypes = unitTypes.filter((ut) => ut.propertyId === p.id || String(ut.property || "").trim().toLowerCase() === propNameLower);
     const propTenants = tenants.filter((t) => t.tenancyStatus !== "Vacated" && (t.propertyId === p.id || String(t.property).trim().toLowerCase() === propNameLower));
-    const propOccupiedUnits = unitsRows.filter((un) => un.property_id === p.id && un.status === "Occupied");
+    const activeDistinctTenantUnits = new Set(propTenants.map((t) => normalizeUnitKey(t.unitNumber)).filter(Boolean));
+    const vacatedTenantsForProp = tenants.filter((t) => t.tenancyStatus === "Vacated" && (t.propertyId === p.id || String(t.property).trim().toLowerCase() === propNameLower));
+    const vacatedOnlyUnitKeys = new Set(
+      vacatedTenantsForProp
+        .map((t) => normalizeUnitKey(t.unitNumber))
+        .filter((k) => k && !activeDistinctTenantUnits.has(k))
+    );
+    const propOccupiedUnitKeys = new Set(activeDistinctTenantUnits);
+    for (const un of unitsRows) {
+      if ((un.property_id === p.id || String(un.property_name || "").trim().toLowerCase() === propNameLower) && un.status === "Occupied") {
+        const uk = normalizeUnitKey(un.unit_number);
+        if (uk && !vacatedOnlyUnitKeys.has(uk)) {
+          propOccupiedUnitKeys.add(uk);
+        }
+      }
+    }
     const propPaidPayments = payments.filter((pay) => String(pay.property).trim().toLowerCase() === propNameLower && pay.status === "Paid" && !isDepositTransaction(pay));
-    const unitTypeTotalSum = propUnitTypes.reduce((s, u) => s + Number(u.total_count || 0), 0);
-    const unitTypeOccSum = propUnitTypes.reduce((s, u) => s + Number(u.occupied_count || 0), 0);
-    const occupiedUnits = Math.max(Number(p.occupied_units || 0), unitTypeOccSum, propOccupiedUnits.length, propTenants.length);
-    const totalUnits = Math.max(Number(p.total_units || 1), unitTypeTotalSum, occupiedUnits);
+    const unitTypeTotalSum = propUnitTypes.reduce((s, u) => s + Number(u.totalCount || 0), 0);
+    const unitTypeOccSum = propUnitTypes.reduce((s, u) => s + Number(u.occupiedCount || 0), 0);
+    const totalUnits = Math.max(Number(p.total_units || 1), unitTypeTotalSum, activeDistinctTenantUnits.size);
+    const rawOccupied = propUnitTypes.length > 0
+      ? Math.max(unitTypeOccSum, activeDistinctTenantUnits.size)
+      : propTenants.length > 0 || vacatedTenantsForProp.length > 0
+      ? Math.max(Number(p.occupied_units || 0), propOccupiedUnitKeys.size)
+      : Math.max(Number(p.occupied_units || 0), propOccupiedUnitKeys.size);
+    const occupiedUnits = Math.min(totalUnits, Math.max(0, rawOccupied));
     const paidSum = propPaidPayments.reduce((s, pay) => s + Number(pay.amount || 0), 0);
     const tenantRentSum = propTenants.reduce((s, t) => s + Number(t.monthlyRent || 0), 0);
-    const unitTypeRentSum = propUnitTypes.reduce((s, u) => s + Number(u.occupied_count || 0) * Number(u.monthly_rent || 0), 0);
+    const unitTypeRentSum = propUnitTypes.reduce((s, u) => s + Number(u.occupiedCount || 0) * Number(u.monthlyRent || 0), 0);
     const monthlyRevenue = paidSum > 0 ? paidSum : tenantRentSum > 0 ? tenantRentSum : unitTypeRentSum > 0 ? unitTypeRentSum : Number(p.monthly_revenue || 0);
     const pImages = propImagesRows.filter((img) => img.property_id === p.id).map((img) => ({ id: String(img.id), propertyId: String(img.property_id), imageUrl: String(img.image_url), storagePath: img.storage_path || void 0, isCover: Boolean(img.is_cover), displayOrder: Number(img.display_order || 0), caption: img.caption || "", createdAt: img.created_at }));
     const coverImg = pImages.find((img) => img.isCover)?.imageUrl || p.cover_image_url || pImages[0]?.imageUrl || "";
     const pCode = p.property_code || `${prefix}-001`;
-    const pStatus = p.status || (occupiedUnits >= totalUnits ? "Occupied" : "Active");
+    const pStatus = p.status === "Under Maintenance" ? "Under Maintenance" : occupiedUnits >= totalUnits ? "Occupied" : p.status === "Occupied" ? "Active" : (p.status || "Active");
     return { id: p.id, codePrefix: prefix, propertyCode: pCode, name: p.name, address: p.address, description: p.description || "", status: pStatus, coverImageUrl: coverImg, images: pImages, totalUnits, occupiedUnits, monthlyRevenue, manager: p.manager_name || "Property Manager", rating: `${Number(p.rating || 5).toFixed(1)}/5`, variant: p.variant || "deluxe", refRange: `${prefix}-001 \u2013 ${prefix}-${String(Math.max(1, totalUnits)).padStart(3, "0")}`, createdAt: p.created_at };
-  });
-  let unitTypes = unitTypesRows.map((u) => {
-    const occ = Number(u.occupied_count || 0);
-    const tot = Number(u.total_count || 0);
-    const resolvedProp = u.property_id ? propsById.get(u.property_id) : void 0;
-    const computedStatus = u.status === "Inactive" || tot <= 0 ? "Inactive" : occ < tot ? "Available" : "Occupied";
-    return { id: u.id, propertyId: u.property_id || resolvedProp?.id, name: u.name, property: resolvedProp?.name || u.property_name, variant: u.variant || "deluxe", sizeSqm: Number(u.size_sqm || 65), bedrooms: u.bedrooms, maxTenants: Number(u.max_tenants || 2), occupiedCount: occ, totalCount: Math.max(0, tot), status: computedStatus, monthlyRent: Number(u.monthly_rent || 0), description: u.description, longDescription: u.long_description || u.description, features: Array.isArray(u.features) ? u.features : [], amenities: Array.isArray(u.amenities) ? u.amenities : [] };
   });
   if (unitTypes.length === 0 && properties.length > 0) {
     const derivedCandidates = properties.map((p) => {
       const propUnits = unitsRows.filter((un) => un.property_id === p.id || String(un.property_name || "").trim().toLowerCase() === String(p.name || "").trim().toLowerCase());
-      const propTenants = tenants.filter((t) => t.propertyId === p.id || String(t.property || "").trim().toLowerCase() === String(p.name || "").trim().toLowerCase());
+      const propTenants = tenants.filter((t) => t.tenancyStatus !== "Vacated" && (t.propertyId === p.id || String(t.property || "").trim().toLowerCase() === String(p.name || "").trim().toLowerCase()));
       const primaryUnit = propUnits[0];
       const primaryTenant = propTenants[0];
       const utName = primaryUnit?.unit_type_name || primaryTenant?.unitType || (p.variant === "suite" ? "Suite" : p.variant === "standard" ? "Standard" : "Deluxe");
       const rentVal = Number(primaryUnit?.monthly_rent || primaryTenant?.monthlyRent || (p.occupiedUnits > 0 ? Math.round(p.monthlyRevenue / p.occupiedUnits) : 35000));
-      const occ = Math.max(Number(p.occupiedUnits || 0), propTenants.length);
+      const distinctActiveUnits = new Set(propTenants.map((t) => normalizeUnitKey(t.unitNumber)).filter(Boolean)).size;
+      const occ = Math.max(Number(p.occupiedUnits || 0), distinctActiveUnits);
       const tot = Math.max(Number(p.totalUnits || 1), occ);
       const sizeSqm = p.variant === "suite" ? 110 : p.variant === "standard" ? 55 : 75;
       const bedrooms = utName.toLowerCase().includes("family") || p.variant === "suite" ? "3 Bedrooms" : p.variant === "standard" ? "1 Bedroom" : "2 Bedrooms";
@@ -4643,6 +4675,11 @@ async function fetchFullDatabaseState(forceRefresh = false) {
 }
 function computeRealAnalytics(properties, unitTypes, tenants, payments, expenses, maintenance, reviews) {
   const activeTenants = tenants.filter((t) => t.tenancyStatus !== "Vacated");
+  const activeDistinctUnitKeys = new Set(
+    activeTenants
+      .map((t) => `${String(t.propertyId || t.property || "").trim().toLowerCase()}::${String(t.unitNumber || "").trim().toLowerCase()}`)
+      .filter((k) => !k.endsWith("::"))
+  );
   const finSummary = computePortfolioFinancialSummary(
     tenants.map((t) => ({
       id: t.id || t.tenantRef,
@@ -4705,15 +4742,23 @@ function computeRealAnalytics(properties, unitTypes, tenants, payments, expenses
   const netBalance = finSummary.netOperatingIncome;
   const totalPaymentsCount = rentPayments.length;
   const collectionRatePct = totalPaymentsCount > 0 ? Number((paidRentPayments.length / totalPaymentsCount * 100).toFixed(1)) : 0;
-  const propTotalUnits = properties.reduce((s, p) => s + Number(p.totalUnits || 0), 0);
-  const unitTypeTotalUnits = unitTypes.reduce((s, u) => s + Number(u.totalCount || 0), 0);
-  const totalUnits = Math.max(propTotalUnits, unitTypeTotalUnits, activeTenants.length);
-  const propOccupied = properties.reduce((s, p) => s + Number(p.occupiedUnits || 0), 0);
-  const unitTypeOccupied = unitTypes.reduce((s, u) => s + Number(u.occupiedCount || 0), 0);
-  const occupied = Math.max(propOccupied, unitTypeOccupied, activeTenants.length);
+  const propTotalUnits = properties.reduce((s, p) => s + Math.max(0, Number(p.totalUnits || 0)), 0);
+  const unitTypeTotalUnits = unitTypes.reduce((s, u) => s + Math.max(0, Number(u.totalCount || 0)), 0);
+  const totalUnits = properties.length > 0
+    ? Math.max(propTotalUnits, unitTypeTotalUnits, activeDistinctUnitKeys.size)
+    : Math.max(unitTypeTotalUnits, activeDistinctUnitKeys.size);
+  const propOccupied = properties.reduce((s, p) => s + Math.max(0, Number(p.occupiedUnits || 0)), 0);
+  const unitTypeOccupied = unitTypes.reduce((s, u) => s + Math.max(0, Number(u.occupiedCount || 0)), 0);
+  const rawOccupied = unitTypes.length > 0
+    ? Math.max(unitTypeOccupied, activeDistinctUnitKeys.size)
+    : properties.length > 0
+    ? Math.max(propOccupied, activeDistinctUnitKeys.size)
+    : activeDistinctUnitKeys.size;
+  const occupied = Math.min(totalUnits, Math.max(0, rawOccupied));
+  const vacantUnits = Math.max(0, totalUnits - occupied);
   const notReady = maintenance.filter((m) => m.maintenanceStatus !== "Completed").length;
   const reserved = pendingOrOverdueRent.length;
-  const available = Math.max(0, totalUnits - occupied - notReady);
+  const available = vacantUnits;
   const occupancyRatePct = totalUnits > 0 ? Number((occupied / totalUnits * 100).toFixed(1)) : 0;
   const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
   const now = /* @__PURE__ */ new Date();
@@ -4798,11 +4843,16 @@ function computeRealAnalytics(properties, unitTypes, tenants, payments, expenses
     rentCollection7D.push({ day: dayLabel, collected: collectedCount, pending: pendingCount });
   }
   const palette = ["#BCEAD2", "#D5F267", "#DFF5B0", "#E4F890", "#EFFAC0", "#E4ECE8"];
-  const totalOccupiedAcrossProps = Math.max(1, properties.reduce((s, p) => s + Math.max(Number(p.occupiedUnits || 0), 0), 0) || tenants.length);
+  const totalOccupiedAcrossProps = Math.max(1, properties.reduce((s, p) => s + Math.max(Number(p.occupiedUnits || 0), 0), 0) || activeDistinctUnitKeys.size);
   const leasesByProperty = properties.map((p, idx) => {
     const propNameLower = String(p.name || "").trim().toLowerCase();
-    const tenantCountForProp = tenants.filter((t) => t.propertyId === p.id || String(t.property || "").trim().toLowerCase() === propNameLower).length;
-    const occVal = Math.max(Number(p.occupiedUnits || 0), tenantCountForProp);
+    const activeTenantUnitsForProp = new Set(
+      activeTenants
+        .filter((t) => t.propertyId === p.id || String(t.property || "").trim().toLowerCase() === propNameLower)
+        .map((t) => String(t.unitNumber || "").trim().toLowerCase())
+        .filter(Boolean)
+    ).size;
+    const occVal = Math.max(Number(p.occupiedUnits || 0), activeTenantUnitsForProp);
     return { name: p.name, value: properties.length > 0 ? Math.round(occVal / totalOccupiedAcrossProps * 100) : 0, color: palette[idx % palette.length] };
   });
   const earningsYearly = monthNames.map((mShort, mIdx) => {
@@ -7043,6 +7093,81 @@ async function createApp() {
     }
     return res.json({ success: true });
   });
+  const syncPropertyOccupancyInDb = async (propertyId?: string | null, propertyName?: string | null) => {
+    try {
+      if (supabaseAdmin && !isSupabaseQuotaRestricted()) {
+        let propRow: any = null;
+        if (propertyId && isValidUuid(String(propertyId))) {
+          const { data } = await supabaseAdmin.from("properties").select("id, name, total_units, occupied_units").eq("id", String(propertyId)).maybeSingle();
+          propRow = data;
+        }
+        if (!propRow && propertyName) {
+          const { data } = await supabaseAdmin.from("properties").select("id, name, total_units, occupied_units").ilike("name", String(propertyName).trim()).maybeSingle();
+          propRow = data;
+        }
+        if (propRow) {
+          const [{ data: utRows }, { data: tRows }, { data: lRows }] = await Promise.all([
+            supabaseAdmin.from("unit_types").select("id, name, occupied_count, total_count").or(`property_id.eq.${propRow.id},property_name.ilike.${propRow.name}`),
+            supabaseAdmin.from("tenants").select("id, tenant_ref, tenancy_status, on_time_streak, unit_number, property_id, property_name").or(`property_id.eq.${propRow.id},property_name.ilike.${propRow.name}`),
+            supabaseAdmin.from("leases").select("tenant_id, tenant_ref, unit_number, is_active").ilike("property_name", propRow.name),
+          ]);
+          const leaseByTenant = new Map<string, any>();
+          for (const l of lRows || []) {
+            if (l.tenant_id) leaseByTenant.set(String(l.tenant_id), l);
+            if (l.tenant_ref) leaseByTenant.set(String(l.tenant_ref).toUpperCase(), l);
+          }
+          const activeUnitSet = new Set<string>();
+          for (const t of tRows || []) {
+            const lease = leaseByTenant.get(String(t.id)) || leaseByTenant.get(String(t.tenant_ref || "").toUpperCase());
+            const isVacated =
+              String(t.tenancy_status || "").toLowerCase() === "vacated" ||
+              String(t.on_time_streak || "").toLowerCase() === "vacated" ||
+              lease?.is_active === false;
+            if (!isVacated) {
+              const uNum = String(lease?.unit_number || t.unit_number || "").trim().toLowerCase();
+              if (uNum) activeUnitSet.add(uNum);
+            }
+          }
+          const utList = Array.isArray(utRows) ? utRows : [];
+          const utOccSum = utList.reduce((s, u) => s + Math.max(0, Number(u.occupied_count || 0)), 0);
+          const utTotSum = utList.reduce((s, u) => s + Math.max(0, Number(u.total_count || 0)), 0);
+          const totalUnits = Math.max(Number(propRow.total_units || 1), utTotSum, activeUnitSet.size);
+          const nextOcc = Math.min(
+            totalUnits,
+            utList.length > 0 ? Math.max(utOccSum, activeUnitSet.size) : activeUnitSet.size
+          );
+          await supabaseAdmin.from("properties").update({ occupied_units: nextOcc }).eq("id", propRow.id);
+        }
+      }
+      if (pg) {
+        let pRow: any = null;
+        if (propertyId) {
+          const r = await pg.query(`SELECT id, name, total_units, occupied_units FROM public.properties WHERE id::text = $1 LIMIT 1;`, [String(propertyId)]).catch(() => ({ rows: [] }));
+          pRow = r.rows[0];
+        }
+        if (!pRow && propertyName) {
+          const r = await pg.query(`SELECT id, name, total_units, occupied_units FROM public.properties WHERE LOWER(name) = LOWER($1) LIMIT 1;`, [String(propertyName).trim()]).catch(() => ({ rows: [] }));
+          pRow = r.rows[0];
+        }
+        if (pRow) {
+          const utRes = await pg.query(`SELECT occupied_count, total_count FROM public.unit_types WHERE property_id = $1 OR LOWER(property_name) = LOWER($2);`, [pRow.id, pRow.name]).catch(() => ({ rows: [] }));
+          const tRes = await pg.query(`SELECT id, tenant_ref, tenancy_status, on_time_streak, unit_number FROM public.tenants WHERE property_id = $1 OR LOWER(property_name) = LOWER($2);`, [pRow.id, pRow.name]).catch(() => ({ rows: [] }));
+          const activeSet = new Set<string>();
+          for (const t of tRes.rows) {
+            const isVac = String(t.tenancy_status || "").toLowerCase() === "vacated" || String(t.on_time_streak || "").toLowerCase() === "vacated";
+            if (!isVac && t.unit_number) activeSet.add(String(t.unit_number).trim().toLowerCase());
+          }
+          const utOccSum = utRes.rows.reduce((s: number, u: any) => s + Math.max(0, Number(u.occupied_count || 0)), 0);
+          const utTotSum = utRes.rows.reduce((s: number, u: any) => s + Math.max(0, Number(u.total_count || 0)), 0);
+          const totalUnits = Math.max(Number(pRow.total_units || 1), utTotSum, activeSet.size);
+          const nextOcc = Math.min(totalUnits, utRes.rows.length > 0 ? Math.max(utOccSum, activeSet.size) : activeSet.size);
+          await pg.query(`UPDATE public.properties SET occupied_units = $1 WHERE id = $2;`, [nextOcc, pRow.id]).catch(() => {});
+        }
+      }
+    } catch {
+    }
+  };
+
   app.post("/api/unit-types", requireRole(["owner", "property_manager"]), async (req, res) => {
     const body = req.body;
     if (!body.name || !body.property) {
@@ -7076,6 +7201,7 @@ async function createApp() {
           .ilike("unit_type_name", created.name)
           .is("unit_type_id", null);
       }
+      await syncPropertyOccupancyInDb(created.property_id || propRow?.id, propRow?.name || created.property_name);
       invalidateFullDatabaseStateCache();
       void logActivity("unit", "Unit Type Configured", `${body.name} (${tot} units @ KSh ${rent.toLocaleString()}/mo) added to ${body.property}.`, req.currentUser?.fullName || "Manager", void 0, "mint");
       return res.status(201).json({ id: created.id, propertyId: created.property_id || propRow?.id, name: created.name, property: propRow?.name || created.property_name, variant: created.variant || "deluxe", sizeSqm: Number(created.size_sqm || 65), bedrooms: created.bedrooms, maxTenants: Number(created.max_tenants || 2), occupiedCount: occ, totalCount: tot, status, monthlyRent: rent, description: created.description, longDescription: created.long_description || created.description, features: Array.isArray(created.features) ? created.features : features, amenities: Array.isArray(created.amenities) ? created.amenities : amenities });
@@ -7093,6 +7219,7 @@ async function createApp() {
         [created.id, propertyId, created.name]
       ).catch(() => {});
     }
+    await syncPropertyOccupancyInDb(created?.property_id || propertyId, created?.property_name);
     invalidateFullDatabaseStateCache();
     void logActivity("unit", "Unit Type Configured", `${body.name} (${tot} units @ KSh ${rent.toLocaleString()}/mo) added to ${body.property}.`, req.currentUser?.fullName || "Manager", void 0, "mint");
     return res.status(201).json({ id: created.id, propertyId: created.property_id || propertyId, name: created.name, property: created.property_name, variant: created.variant || "deluxe", sizeSqm: Number(created.size_sqm || 65), bedrooms: created.bedrooms, maxTenants: Number(created.max_tenants || 2), occupiedCount: occ, totalCount: tot, status, monthlyRent: rent, description: created.description, longDescription: created.long_description || created.description, features, amenities });
@@ -7229,6 +7356,25 @@ async function createApp() {
           .update({ unit_type_name: nextName })
           .eq("unit_type_id", updated.id);
       }
+      // If occupied_count was decreased (property manager marked an occupied unit as Vacant), sync excess occupied units rows to Available
+      const prevOcc2 = Math.max(0, Number(cur2.occupied_count || 0));
+      if (occ2 < prevOcc2 && (propertyId || propertyName)) {
+        const diffToVacate = prevOcc2 - occ2;
+        const { data: occUnitsForUt } = await supabaseAdmin
+          .from("units")
+          .select("id, unit_number, status, tenant_ref")
+          .eq("property_id", propertyId)
+          .eq("status", "Occupied")
+          .or(`unit_type_id.eq.${updated.id},unit_type_name.ilike.${nextName}`)
+          .order("created_at", { ascending: false });
+        if (Array.isArray(occUnitsForUt) && occUnitsForUt.length > occ2) {
+          const toFree = occUnitsForUt.slice(0, diffToVacate).map((u) => u.id);
+          if (toFree.length > 0) {
+            await supabaseAdmin.from("units").update({ status: "Available", tenant_ref: null }).in("id", toFree);
+          }
+        }
+      }
+      await syncPropertyOccupancyInDb(updated.property_id || propertyId, updated.property_name || propertyName);
       invalidateFullDatabaseStateCache();
       return res.json({ id: updated.id, propertyId: updated.property_id, name: updated.name, property: updated.property_name, variant: updated.variant || "deluxe", sizeSqm: Number(updated.size_sqm || 65), bedrooms: updated.bedrooms, maxTenants: Number(updated.max_tenants || 2), occupiedCount: occ2, totalCount: tot2, status: nextStatus2, monthlyRent: Number(updated.monthly_rent || 0), description: updated.description, longDescription: updated.long_description || updated.description, features: Array.isArray(updated.features) ? updated.features : [], amenities: Array.isArray(updated.amenities) ? updated.amenities : [] });
     }
@@ -7272,6 +7418,7 @@ async function createApp() {
             [inserted.id, inserted.property_id]
           ).catch(() => {});
         }
+        await syncPropertyOccupancyInDb(inserted?.property_id, inserted?.property_name);
         invalidateFullDatabaseStateCache();
         return res.json({ id: inserted.id, propertyId: inserted.property_id, name: inserted.name, property: inserted.property_name, variant: inserted.variant || "deluxe", sizeSqm: Number(inserted.size_sqm || 65), bedrooms: inserted.bedrooms, maxTenants: Number(inserted.max_tenants || 2), occupiedCount: occNew, totalCount: totNew, status: nextStatusNew, monthlyRent: Number(inserted.monthly_rent || 0), description: inserted.description, longDescription: inserted.long_description || inserted.description, features: defaultFeatures, amenities: defaultAmenities });
       }
@@ -7312,6 +7459,7 @@ async function createApp() {
     if (nextName !== cur.name) {
       await pg.query(`UPDATE public.units SET unit_type_name = $1 WHERE unit_type_id = $2;`, [nextName, updated.id]).catch(() => {});
     }
+    await syncPropertyOccupancyInDb(updated?.property_id || nextPropertyId, updated?.property_name || nextPropertyName);
     invalidateFullDatabaseStateCache();
     return res.json({ id: updated.id, propertyId: updated.property_id, name: updated.name, property: updated.property_name, variant: updated.variant || "deluxe", sizeSqm: Number(updated.size_sqm || 65), bedrooms: updated.bedrooms, maxTenants: Number(updated.max_tenants || 2), occupiedCount: occ, totalCount: tot, status, monthlyRent: Number(updated.monthly_rent || 0), description: updated.description, longDescription: updated.long_description || updated.description, features: Array.isArray(updated.features) ? updated.features : [], amenities: Array.isArray(updated.amenities) ? updated.amenities : [] });
   });
@@ -7322,20 +7470,30 @@ async function createApp() {
     if (supabaseAdmin && !isSupabaseQuotaRestricted()) {
       if (isDerivedId && derivedPropertyId) {
         await supabaseAdmin.from("unit_types").delete().eq("property_id", derivedPropertyId);
+        await syncPropertyOccupancyInDb(derivedPropertyId, null);
         invalidateFullDatabaseStateCache();
         return res.json({ success: true });
       }
+      const { data: oldUt } = await supabaseAdmin.from("unit_types").select("property_id, property_name").eq("id", utId).maybeSingle();
       const { error } = await supabaseAdmin.from("unit_types").delete().eq("id", utId);
       if (error) {
         return res.status(400).json({ error: error.message });
+      }
+      if (oldUt) {
+        await syncPropertyOccupancyInDb(oldUt.property_id, oldUt.property_name);
       }
       invalidateFullDatabaseStateCache();
       return res.json({ success: true });
     }
     if (isDerivedId && derivedPropertyId) {
       await pg.query(`DELETE FROM public.unit_types WHERE property_id = $1;`, [derivedPropertyId]);
+      await syncPropertyOccupancyInDb(derivedPropertyId, null);
     } else {
+      const oldRes = await pg.query(`SELECT property_id, property_name FROM public.unit_types WHERE id = $1 LIMIT 1;`, [utId]).catch(() => ({ rows: [] }));
       await pg.query(`DELETE FROM public.unit_types WHERE id = $1;`, [utId]);
+      if (oldRes.rows[0]) {
+        await syncPropertyOccupancyInDb(oldRes.rows[0].property_id, oldRes.rows[0].property_name);
+      }
     }
     invalidateFullDatabaseStateCache();
     return res.json({ success: true });
@@ -7405,9 +7563,10 @@ async function createApp() {
       if (!supaUnavailable && propRow2) {
       const payStatus2 = initialPaymentStatus === "Paid" ? "Paid" : "Pending";
       const baseTenantInsertSupa = { property_id: propRow2.id, tenant_ref: "AUTO", full_name: cleanName, phone: String(phone || "Not provided").trim(), email: cleanEmail, dob: dob || formatShortDate(/* @__PURE__ */ new Date()), gender: gender || "Resident", nationality: nationality || "Kenyan", id_number: idNumber || `ID-${Date.now().toString().slice(-6)}`, tier: "Verified Tenant", on_time_streak: "Active Lease", security_deposit: depositNum, vehicle_info: vehicleInfo || "Registered Resident Vehicle", avatar_bg: "#D8F3E5" };
-      const [unitRes, utRes, tenantInsertRes, validConfirmerId] = await Promise.all([
+      const [unitRes, utRes, existingActiveLeasesInUnitRes, tenantInsertRes, validConfirmerId] = await Promise.all([
         supabaseAdmin.from("units").select("*").eq("property_id", propRow2.id).ilike("unit_number", cleanUnitNumber).maybeSingle(),
-        supabaseAdmin.from("unit_types").select("id").eq("property_id", propRow2.id).ilike("name", String(unitType || "Deluxe")).maybeSingle(),
+        supabaseAdmin.from("unit_types").select("*").eq("property_id", propRow2.id).ilike("name", String(unitType || "Deluxe")).maybeSingle(),
+        supabaseAdmin.from("leases").select("id, tenant_id, tenant_ref, is_active").ilike("property_name", propRow2.name).ilike("unit_number", cleanUnitNumber).eq("is_active", true),
         (async () => {
           let resIns = await supabaseAdmin.from("tenants").insert({ ...baseTenantInsertSupa, tenancy_status: "Active", deposit_status: resolvedDepositStatus }).select("*").single();
           if (resIns.error) {
@@ -7422,18 +7581,34 @@ async function createApp() {
         return res.status(400).json({ error: tenantInsertRes.error?.message || "Failed to save tenant record in Supabase." });
       }
       let unitRow = unitRes.data;
-      const matchedUnitType = utRes.data;
+      let matchedUnitType = utRes.data;
+      if (!matchedUnitType) {
+        const { data: fallbackUt } = await supabaseAdmin.from("unit_types").select("*").or(`property_id.eq.${propRow2.id},property_name.ilike.${propRow2.name}`).limit(1).maybeSingle();
+        matchedUnitType = fallbackUt;
+      }
+      const wasUnitAlreadyOccupied =
+        (unitRow && String(unitRow.status || "").toLowerCase() === "occupied" && Array.isArray(existingActiveLeasesInUnitRes.data) && existingActiveLeasesInUnitRes.data.length > 0) ||
+        (Array.isArray(existingActiveLeasesInUnitRes.data) && existingActiveLeasesInUnitRes.data.length > 0);
+      const generatedRef2 = newTenant2.tenant_ref;
       if (unitRow) {
-        const { data: updatedUnit } = await supabaseAdmin.from("units").update({ status: "Occupied", unit_type_id: matchedUnitType?.id || unitRow.unit_type_id || null, unit_type_name: unitType || unitRow.unit_type_name || "Deluxe", monthly_rent: rentNum || unitRow.monthly_rent }).eq("id", unitRow.id).select("*").maybeSingle();
+        const { data: updatedUnit } = await supabaseAdmin.from("units").update({ status: "Occupied", tenant_ref: generatedRef2, unit_type_id: matchedUnitType?.id || unitRow.unit_type_id || null, unit_type_name: unitType || unitRow.unit_type_name || "Deluxe", monthly_rent: rentNum || unitRow.monthly_rent }).eq("id", unitRow.id).select("*").maybeSingle();
         if (updatedUnit) unitRow = updatedUnit;
       } else {
         const floorNum = parseInt(cleanUnitNumber.replace(/\D/g, "").slice(0, 1) || "1", 10) || 1;
-        const { data: insertedUnit, error: unitErr } = await supabaseAdmin.from("units").insert({ property_id: propRow2.id, unit_type_id: matchedUnitType?.id || null, unit_number: cleanUnitNumber, unit_type_name: unitType || "Deluxe", floor_number: floorNum, monthly_rent: rentNum, status: "Occupied" }).select("*").maybeSingle();
+        const { data: insertedUnit, error: unitErr } = await supabaseAdmin.from("units").insert({ property_id: propRow2.id, property_name: propRow2.name, unit_type_id: matchedUnitType?.id || null, unit_number: cleanUnitNumber, unit_type_name: unitType || "Deluxe", floor_number: floorNum, monthly_rent: rentNum, status: "Occupied", tenant_ref: generatedRef2 }).select("*").maybeSingle();
         if (!unitErr && insertedUnit) {
           unitRow = insertedUnit;
         }
       }
-      const generatedRef2 = newTenant2.tenant_ref;
+      if (!wasUnitAlreadyOccupied) {
+        if (matchedUnitType) {
+          const totUt = Math.max(1, Number(matchedUnitType.total_count || 1));
+          const nextUtOcc = Math.min(totUt, Math.max(0, Number(matchedUnitType.occupied_count || 0)) + 1);
+          const nextUtStatus = matchedUnitType.status === "Inactive" ? "Inactive" : nextUtOcc < totUt ? "Available" : "Occupied";
+          await supabaseAdmin.from("unit_types").update({ occupied_count: nextUtOcc, status: nextUtStatus }).eq("id", matchedUnitType.id);
+        }
+        await syncPropertyOccupancyInDb(propRow2.id, propRow2.name);
+      }
       const leaseCode2 = `LS-${generatedRef2.replace("-", "")}-${Date.now().toString().slice(-4)}`;
       const base2 = Math.round(rentNum * 0.88);
       const util2 = Math.round(rentNum * 0.06);
@@ -7473,6 +7648,7 @@ async function createApp() {
       if (payErr) {
         return res.status(400).json({ error: `Tenant & Lease saved (${generatedRef2}), but initial rent invoice failed: ${payErr.message}` });
       }
+      await syncPropertyOccupancyInDb(propRow2.id, propRow2.name);
       const actorName = req.currentUser?.fullName || "ARabella agency System";
       void (async () => {
         try {
@@ -7506,6 +7682,11 @@ async function createApp() {
            RETURNING *;`, [prefix, String(property).trim(), rentNum, req.currentUser?.fullName || "Property Manager"]);
     }
     const propRow = propRes.rows[0];
+    const existingActivePg = await pg.query(
+      `SELECT id FROM public.leases WHERE LOWER(property_name) = LOWER($1) AND LOWER(unit_number) = LOWER($2) AND is_active = TRUE LIMIT 1;`,
+      [propRow.name, cleanUnitNumber]
+    ).catch(() => ({ rows: [] }));
+    const wasPgUnitAlreadyOccupied = existingActivePg.rows.length > 0;
     const tenantInsert = await pg.query(`INSERT INTO public.tenants
           (property_id, property_name, tenant_ref, full_name, phone, email, dob, gender, nationality, id_number, tier, on_time_streak, security_deposit, tenancy_status, deposit_status, vehicle_info, avatar_bg)
          VALUES ($1, $2, 'AUTO', $3, $4, $5, $6, $7, $8, $9, 'Verified Tenant', 'Active Lease', $10, 'Active', $11, $12, '#D8F3E5')
@@ -7543,6 +7724,20 @@ async function createApp() {
             (lease_code, tenant_id, tenant_ref, unit_number, unit_type, property_name, monthly_rent, base_rent, utility_package, maintenance_fee, parking_fee, occupants, lease_duration, lease_start, lease_end, lease_notes, perks, payment_method, is_active)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17::jsonb, $18, TRUE);`, [leaseCode, newTenant.id, generatedRef, cleanUnitNumber, resolvedUnitType, propRow.name, rentNum, base, util, maint, park, occupants || "1 Adult", leaseDuration || "12 Months", startStr, endStr, leaseNotes || "Standard residential lease agreement.", JSON.stringify(["Resident portal access", "Assigned unit mailbox"]), paymentMethod || "M-Pesa / Bank Transfer"]);
     });
+    await pg.query(
+      `UPDATE public.units SET status = 'Occupied', tenant_ref = $1 WHERE (property_id = $2 OR LOWER(property_name) = LOWER($3)) AND LOWER(unit_number) = LOWER($4);`,
+      [generatedRef, propRow.id, propRow.name, cleanUnitNumber]
+    ).catch(() => {});
+    if (!wasPgUnitAlreadyOccupied) {
+      await pg.query(
+        `UPDATE public.unit_types
+         SET occupied_count = LEAST(total_count, COALESCE(occupied_count, 0) + 1),
+             status = CASE WHEN status = 'Inactive' THEN 'Inactive' WHEN LEAST(total_count, COALESCE(occupied_count, 0) + 1) < total_count THEN 'Available' ELSE 'Occupied' END
+         WHERE (property_id = $1 OR LOWER(property_name) = LOWER($2)) AND LOWER(name) = LOWER($3);`,
+        [propRow.id, propRow.name, resolvedUnitType]
+      ).catch(() => {});
+    }
+    await syncPropertyOccupancyInDb(propRow.id, propRow.name);
     const payStatus = initialPaymentStatus === "Paid" ? "Paid" : resolvedDueDate < nairobiTodayPg ? "Overdue" : "Pending";
     const invCodePg = buildAnniversaryInvoiceCode(generatedRef, periodStartPg);
     const payRes = await pg.query(`INSERT INTO public.rent_payments
@@ -8157,6 +8352,11 @@ async function createApp() {
       const finalDepositStatus = resolveStatus(heldAmount);
       const cleanProperty = leaseRow?.property_name || t2.property_name || "Main Property";
       const cleanUnit = leaseRow?.unit_number || t2.unit_number || "Unit 101";
+      const cleanUnitType = leaseRow?.unit_type || t2.unit_type || "Deluxe";
+      const wasAlreadyVacated =
+        String(t2.tenancy_status || "").toLowerCase() === "vacated" ||
+        String(t2.on_time_streak || "").toLowerCase() === "vacated" ||
+        leaseRow?.is_active === false;
 
       const baseRawNotes = String(leaseRow?.lease_notes || "Standard residential lease agreement.").replace(/\[DEPOSIT_SETTLEMENT:[\s\S]*?\]/g, "").trim();
       const settlementMarker = `[DEPOSIT_SETTLEMENT:${JSON.stringify({
@@ -8194,23 +8394,86 @@ async function createApp() {
           .eq("id", leaseRow.id);
       }
 
-      if (leaseRow?.unit_id) {
-        await supabaseAdmin.from("units").update({ status: "Available", tenant_ref: null }).eq("id", leaseRow.unit_id);
-      } else if (t2.property_id && cleanUnit) {
-        await supabaseAdmin
-          .from("units")
-          .update({ status: "Available", tenant_ref: null })
-          .eq("property_id", t2.property_id)
-          .ilike("unit_number", cleanUnit);
-      }
+      // Check if any OTHER active lease/tenant still occupies this exact unit in this property
+      const { data: remainingActiveInUnit } = await supabaseAdmin
+        .from("leases")
+        .select("id, tenant_id, is_active")
+        .ilike("property_name", cleanProperty)
+        .ilike("unit_number", cleanUnit)
+        .eq("is_active", true)
+        .neq("tenant_id", t2.id);
+      const isUnitStillOccupiedByAnother = Array.isArray(remainingActiveInUnit) && remainingActiveInUnit.length > 0;
 
-      if (t2.property_id) {
-        const { data: propRow } = await supabaseAdmin.from("properties").select("id, occupied_units").eq("id", t2.property_id).maybeSingle();
-        if (propRow) {
-          const nextOcc = Math.max(0, Number(propRow.occupied_units || 0) - 1);
-          await supabaseAdmin.from("properties").update({ occupied_units: nextOcc }).eq("id", propRow.id);
+      if (!isUnitStillOccupiedByAnother) {
+        if (leaseRow?.unit_id) {
+          await supabaseAdmin.from("units").update({ status: "Available", tenant_ref: null }).eq("id", leaseRow.unit_id);
+        }
+        if (t2.property_id && cleanUnit) {
+          await supabaseAdmin
+            .from("units")
+            .update({ status: "Available", tenant_ref: null })
+            .eq("property_id", t2.property_id)
+            .ilike("unit_number", cleanUnit);
+        } else if (cleanProperty && cleanUnit) {
+          await supabaseAdmin
+            .from("units")
+            .update({ status: "Available", tenant_ref: null })
+            .ilike("property_name", cleanProperty)
+            .ilike("unit_number", cleanUnit);
         }
       }
+
+      // Only decrement unit_type and property occupied counters if this tenant transitioned from Active -> Vacated and unit is now vacant
+      if (!wasAlreadyVacated && !isUnitStillOccupiedByAnother) {
+        let matchedUt: any = null;
+        if (t2.property_id) {
+          const { data: utByProp } = await supabaseAdmin
+            .from("unit_types")
+            .select("*")
+            .eq("property_id", t2.property_id)
+            .ilike("name", cleanUnitType)
+            .maybeSingle();
+          matchedUt = utByProp;
+          if (!matchedUt) {
+            const { data: firstUt } = await supabaseAdmin
+              .from("unit_types")
+              .select("*")
+              .eq("property_id", t2.property_id)
+              .limit(1)
+              .maybeSingle();
+            matchedUt = firstUt;
+          }
+        }
+        if (!matchedUt && cleanProperty) {
+          const { data: utByName } = await supabaseAdmin
+            .from("unit_types")
+            .select("*")
+            .ilike("property_name", cleanProperty)
+            .ilike("name", cleanUnitType)
+            .maybeSingle();
+          matchedUt = utByName;
+          if (!matchedUt) {
+            const { data: firstUtByName } = await supabaseAdmin
+              .from("unit_types")
+              .select("*")
+              .ilike("property_name", cleanProperty)
+              .limit(1)
+              .maybeSingle();
+            matchedUt = firstUtByName;
+          }
+        }
+        if (matchedUt) {
+          const totUt = Math.max(0, Number(matchedUt.total_count || 0));
+          const nextUtOcc = Math.max(0, Number(matchedUt.occupied_count || 0) - 1);
+          const nextUtStatus = matchedUt.status === "Inactive" || totUt <= 0 ? "Inactive" : nextUtOcc < totUt ? "Available" : "Occupied";
+          await supabaseAdmin
+            .from("unit_types")
+            .update({ occupied_count: nextUtOcc, status: nextUtStatus })
+            .eq("id", matchedUt.id);
+        }
+      }
+
+      await syncPropertyOccupancyInDb(t2.property_id, cleanProperty);
 
       let createdExpense: any = null;
       if (shouldCreateExpense) {
@@ -8263,7 +8526,13 @@ async function createApp() {
       cachedFullDatabaseStateExpiresAt = 0;
       const refreshedState = await fetchFullDatabaseState(true);
       const updatedProfile = refreshedState.tenants.find((item) => item.id === t2.id || item.tenantRef.toUpperCase() === String(t2.tenant_ref).toUpperCase());
-      return res.json({ tenant: updatedProfile, expense: createdExpense });
+      return res.json({
+        tenant: updatedProfile,
+        expense: createdExpense,
+        properties: refreshedState.properties,
+        unitTypes: refreshedState.unitTypes,
+        analytics: refreshedState.analytics,
+      });
       }
     }
 
@@ -8279,6 +8548,11 @@ async function createApp() {
     const leasePg = leasePgRes.rows[0];
     const cleanProperty = leasePg?.property_name || target.property_name || "Main Property";
     const cleanUnit = leasePg?.unit_number || target.unit_number || "Unit 101";
+    const cleanUnitType = leasePg?.unit_type || target.unit_type || "Deluxe";
+    const wasAlreadyVacatedPg =
+      String(target.tenancy_status || "").toLowerCase() === "vacated" ||
+      String(target.on_time_streak || "").toLowerCase() === "vacated" ||
+      leasePg?.is_active === false;
 
     await pg.query(
       `UPDATE public.tenants
@@ -8304,9 +8578,21 @@ async function createApp() {
         await pg.query(`UPDATE public.units SET status = 'Available', tenant_ref = NULL WHERE id = $1;`, [leasePg.unit_id]).catch(() => {});
       }
     }
-    if (target.property_id) {
-      await pg.query(`UPDATE public.properties SET occupied_units = GREATEST(0, COALESCE(occupied_units, 1) - 1) WHERE id = $1;`, [target.property_id]).catch(() => {});
+    await pg.query(
+      `UPDATE public.units SET status = 'Available', tenant_ref = NULL WHERE (property_id = $1 OR LOWER(property_name) = LOWER($2)) AND LOWER(unit_number) = LOWER($3);`,
+      [target.property_id || null, cleanProperty, cleanUnit]
+    ).catch(() => {});
+
+    if (!wasAlreadyVacatedPg) {
+      await pg.query(
+        `UPDATE public.unit_types
+         SET occupied_count = GREATEST(0, COALESCE(occupied_count, 1) - 1),
+             status = CASE WHEN status = 'Inactive' THEN 'Inactive' WHEN GREATEST(0, COALESCE(occupied_count, 1) - 1) < total_count THEN 'Available' ELSE 'Occupied' END
+         WHERE (property_id = $1 OR LOWER(property_name) = LOWER($2)) AND LOWER(name) = LOWER($3);`,
+        [target.property_id || null, cleanProperty, cleanUnitType]
+      ).catch(() => {});
     }
+    await syncPropertyOccupancyInDb(target.property_id, cleanProperty);
 
     let createdExpense: any = null;
     if (shouldCreateExpense) {
@@ -8350,7 +8636,13 @@ async function createApp() {
     cachedFullDatabaseStateExpiresAt = 0;
     const fullState = await fetchFullDatabaseState(true);
     const updated = fullState.tenants.find((item) => item.id === target.id);
-    return res.json({ tenant: updated, expense: createdExpense });
+    return res.json({
+      tenant: updated,
+      expense: createdExpense,
+      properties: fullState.properties,
+      unitTypes: fullState.unitTypes,
+      analytics: fullState.analytics,
+    });
   });
   app.delete("/api/tenants/:id", requireRole(["owner", "property_manager"]), async (req, res) => {
     const paramId = req.params.id;

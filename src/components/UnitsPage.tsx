@@ -268,7 +268,7 @@ export const UnitsPage: React.FC<UnitsPageProps> = ({
     const vacantUnitsCount = Math.max(0, totalUnitsCount - occupiedUnitsCount);
     const occupancyRate =
       totalUnitsCount > 0
-        ? Math.min(100, Math.round((occupiedUnitsCount / totalUnitsCount) * 100))
+        ? Math.min(100, Number(((occupiedUnitsCount / totalUnitsCount) * 100).toFixed(1)))
         : 0;
     const activeTierCount = filteredUnits.filter(
       (u) => getUnitDisplayStatus(u) !== 'Inactive'
@@ -328,6 +328,30 @@ export const UnitsPage: React.FC<UnitsPageProps> = ({
     const nextStatus = unit.status === 'Inactive' ? 'Available' : 'Inactive';
     try {
       await onUpdateUnitType(unit.id, { status: nextStatus });
+    } finally {
+      setStatusUpdatingId(null);
+    }
+  };
+
+  const handleMarkUnitVacant = async (unit: UnitTypeItem) => {
+    const currentOccupied = Math.max(0, Number(unit.occupiedCount || 0));
+    const currentTotal = Math.max(0, Number(unit.totalCount || 0));
+    if (currentOccupied <= 0 || statusUpdatingId === unit.id) return;
+    setOpenMenuId(null);
+    setStatusUpdatingId(unit.id);
+    const nextOccupied = Math.max(0, currentOccupied - 1);
+    const nextStatus =
+      unit.status === 'Inactive'
+        ? 'Inactive'
+        : nextOccupied < currentTotal
+        ? 'Available'
+        : 'Occupied';
+    try {
+      await onUpdateUnitType(unit.id, {
+        occupiedCount: nextOccupied,
+        totalCount: currentTotal,
+        status: nextStatus,
+      });
     } finally {
       setStatusUpdatingId(null);
     }
@@ -907,6 +931,17 @@ export const UnitsPage: React.FC<UnitsPageProps> = ({
                                   <Edit2 className="w-3.5 h-3.5 text-[#5A6762]" />
                                   <span>Edit Unit Type</span>
                                 </button>
+                                {occupiedCount > 0 && (
+                                  <button
+                                    type="button"
+                                    disabled={isUpdatingStatus}
+                                    onClick={() => handleMarkUnitVacant(unit)}
+                                    className="w-full px-3.5 py-2 text-[12px] font-medium text-[#145338] hover:bg-[#EAF4EE] disabled:opacity-50 flex items-center gap-2 cursor-pointer"
+                                  >
+                                    <DoorOpen className="w-3.5 h-3.5 text-[#145338]" />
+                                    <span>Mark 1 Unit Vacant</span>
+                                  </button>
+                                )}
                                 <button
                                   type="button"
                                   onClick={() => handleToggleInactive(unit)}
@@ -1052,6 +1087,18 @@ export const UnitsPage: React.FC<UnitsPageProps> = ({
                         <Eye className="w-3.5 h-3.5 text-[#145338]" />
                         <span>View</span>
                       </button>
+                      {occupiedCount > 0 && (
+                        <button
+                          type="button"
+                          disabled={statusUpdatingId === unit.id}
+                          onClick={() => handleMarkUnitVacant(unit)}
+                          title="Mark 1 Unit Vacant"
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#EAF4EE] text-[#145338] disabled:opacity-50 text-[11.5px] font-bold cursor-pointer"
+                        >
+                          <DoorOpen className="w-3.5 h-3.5" />
+                          <span>Mark Vacant</span>
+                        </button>
+                      )}
                       <button
                         type="button"
                         onClick={() => openEditModal(unit)}
