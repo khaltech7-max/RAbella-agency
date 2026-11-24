@@ -328,7 +328,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
         {/* LEFT / MAIN 9 COLUMNS */}
         <div className="xl:col-span-9 space-y-4">
           {/* ROW 1: FINANCIAL ACCOUNTING BREAKDOWN — REVENUE VS DEPOSIT LIABILITY SEPARATION */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
             {/* Card 1: Total Revenue (Earned Income Only = Rent Collected + Other Income) */}
             <div
               onClick={() => onNavigate('expenses')}
@@ -366,44 +366,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
               </div>
             </div>
 
-            {/* Card 2: Rent Collected */}
-            <div
-              onClick={() => onNavigate('payments')}
-              className="rms-card-hover rounded-2xl bg-white p-4 flex flex-col justify-between cursor-pointer"
-            >
-              <div className="flex items-start justify-between">
-                <div>
-                  <p className="text-[11.5px] font-medium text-[#76827D]">
-                    Rent Collected
-                  </p>
-                  <p className="text-[22px] font-extrabold text-[#17231E] mt-1 tracking-tight tabular-nums">
-                    <AnimatedCounter
-                      value={rentCollectedAmount}
-                      prefix="KSh "
-                    />
-                  </p>
-                </div>
-                <div className="w-9 h-9 rounded-xl bg-[#D8F3E5] flex items-center justify-center text-[#17231E]">
-                  <LogIn className="w-4 h-4" />
-                </div>
-              </div>
-              <div className="mt-3.5 flex items-center justify-between gap-2">
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-[#D8F3E5] text-[#145338] text-[10.5px] font-bold tabular-nums">
-                  <TrendingUp className="w-3 h-3" />
-                  <AnimatedCounter
-                    value={analytics.collectionRatePct}
-                    decimals={Number.isInteger(analytics.collectionRatePct) ? 0 : 1}
-                    suffix="%"
-                  />
-                </span>
-                <span className="text-[11px] text-[#88948F] tabular-nums">
-                  {analytics.rentCollectedCount} paid rent{' '}
-                  {analytics.rentCollectedCount === 1 ? 'invoice' : 'invoices'}
-                </span>
-              </div>
-            </div>
-
-            {/* Card 3: Other Income (incl. Deposit Deductions & Fees) */}
+            {/* Card 2: Other Income (incl. Deposit Deductions & Fees) */}
             <div
               onClick={() => onNavigate('expenses')}
               className="rms-card-hover rounded-2xl bg-white p-4 flex flex-col justify-between cursor-pointer"
@@ -434,7 +397,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
               </div>
             </div>
 
-            {/* Card 4: Deposits Held (Liability — Not Revenue) */}
+            {/* Card 3: Deposits Held (Liability — Not Revenue) */}
             <div
               onClick={() => onNavigate('tenants')}
               className="rms-card-hover rounded-2xl bg-white p-4 flex flex-col justify-between cursor-pointer border border-[#BAE6FD]/60"
@@ -470,38 +433,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
               </div>
             </div>
 
-            {/* Card 5: Total Money Received (All Actual Incoming Payments: Rent + Deposits + Other) */}
-            <div
-              onClick={() => onNavigate('payments')}
-              className="rms-card-hover rounded-2xl bg-white p-4 flex flex-col justify-between cursor-pointer"
-            >
-              <div className="flex items-start justify-between">
-                <div>
-                  <p className="text-[11.5px] font-medium text-[#76827D]">
-                    Total Money Received
-                  </p>
-                  <p className="text-[22px] font-extrabold text-[#17231E] mt-1 tracking-tight tabular-nums">
-                    <AnimatedCounter
-                      value={totalMoneyReceivedAmount}
-                      prefix="KSh "
-                    />
-                  </p>
-                </div>
-                <div className="w-9 h-9 rounded-xl bg-[#D5F267] flex items-center justify-center text-[#17231E]">
-                  <Wallet className="w-4 h-4" />
-                </div>
-              </div>
-              <div className="mt-3.5 flex items-center justify-between gap-2 text-[11px]">
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-[#EEF4F1] text-[#145338] text-[10.5px] font-bold">
-                  Gross Inflow
-                </span>
-                <span className="text-[#88948F] truncate">
-                  Rent + Deposits + Other
-                </span>
-              </div>
-            </div>
-
-            {/* Card 6: Outstanding Rent (Unpaid Pending + Overdue Rent Only) */}
+            {/* Card 4: Outstanding Rent (Unpaid Pending + Overdue Rent Only) */}
             <div
               onClick={() => onNavigate('payments')}
               className="rms-card-hover rounded-2xl bg-white p-4 flex flex-col justify-between cursor-pointer"
