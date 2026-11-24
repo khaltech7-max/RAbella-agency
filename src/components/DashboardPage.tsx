@@ -25,6 +25,10 @@ import {
   Trash2,
   Building2,
   MessageSquare,
+  ShieldAlert,
+  Wallet,
+  Landmark,
+  AlertCircle,
   X,
 } from 'lucide-react';
 import {
@@ -51,7 +55,14 @@ import {
   UserSession,
 } from '../data/rentalData';
 import { useThemePalette } from '../lib/useThemeState';
-import { classifyPaymentTransaction, isDepositTransaction } from '../lib/paymentClassification';
+import {
+  classifyPaymentTransaction,
+  getCollectedPaymentAmount,
+  getOutstandingPaymentAmount,
+  isDepositTransaction,
+  isOtherIncomeTransaction,
+  isRentTransaction,
+} from '../lib/paymentClassification';
 
 interface DashboardPageProps {
   currentUser?: UserSession;
@@ -224,6 +235,50 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
       ? Number(((analytics.pendingRentCount / totalPaymentsCount) * 100).toFixed(1))
       : 0;
 
+  // Compute live fallback financial metrics if analytics object comes from an older payload
+  const fallbackRentCollected = payments
+    .filter((p) => isRentTransaction(p))
+    .reduce((s, p) => s + getCollectedPaymentAmount(p), 0);
+  const fallbackOtherIncome = payments
+    .filter((p) => isOtherIncomeTransaction(p))
+    .reduce((s, p) => s + getCollectedPaymentAmount(p), 0);
+  const fallbackDepositsReceived = payments
+    .filter((p) => isDepositTransaction(p))
+    .reduce((s, p) => s + getCollectedPaymentAmount(p), 0);
+  const fallbackOutstandingRent = payments
+    .filter((p) => isRentTransaction(p))
+    .reduce((s, p) => s + getOutstandingPaymentAmount(p), 0);
+
+  const rentCollectedAmount =
+    analytics.rentCollected !== undefined
+      ? analytics.rentCollected
+      : analytics.totalRentRevenue || fallbackRentCollected;
+  const otherIncomeAmount =
+    analytics.otherIncome !== undefined ? analytics.otherIncome : fallbackOtherIncome;
+  const depositDeductionsAmount = analytics.depositDeductions || 0;
+  const totalRevenueAmount =
+    analytics.totalRevenue !== undefined
+      ? analytics.totalRevenue
+      : rentCollectedAmount + otherIncomeAmount;
+  const depositsHeldAmount =
+    analytics.depositsHeld !== undefined
+      ? analytics.depositsHeld
+      : fallbackDepositsReceived;
+  const depositsRefundedAmount = analytics.depositsRefunded || 0;
+  const depositsHeldCount = analytics.depositsHeldCount || 0;
+  const totalMoneyReceivedAmount =
+    analytics.totalMoneyReceived !== undefined
+      ? analytics.totalMoneyReceived
+      : rentCollectedAmount + (otherIncomeAmount - depositDeductionsAmount) + (analytics.depositsReceived ?? depositsHeldAmount);
+  const outstandingRentAmount =
+    analytics.outstandingRent !== undefined
+      ? analytics.outstandingRent
+      : fallbackOutstandingRent;
+  const overdueRentCount =
+    analytics.overdueRentCount !== undefined
+      ? analytics.overdueRentCount
+      : payments.filter((p) => isRentTransaction(p) && p.status === 'Overdue').length;
+
   const rating = analytics.ratingSummary;
 
   const getActivityIcon = (type: ActivityLogRecord['activityType']) => {
@@ -272,134 +327,212 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-4">
         {/* LEFT / MAIN 9 COLUMNS */}
         <div className="xl:col-span-9 space-y-4">
-          {/* ROW 1: 4 STAT CARDS COMPUTED 100% FROM LIVE POSTGRESQL DATABASE */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
-          {/* Card 1: Mint-green card — Active Leases */}
-          <div
-            onClick={() => onNavigate('tenants')}
-            className="rms-card-hover rounded-2xl bg-[#D8F3E5] p-4 flex flex-col justify-between cursor-pointer"
-          >
-            <div className="flex items-start justify-between">
-              <div>
-                <p className="text-[11.5px] font-medium text-[#4A6358]">
-                  Active Leases
-                </p>
-                <p className="text-[24px] font-extrabold text-[#17231E] mt-1 tracking-tight tabular-nums">
-                  <AnimatedCounter value={analytics.activeLeasesCount} />
-                </p>
+          {/* ROW 1: FINANCIAL ACCOUNTING BREAKDOWN — REVENUE VS DEPOSIT LIABILITY SEPARATION */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5">
+            {/* Card 1: Total Revenue (Earned Income Only = Rent Collected + Other Income) */}
+            <div
+              onClick={() => onNavigate('expenses')}
+              className="rms-card-hover rounded-2xl bg-[#D8F3E5] p-4 flex flex-col justify-between cursor-pointer"
+            >
+              <div className="flex items-start justify-between">
+                <div>
+                  <div className="flex items-center gap-1.5">
+                    <p className="text-[11.5px] font-semibold text-[#315243]">
+                      Total Revenue
+                    </p>
+                    <span className="px-1.5 py-0.5 rounded bg-white/80 text-[#145338] text-[9.5px] font-bold uppercase tracking-wider">
+                      Earned Only
+                    </span>
+                  </div>
+                  <p className="text-[22px] font-extrabold text-[#17231E] mt-1 tracking-tight tabular-nums">
+                    <AnimatedCounter
+                      value={totalRevenueAmount}
+                      prefix="KSh "
+                    />
+                  </p>
+                </div>
+                <div className="w-9 h-9 rounded-xl bg-white dark:bg-[#242424] border border-transparent dark:border-white/10 flex items-center justify-center text-[#145338] dark:text-[var(--rms-soft-ink)] shadow-2xs">
+                  <CircleDollarSign className="w-4 h-4" />
+                </div>
               </div>
-              <div className="w-9 h-9 rounded-xl bg-white dark:bg-[#242424] border border-transparent dark:border-white/10 flex items-center justify-center text-[#145338] dark:text-[var(--rms-soft-ink)] shadow-2xs">
-                <FileCheck2 className="w-4 h-4" />
+              <div className="mt-3.5 flex items-center justify-between gap-2 text-[11px]">
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-white dark:bg-[#242424] text-[#145338] text-[10.5px] font-bold tabular-nums">
+                  <TrendingUp className="w-3 h-3" />
+                  NOI: KSh {Number(analytics.netBalance || 0).toLocaleString()}
+                </span>
+                <span className="text-[#4A6358] font-medium truncate">
+                  Excludes deposits held
+                </span>
               </div>
             </div>
-            <div className="mt-4 flex items-center gap-2">
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-white dark:bg-[#242424] border border-transparent dark:border-white/10 text-[#145338] dark:text-[var(--rms-soft-ink)] text-[10.5px] font-bold tabular-nums">
-                <TrendingUp className="w-3 h-3" />
-                <AnimatedCounter
-                  value={analytics.occupancyRatePct}
-                  decimals={Number.isInteger(analytics.occupancyRatePct) ? 0 : 1}
-                  suffix="%"
-                />
-              </span>
-              <span className="text-[11px] text-[#5B7268] dark:text-[#A6ACA8]">occupancy rate</span>
-            </div>
-          </div>
 
-          {/* Card 2: White card — Rent Collected */}
-          <div
-            onClick={() => onNavigate('payments')}
-            className="rms-card-hover rounded-2xl bg-white p-4 flex flex-col justify-between cursor-pointer"
-          >
-            <div className="flex items-start justify-between">
-              <div>
-                <p className="text-[11.5px] font-medium text-[#76827D]">
-                  Rent Collected
-                </p>
-                <p className="text-[24px] font-extrabold text-[#17231E] mt-1 tracking-tight tabular-nums">
-                  <AnimatedCounter value={analytics.rentCollectedCount} />
-                </p>
+            {/* Card 2: Rent Collected */}
+            <div
+              onClick={() => onNavigate('payments')}
+              className="rms-card-hover rounded-2xl bg-white p-4 flex flex-col justify-between cursor-pointer"
+            >
+              <div className="flex items-start justify-between">
+                <div>
+                  <p className="text-[11.5px] font-medium text-[#76827D]">
+                    Rent Collected
+                  </p>
+                  <p className="text-[22px] font-extrabold text-[#17231E] mt-1 tracking-tight tabular-nums">
+                    <AnimatedCounter
+                      value={rentCollectedAmount}
+                      prefix="KSh "
+                    />
+                  </p>
+                </div>
+                <div className="w-9 h-9 rounded-xl bg-[#D8F3E5] flex items-center justify-center text-[#17231E]">
+                  <LogIn className="w-4 h-4" />
+                </div>
               </div>
-              <div className="w-9 h-9 rounded-xl bg-[#D8F3E5] flex items-center justify-center text-[#17231E]">
-                <LogIn className="w-4 h-4" />
-              </div>
-            </div>
-            <div className="mt-4 flex items-center gap-2">
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-[#D8F3E5] text-[#145338] text-[10.5px] font-bold tabular-nums">
-                <TrendingUp className="w-3 h-3" />
-                <AnimatedCounter
-                  value={analytics.collectionRatePct}
-                  decimals={Number.isInteger(analytics.collectionRatePct) ? 0 : 1}
-                  suffix="%"
-                />
-              </span>
-              <span className="text-[11px] text-[#88948F]">paid invoices</span>
-            </div>
-          </div>
-
-          {/* Card 3: White card — Pending Rent */}
-          <div
-            onClick={() => onNavigate('payments')}
-            className="rms-card-hover rounded-2xl bg-white p-4 flex flex-col justify-between cursor-pointer"
-          >
-            <div className="flex items-start justify-between">
-              <div>
-                <p className="text-[11.5px] font-medium text-[#76827D]">
-                  Pending Rent
-                </p>
-                <p className="text-[24px] font-extrabold text-[#17231E] mt-1 tracking-tight tabular-nums">
-                  <AnimatedCounter value={analytics.pendingRentCount} />
-                </p>
-              </div>
-              <div className="w-9 h-9 rounded-xl bg-[#D8F3E5] flex items-center justify-center text-[#17231E]">
-                <Clock className="w-4 h-4" />
-              </div>
-            </div>
-            <div className="mt-4 flex items-center gap-2">
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-[#FDE6E6] text-[#B91C1C] text-[10.5px] font-bold tabular-nums">
-                <TrendingDown className="w-3 h-3" />
-                <AnimatedCounter
-                  value={pendingRatePct}
-                  decimals={Number.isInteger(pendingRatePct) ? 0 : 1}
-                  suffix="%"
-                />
-              </span>
-              <span className="text-[11px] text-[#88948F]">awaiting payment</span>
-            </div>
-          </div>
-
-          {/* Card 4: White card — Total Revenue */}
-          <div
-            onClick={() => onNavigate('expenses')}
-            className="rms-card-hover rounded-2xl bg-white p-4 flex flex-col justify-between cursor-pointer"
-          >
-            <div className="flex items-start justify-between">
-              <div>
-                <p className="text-[11.5px] font-medium text-[#76827D]">
-                  Total Revenue
-                </p>
-                <p className="text-[22px] font-extrabold text-[#17231E] mt-1 tracking-tight tabular-nums">
+              <div className="mt-3.5 flex items-center justify-between gap-2">
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-[#D8F3E5] text-[#145338] text-[10.5px] font-bold tabular-nums">
+                  <TrendingUp className="w-3 h-3" />
                   <AnimatedCounter
-                    value={analytics.totalRentRevenue}
-                    prefix="KSh "
+                    value={analytics.collectionRatePct}
+                    decimals={Number.isInteger(analytics.collectionRatePct) ? 0 : 1}
+                    suffix="%"
                   />
-                </p>
-              </div>
-              <div className="w-9 h-9 rounded-xl bg-[#D8F3E5] flex items-center justify-center text-[#17231E]">
-                <CircleDollarSign className="w-4 h-4" />
+                </span>
+                <span className="text-[11px] text-[#88948F] tabular-nums">
+                  {analytics.rentCollectedCount} paid rent{' '}
+                  {analytics.rentCollectedCount === 1 ? 'invoice' : 'invoices'}
+                </span>
               </div>
             </div>
-            <div className="mt-4 flex items-center gap-2">
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-[#D8F3E5] text-[#145338] text-[10.5px] font-bold tabular-nums">
-                <TrendingUp className="w-3 h-3" />
-                <AnimatedCounter
-                  value={analytics.netBalance}
-                  prefix="KSh "
-                />
-              </span>
-              <span className="text-[11px] text-[#88948F]">net balance</span>
+
+            {/* Card 3: Other Income (incl. Deposit Deductions & Fees) */}
+            <div
+              onClick={() => onNavigate('expenses')}
+              className="rms-card-hover rounded-2xl bg-white p-4 flex flex-col justify-between cursor-pointer"
+            >
+              <div className="flex items-start justify-between">
+                <div>
+                  <p className="text-[11.5px] font-medium text-[#76827D]">
+                    Other Income
+                  </p>
+                  <p className="text-[22px] font-extrabold text-[#17231E] mt-1 tracking-tight tabular-nums">
+                    <AnimatedCounter
+                      value={otherIncomeAmount}
+                      prefix="KSh "
+                    />
+                  </p>
+                </div>
+                <div className="w-9 h-9 rounded-xl bg-[#EAF6BE] flex items-center justify-center text-[#354B14]">
+                  <Sparkles className="w-4 h-4" />
+                </div>
+              </div>
+              <div className="mt-3.5 flex items-center justify-between gap-2 text-[11px]">
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-[#EAF6BE] text-[#354B14] text-[10.5px] font-bold tabular-nums">
+                  Deductions: KSh {Number(depositDeductionsAmount).toLocaleString()}
+                </span>
+                <span className="text-[#88948F] truncate">
+                  Fees & retained deposits
+                </span>
+              </div>
+            </div>
+
+            {/* Card 4: Deposits Held (Liability — Not Revenue) */}
+            <div
+              onClick={() => onNavigate('tenants')}
+              className="rms-card-hover rounded-2xl bg-white p-4 flex flex-col justify-between cursor-pointer border border-[#BAE6FD]/60"
+            >
+              <div className="flex items-start justify-between">
+                <div>
+                  <div className="flex items-center gap-1.5">
+                    <p className="text-[11.5px] font-medium text-[#76827D]">
+                      Deposits Held
+                    </p>
+                    <span className="px-1.5 py-0.5 rounded bg-[#E0F2FE] text-[#0369A1] text-[9.5px] font-bold uppercase tracking-wider">
+                      Liability
+                    </span>
+                  </div>
+                  <p className="text-[22px] font-extrabold text-[#17231E] mt-1 tracking-tight tabular-nums">
+                    <AnimatedCounter
+                      value={depositsHeldAmount}
+                      prefix="KSh "
+                    />
+                  </p>
+                </div>
+                <div className="w-9 h-9 rounded-xl bg-[#E0F2FE] flex items-center justify-center text-[#0369A1]">
+                  <Landmark className="w-4 h-4" />
+                </div>
+              </div>
+              <div className="mt-3.5 flex items-center justify-between gap-2 text-[11px]">
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-[#E0F2FE] text-[#0369A1] text-[10.5px] font-bold tabular-nums">
+                  {depositsHeldCount} active {depositsHeldCount === 1 ? 'escrow' : 'escrows'}
+                </span>
+                <span className="text-[#88948F] tabular-nums truncate">
+                  Refunded: KSh {Number(depositsRefundedAmount).toLocaleString()}
+                </span>
+              </div>
+            </div>
+
+            {/* Card 5: Total Money Received (All Actual Incoming Payments: Rent + Deposits + Other) */}
+            <div
+              onClick={() => onNavigate('payments')}
+              className="rms-card-hover rounded-2xl bg-white p-4 flex flex-col justify-between cursor-pointer"
+            >
+              <div className="flex items-start justify-between">
+                <div>
+                  <p className="text-[11.5px] font-medium text-[#76827D]">
+                    Total Money Received
+                  </p>
+                  <p className="text-[22px] font-extrabold text-[#17231E] mt-1 tracking-tight tabular-nums">
+                    <AnimatedCounter
+                      value={totalMoneyReceivedAmount}
+                      prefix="KSh "
+                    />
+                  </p>
+                </div>
+                <div className="w-9 h-9 rounded-xl bg-[#D5F267] flex items-center justify-center text-[#17231E]">
+                  <Wallet className="w-4 h-4" />
+                </div>
+              </div>
+              <div className="mt-3.5 flex items-center justify-between gap-2 text-[11px]">
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-[#EEF4F1] text-[#145338] text-[10.5px] font-bold">
+                  Gross Inflow
+                </span>
+                <span className="text-[#88948F] truncate">
+                  Rent + Deposits + Other
+                </span>
+              </div>
+            </div>
+
+            {/* Card 6: Outstanding Rent (Unpaid Pending + Overdue Rent Only) */}
+            <div
+              onClick={() => onNavigate('payments')}
+              className="rms-card-hover rounded-2xl bg-white p-4 flex flex-col justify-between cursor-pointer"
+            >
+              <div className="flex items-start justify-between">
+                <div>
+                  <p className="text-[11.5px] font-medium text-[#76827D]">
+                    Outstanding Rent
+                  </p>
+                  <p className="text-[22px] font-extrabold text-[#17231E] mt-1 tracking-tight tabular-nums">
+                    <AnimatedCounter
+                      value={outstandingRentAmount}
+                      prefix="KSh "
+                    />
+                  </p>
+                </div>
+                <div className="w-9 h-9 rounded-xl bg-[#FDE6E6] flex items-center justify-center text-[#B91C1C]">
+                  <Clock className="w-4 h-4" />
+                </div>
+              </div>
+              <div className="mt-3.5 flex items-center justify-between gap-2 text-[11px]">
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-[#FDE6E6] text-[#B91C1C] text-[10.5px] font-bold tabular-nums">
+                  <TrendingDown className="w-3 h-3" />
+                  {analytics.pendingRentCount} unpaid ({overdueRentCount} overdue)
+                </span>
+                <span className="text-[#88948F] tabular-nums">
+                  {analytics.activeLeasesCount} active leases
+                </span>
+              </div>
             </div>
           </div>
-        </div>
 
         {/* ROW 2: UNIT AVAILABILITY + RENT REVENUE AREA CHART */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
@@ -525,7 +658,14 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
           {/* Revenue Area Chart Card */}
           <div className="rms-card-hover lg:col-span-7 bg-white rounded-2xl p-5">
             <div className="flex items-center justify-between mb-3">
-              <h2 className="text-[15px] font-bold text-[#17231E]">Revenue</h2>
+              <div>
+                <h2 className="text-[15px] font-bold text-[#17231E]">
+                  Earned Revenue Trend
+                </h2>
+                <p className="text-[11px] text-[#7A8681]">
+                  Rent Collected + Other Earned Income (excludes Security Deposits Held)
+                </p>
+              </div>
               <button
                 onClick={() =>
                   setRevenueRange(revenueRange === '6m' ? '12m' : '6m')
@@ -540,7 +680,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
             </div>
 
             <div className="relative h-[175px] w-full">
-              {analytics.totalRentRevenue > 0 && (
+              {totalRevenueAmount > 0 && (
                 <motion.div
                   initial={{ opacity: 0, y: 6 }}
                   animate={{ opacity: 1, y: 0 }}
@@ -559,11 +699,11 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                       className="text-[9.5px] font-medium leading-none"
                       style={{ color: theme.calloutLabel }}
                     >
-                      Confirmed Revenue
+                      Earned Revenue (Excl. Deposits)
                     </p>
                     <p className="text-[12px] font-extrabold tabular-nums mt-0.5">
                       <AnimatedCounter
-                        value={analytics.totalRentRevenue}
+                        value={totalRevenueAmount}
                         prefix="KSh "
                       />
                     </p>
@@ -636,7 +776,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                       labelStyle={{ color: theme.tooltipMuted }}
                       formatter={(value: any) => [
                         `KSh ${Number(value || 0).toLocaleString()}`,
-                        'Rent Revenue',
+                        'Earned Revenue',
                       ]}
                     />
                     <Area
@@ -1034,15 +1174,18 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                           {(() => {
                             const txType = classifyPaymentTransaction(row);
                             const isDeposit = txType === 'Security Deposit';
+                            const isOther = txType === 'Other Income';
                             return (
                               <span
                                 className={`inline-block px-2 py-0.5 rounded-md text-[10.5px] font-bold ${
                                   isDeposit
                                     ? 'bg-[#E0F2FE] text-[#0369A1]'
+                                    : isOther
+                                    ? 'bg-[#EAF6BE] text-[#354B14]'
                                     : 'bg-[#EAF4EE] text-[#145338]'
                                 }`}
                               >
-                                {txType}
+                                {isDeposit ? 'Security Deposit (Liability)' : txType}
                               </span>
                             );
                           })()}

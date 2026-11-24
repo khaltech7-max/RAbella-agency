@@ -16,6 +16,11 @@ import {
   X,
   Check,
   Trash2,
+  Landmark,
+  Wallet,
+  Building2,
+  Sparkles,
+  Clock,
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -112,7 +117,27 @@ export const ExpensesPage: React.FC<ExpensesPageProps> = ({
       ? analytics.expenseBreakdown
       : analytics.incomeBreakdown;
 
-  const totalIncomeVal = analytics.totalIncome ?? (analytics.netBalance + analytics.totalExpenses);
+  const rentCollectedVal =
+    analytics.rentCollected !== undefined
+      ? analytics.rentCollected
+      : analytics.totalRentRevenue || 0;
+  const otherIncomeVal = analytics.otherIncome || 0;
+  const depositDeductionsVal = analytics.depositDeductions || 0;
+  const totalRevenueVal =
+    analytics.totalRevenue !== undefined
+      ? analytics.totalRevenue
+      : analytics.totalIncome ?? rentCollectedVal + otherIncomeVal;
+  const depositsHeldVal = analytics.depositsHeld || 0;
+  const depositsReceivedVal = analytics.depositsReceived ?? depositsHeldVal;
+  const depositsRefundedVal = analytics.depositsRefunded || 0;
+  const depositsHeldCount = analytics.depositsHeldCount || 0;
+  const totalMoneyReceivedVal =
+    analytics.totalMoneyReceived !== undefined
+      ? analytics.totalMoneyReceived
+      : rentCollectedVal + (otherIncomeVal - depositDeductionsVal) + depositsReceivedVal;
+  const outstandingRentVal = analytics.outstandingRent || 0;
+  const propertyFinancials = analytics.propertyFinancials || [];
+  const totalIncomeVal = totalRevenueVal;
 
   const handleDownload = (tx: ExpenseTransaction) => {
     setDownloadedId(tx.id);
@@ -172,92 +197,200 @@ export const ExpensesPage: React.FC<ExpensesPageProps> = ({
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-4 items-stretch">
         {/* Left 8 Columns */}
         <div className="xl:col-span-8 flex flex-col gap-4">
-          {/* 3 Summary Stat Cards computed from live database records */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            {/* Total Balance */}
-            <div className="rms-card-hover bg-white rounded-2xl p-4 flex flex-col justify-between">
+          {/* Financial Accounting & Deposit Liability Separation Summary Cards */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5">
+            {/* 1. Total Earned Revenue */}
+            <div className="rms-card-hover bg-[#D8F3E5] rounded-2xl p-4 flex flex-col justify-between">
               <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2.5">
-                  <span className="w-8 h-8 rounded-xl bg-[#D8F3E5] flex items-center justify-center text-[#145338]">
+                <div className="flex items-center gap-2">
+                  <span className="w-8 h-8 rounded-xl bg-white flex items-center justify-center text-[#145338]">
                     <CircleDollarSign className="w-4 h-4" />
                   </span>
-                  <span className="text-[12px] font-medium text-[#6E7A75]">
-                    Total Balance
-                  </span>
+                  <div>
+                    <span className="text-[12px] font-bold text-[#17231E] block leading-tight">
+                      Total Revenue
+                    </span>
+                    <span className="text-[10px] font-semibold text-[#315243]">
+                      Rent + Other Income Only
+                    </span>
+                  </div>
                 </div>
-                <button className="text-[#88948F] hover:text-[#17231E]">
-                  <MoreHorizontal className="w-4 h-4" />
-                </button>
+                <span className="px-2 py-0.5 rounded-md bg-white/80 text-[#145338] text-[9.5px] font-bold uppercase">
+                  Earned
+                </span>
               </div>
 
-              <div className="mt-4 flex items-end justify-between">
-                <p className="text-[22px] font-extrabold text-[#17231E] tracking-tight tabular-nums">
-                  <AnimatedCounter value={analytics.netBalance} prefix="KSh " />
+              <div className="mt-3.5 flex items-end justify-between">
+                <p className="text-[21px] font-extrabold text-[#17231E] tracking-tight tabular-nums">
+                  <AnimatedCounter value={totalRevenueVal} prefix="KSh " />
                 </p>
                 <div className="text-right">
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-[#E4F69B] text-[#283B0B] text-[10.5px] font-bold tabular-nums">
-                    <TrendingUp className="w-3 h-3" />
-                    Net NOI
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-white text-[#145338] text-[10.5px] font-bold tabular-nums">
+                    NOI: KSh {Number(analytics.netBalance || 0).toLocaleString()}
                   </span>
-                  <p className="text-[10px] text-[#88948F] mt-0.5">live DB balance</p>
+                  <p className="text-[10px] text-[#4A6358] mt-0.5">
+                    Exp: KSh {Number(analytics.totalExpenses || 0).toLocaleString()}
+                  </p>
                 </div>
               </div>
             </div>
 
-            {/* Total Income */}
+            {/* 2. Rent Collected */}
             <div className="rms-card-hover bg-white rounded-2xl p-4 flex flex-col justify-between">
               <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2.5">
+                <div className="flex items-center gap-2">
                   <span className="w-8 h-8 rounded-xl bg-[#D8F3E5] flex items-center justify-center text-[#145338]">
-                    <CircleDollarSign className="w-4 h-4" />
+                    <TrendingUp className="w-4 h-4" />
                   </span>
-                  <span className="text-[12px] font-medium text-[#6E7A75]">
-                    Total Income
-                  </span>
+                  <div>
+                    <span className="text-[12px] font-bold text-[#17231E] block leading-tight">
+                      Rent Collected
+                    </span>
+                    <span className="text-[10px] text-[#6E7A75]">
+                      Confirmed rental payments
+                    </span>
+                  </div>
                 </div>
-                <button className="text-[#88948F] hover:text-[#17231E]">
-                  <MoreHorizontal className="w-4 h-4" />
-                </button>
               </div>
 
-              <div className="mt-4 flex items-end justify-between">
-                <p className="text-[22px] font-extrabold text-[#17231E] tracking-tight tabular-nums">
-                  <AnimatedCounter value={totalIncomeVal} prefix="KSh " />
+              <div className="mt-3.5 flex items-end justify-between">
+                <p className="text-[21px] font-extrabold text-[#17231E] tracking-tight tabular-nums">
+                  <AnimatedCounter value={rentCollectedVal} prefix="KSh " />
                 </p>
                 <div className="text-right">
                   <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-[#D8F3E5] text-[#145338] text-[10.5px] font-bold tabular-nums">
                     <AnimatedCounter value={analytics.rentCollectedCount} suffix=" Paid" />
                   </span>
-                  <p className="text-[10px] text-[#88948F] mt-0.5">verified rent</p>
+                  <p className="text-[10px] text-[#88948F] mt-0.5">rental invoices</p>
                 </div>
               </div>
             </div>
 
-            {/* Total Expenses */}
+            {/* 3. Other Income (Fees + Retained Deposit Deductions) */}
             <div className="rms-card-hover bg-white rounded-2xl p-4 flex flex-col justify-between">
               <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2.5">
-                  <span className="w-8 h-8 rounded-xl bg-[#D8F3E5] flex items-center justify-center text-[#145338]">
-                    <CircleDollarSign className="w-4 h-4" />
+                <div className="flex items-center gap-2">
+                  <span className="w-8 h-8 rounded-xl bg-[#EAF6BE] flex items-center justify-center text-[#354B14]">
+                    <Sparkles className="w-4 h-4" />
                   </span>
-                  <span className="text-[12px] font-medium text-[#6E7A75]">
-                    Total Expenses
-                  </span>
+                  <div>
+                    <span className="text-[12px] font-bold text-[#17231E] block leading-tight">
+                      Other Income
+                    </span>
+                    <span className="text-[10px] text-[#6E7A75]">
+                      Fees & deposit deductions
+                    </span>
+                  </div>
                 </div>
-                <button className="text-[#88948F] hover:text-[#17231E]">
-                  <MoreHorizontal className="w-4 h-4" />
-                </button>
               </div>
 
-              <div className="mt-4 flex items-end justify-between">
-                <p className="text-[22px] font-extrabold text-[#17231E] tracking-tight tabular-nums">
-                  <AnimatedCounter value={analytics.totalExpenses} prefix="KSh " />
+              <div className="mt-3.5 flex items-end justify-between">
+                <p className="text-[21px] font-extrabold text-[#17231E] tracking-tight tabular-nums">
+                  <AnimatedCounter value={otherIncomeVal} prefix="KSh " />
                 </p>
                 <div className="text-right">
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-[#E4F69B] text-[#283B0B] text-[10.5px] font-bold tabular-nums">
-                    <AnimatedCounter value={transactions.length} suffix=" Vouchers" />
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-[#EAF6BE] text-[#354B14] text-[10.5px] font-bold tabular-nums">
+                    Deductions: KSh {Number(depositDeductionsVal).toLocaleString()}
                   </span>
-                  <p className="text-[10px] text-[#88948F] mt-0.5">in database</p>
+                  <p className="text-[10px] text-[#88948F] mt-0.5">transferred to revenue</p>
+                </div>
+              </div>
+            </div>
+
+            {/* 4. Deposits Held (Liability — Not Revenue) */}
+            <div className="rms-card-hover bg-white rounded-2xl p-4 flex flex-col justify-between border border-[#BAE6FD]/60">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="w-8 h-8 rounded-xl bg-[#E0F2FE] flex items-center justify-center text-[#0369A1]">
+                    <Landmark className="w-4 h-4" />
+                  </span>
+                  <div>
+                    <span className="text-[12px] font-bold text-[#17231E] block leading-tight">
+                      Deposits Held
+                    </span>
+                    <span className="text-[10px] text-[#0369A1] font-semibold">
+                      Tenant Escrow Liability
+                    </span>
+                  </div>
+                </div>
+                <span className="px-2 py-0.5 rounded-md bg-[#E0F2FE] text-[#0369A1] text-[9.5px] font-bold uppercase">
+                  Liability
+                </span>
+              </div>
+
+              <div className="mt-3.5 flex items-end justify-between">
+                <p className="text-[21px] font-extrabold text-[#17231E] tracking-tight tabular-nums">
+                  <AnimatedCounter value={depositsHeldVal} prefix="KSh " />
+                </p>
+                <div className="text-right">
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-[#E0F2FE] text-[#0369A1] text-[10.5px] font-bold tabular-nums">
+                    Refunded: KSh {Number(depositsRefundedVal).toLocaleString()}
+                  </span>
+                  <p className="text-[10px] text-[#88948F] mt-0.5">
+                    {depositsHeldCount} active {depositsHeldCount === 1 ? 'deposit' : 'deposits'}
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* 5. Total Money Received */}
+            <div className="rms-card-hover bg-white rounded-2xl p-4 flex flex-col justify-between">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="w-8 h-8 rounded-xl bg-[#D5F267] flex items-center justify-center text-[#17231E]">
+                    <Wallet className="w-4 h-4" />
+                  </span>
+                  <div>
+                    <span className="text-[12px] font-bold text-[#17231E] block leading-tight">
+                      Total Money Received
+                    </span>
+                    <span className="text-[10px] text-[#6E7A75]">
+                      All incoming payments
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-3.5 flex items-end justify-between">
+                <p className="text-[21px] font-extrabold text-[#17231E] tracking-tight tabular-nums">
+                  <AnimatedCounter value={totalMoneyReceivedVal} prefix="KSh " />
+                </p>
+                <div className="text-right">
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-[#EEF4F1] text-[#145338] text-[10.5px] font-bold">
+                    Rent + Deposits + Other
+                  </span>
+                  <p className="text-[10px] text-[#88948F] mt-0.5">gross cash inflow</p>
+                </div>
+              </div>
+            </div>
+
+            {/* 6. Outstanding Rent */}
+            <div className="rms-card-hover bg-white rounded-2xl p-4 flex flex-col justify-between">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="w-8 h-8 rounded-xl bg-[#FDE6E6] flex items-center justify-center text-[#B91C1C]">
+                    <Clock className="w-4 h-4" />
+                  </span>
+                  <div>
+                    <span className="text-[12px] font-bold text-[#17231E] block leading-tight">
+                      Outstanding Rent
+                    </span>
+                    <span className="text-[10px] text-[#6E7A75]">
+                      Pending & overdue rent only
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-3.5 flex items-end justify-between">
+                <p className="text-[21px] font-extrabold text-[#17231E] tracking-tight tabular-nums">
+                  <AnimatedCounter value={outstandingRentVal} prefix="KSh " />
+                </p>
+                <div className="text-right">
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-[#FDE6E6] text-[#B91C1C] text-[10.5px] font-bold tabular-nums">
+                    {analytics.pendingRentCount} Unpaid
+                  </span>
+                  <p className="text-[10px] text-[#88948F] mt-0.5">excludes deposits</p>
                 </div>
               </div>
             </div>
@@ -502,6 +635,134 @@ export const ExpensesPage: React.FC<ExpensesPageProps> = ({
               </div>
             ))}
           </div>
+        </div>
+      </div>
+
+      {/* PROPERTY-LEVEL FINANCIAL STATEMENTS (REVENUE VS DEPOSIT LIABILITY ACCOUNTING) */}
+      <div className="rms-card-hover bg-white rounded-2xl p-5">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
+          <div>
+            <h2 className="text-[16px] font-bold text-[#17231E] flex items-center gap-2">
+              <Building2 className="w-4 h-4 text-[#145338]" />
+              Property-Level Financial Statements
+            </h2>
+            <p className="text-[11.5px] text-[#6E7A75] mt-0.5">
+              Earned revenue (Rent Collected + Other Income) is strictly separated from tenant Security Deposit liabilities. Refunded deposits reduce liability, not revenue.
+            </p>
+          </div>
+          <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-[#EEF4F1] text-[#145338] text-[11px] font-bold">
+            Accrual & Escrow Compliant
+          </span>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full text-left border-collapse">
+            <thead>
+              <tr className="bg-[#EEF4F1] text-[#6E7A75] text-[11px] font-semibold">
+                <th className="py-2.5 px-3 rounded-l-xl">Property</th>
+                <th className="py-2.5 px-3 text-right">Rent Collected</th>
+                <th className="py-2.5 px-3 text-right">Other Income</th>
+                <th className="py-2.5 px-3 text-right">Total Revenue</th>
+                <th className="py-2.5 px-3 text-right">Deposits Held (Liability)</th>
+                <th className="py-2.5 px-3 text-right">Deposits Refunded</th>
+                <th className="py-2.5 px-3 text-right">Total Money Received</th>
+                <th className="py-2.5 px-3 text-right">Outstanding Rent</th>
+                <th className="py-2.5 px-3 text-right">Expenses</th>
+                <th className="py-2.5 px-3 text-right rounded-r-xl">Net NOI</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[#EEF3F0] text-[12px]">
+              {propertyFinancials.length === 0 ? (
+                <tr>
+                  <td colSpan={10} className="py-6 text-center text-[#7A8681]">
+                    No property financial records available yet.
+                  </td>
+                </tr>
+              ) : (
+                propertyFinancials.map((pf) => (
+                  <tr key={pf.propertyId} className="hover:bg-[#F8FBF9] transition-colors">
+                    <td className="py-3 px-3 font-bold text-[#17231E]">
+                      <div className="flex items-center gap-2">
+                        <span className="px-1.5 py-0.5 rounded bg-[#EAF4EE] text-[#145338] text-[10.5px] font-mono-num font-bold">
+                          {pf.codePrefix}
+                        </span>
+                        <span>{pf.propertyName}</span>
+                      </div>
+                    </td>
+                    <td className="py-3 px-3 text-right font-semibold text-[#17231E] tabular-nums">
+                      KSh {pf.rentCollected.toLocaleString()}
+                    </td>
+                    <td className="py-3 px-3 text-right text-[#354B14] tabular-nums">
+                      KSh {pf.otherIncome.toLocaleString()}
+                      {pf.depositDeductions > 0 && (
+                        <span className="block text-[10px] text-[#6E7A75]">
+                          (Incl. KSh {pf.depositDeductions.toLocaleString()} deduction)
+                        </span>
+                      )}
+                    </td>
+                    <td className="py-3 px-3 text-right font-extrabold text-[#145338] tabular-nums bg-[#F4FAF7]">
+                      KSh {pf.totalRevenue.toLocaleString()}
+                    </td>
+                    <td className="py-3 px-3 text-right font-bold text-[#0369A1] tabular-nums">
+                      KSh {pf.depositsHeld.toLocaleString()}
+                      <span className="block text-[10px] font-normal text-[#6E7A75]">
+                        {pf.depositsHeldCount} active
+                      </span>
+                    </td>
+                    <td className="py-3 px-3 text-right text-[#6E7A75] tabular-nums">
+                      KSh {pf.depositsRefunded.toLocaleString()}
+                    </td>
+                    <td className="py-3 px-3 text-right font-bold text-[#17231E] tabular-nums">
+                      KSh {pf.totalMoneyReceived.toLocaleString()}
+                    </td>
+                    <td className="py-3 px-3 text-right font-semibold text-[#B91C1C] tabular-nums">
+                      KSh {pf.outstandingRent.toLocaleString()}
+                    </td>
+                    <td className="py-3 px-3 text-right text-[#46544E] tabular-nums">
+                      KSh {pf.expenses.toLocaleString()}
+                    </td>
+                    <td className="py-3 px-3 text-right font-extrabold text-[#17231E] tabular-nums">
+                      KSh {pf.netOperatingIncome.toLocaleString()}
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+            {propertyFinancials.length > 0 && (
+              <tfoot>
+                <tr className="bg-[#EEF4F1] font-extrabold text-[#17231E] text-[12px]">
+                  <td className="py-3 px-3 rounded-l-xl">Portfolio Total</td>
+                  <td className="py-3 px-3 text-right tabular-nums">
+                    KSh {rentCollectedVal.toLocaleString()}
+                  </td>
+                  <td className="py-3 px-3 text-right tabular-nums">
+                    KSh {otherIncomeVal.toLocaleString()}
+                  </td>
+                  <td className="py-3 px-3 text-right text-[#145338] tabular-nums">
+                    KSh {totalRevenueVal.toLocaleString()}
+                  </td>
+                  <td className="py-3 px-3 text-right text-[#0369A1] tabular-nums">
+                    KSh {depositsHeldVal.toLocaleString()}
+                  </td>
+                  <td className="py-3 px-3 text-right text-[#6E7A75] tabular-nums">
+                    KSh {depositsRefundedVal.toLocaleString()}
+                  </td>
+                  <td className="py-3 px-3 text-right tabular-nums">
+                    KSh {totalMoneyReceivedVal.toLocaleString()}
+                  </td>
+                  <td className="py-3 px-3 text-right text-[#B91C1C] tabular-nums">
+                    KSh {outstandingRentVal.toLocaleString()}
+                  </td>
+                  <td className="py-3 px-3 text-right tabular-nums">
+                    KSh {Number(analytics.totalExpenses || 0).toLocaleString()}
+                  </td>
+                  <td className="py-3 px-3 text-right rounded-r-xl tabular-nums">
+                    KSh {Number(analytics.netBalance || 0).toLocaleString()}
+                  </td>
+                </tr>
+              </tfoot>
+            )}
+          </table>
         </div>
       </div>
 

@@ -46,6 +46,7 @@ import {
 } from '../lib/anniversaryBilling';
 import {
   classifyPaymentTransaction,
+  computePortfolioFinancialSummary,
   formatTransactionDisplayNote,
   isDepositTransaction,
   normalizeNewPaymentNote,
@@ -86,7 +87,7 @@ export const RentPaymentsPage: React.FC<RentPaymentsPageProps> = ({
     'All' | 'Paid' | 'Pending' | 'Overdue'
   >('All');
   const [typeFilter, setTypeFilter] = useState<
-    'All' | 'Rent' | 'Security Deposit'
+    'All' | 'Rent' | 'Security Deposit' | 'Other Income'
   >('All');
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 10;
@@ -337,30 +338,42 @@ export const RentPaymentsPage: React.FC<RentPaymentsPageProps> = ({
     return filteredPayments.slice(start, start + itemsPerPage);
   }, [filteredPayments, currentPage, itemsPerPage]);
 
-  // Overall Scope Financial KPIs (Keep monthly Rent KPIs separated from Security Deposits)
+  // Overall Scope Financial KPIs (Strict Revenue vs Deposit Liability Separation)
   const kpiStats = useMemo(() => {
-    const rentPaymentsOnly = scopedData.scopedPayments.filter((p) => !isDepositTransaction(p));
-    const depositPaymentsOnly = scopedData.scopedPayments.filter((p) => isDepositTransaction(p));
-
-    const totalCollected = rentPaymentsOnly
-      .filter((p) => p.status === 'Paid')
-      .reduce((sum, p) => sum + Number(p.amount || 0), 0);
-
-    const depositsCollected = depositPaymentsOnly
-      .filter((p) => p.status === 'Paid')
-      .reduce((sum, p) => sum + Number(p.amount || 0), 0);
-
-    const pendingTotal = rentPaymentsOnly
-      .filter((p) => p.status === 'Pending')
-      .reduce((sum, p) => sum + Number(p.amount || 0), 0);
-
-    const overdueTotal = rentPaymentsOnly
-      .filter((p) => p.status === 'Overdue')
-      .reduce((sum, p) => sum + Number(p.amount || 0), 0);
-
-    const confirmedCount = rentPaymentsOnly.filter(
-      (p) => p.status === 'Paid'
-    ).length;
+    const fin = computePortfolioFinancialSummary(
+      scopedData.scopedTenants.map((t) => ({
+        id: t.id || t.tenantRef,
+        name: t.name,
+        unitNumber: t.unitNumber,
+        propertyName: t.property,
+        status: t.tenancyStatus === 'Vacated' ? 'Past' : 'Active',
+        monthlyRent: t.monthlyRent,
+        securityDeposit: t.securityDeposit,
+        depositStatus: t.depositStatus,
+        depositReturnedAmount: t.depositReturnedAmount,
+        depositDeductionAmount: t.depositDeductionAmount,
+        rentBalance: t.rentBalance,
+      })),
+      scopedData.scopedPayments.map((p) => ({
+        id: p.id,
+        invoiceId: p.paymentId,
+        tenantId: p.tenantRef,
+        tenantName: p.tenantName,
+        unitNumber: p.unitNumber,
+        propertyName: p.property,
+        notes: p.paymentNote,
+        billingPeriodKey: p.billingPeriodKey,
+        transactionType: p.transactionType,
+        amount: p.amount,
+        amountPaid: p.amountPaid,
+        balanceDue: p.balanceDue,
+        status: p.status,
+        paymentDate: p.paidDate,
+        dueDate: p.dueDate,
+      })),
+      [],
+      activeProperty ? [activeProperty] : properties
+    );
 
     const clearedTenantsCount = scopedData.scopedTenants.filter(
       (t) => (t.rentBalance ?? 0) <= 0 && t.status === 'Paid'
@@ -371,16 +384,26 @@ export const RentPaymentsPage: React.FC<RentPaymentsPageProps> = ({
     ).length;
 
     return {
-      totalCollected,
-      depositsCollected,
-      pendingTotal,
-      overdueTotal,
-      confirmedCount,
+      rentCollected: fin.rentCollected,
+      otherIncome: fin.otherIncome,
+      depositDeductions: fin.depositDeductions,
+      totalRevenue: fin.totalRevenue,
+      depositsHeld: fin.depositsHeld,
+      depositsReceived: fin.depositsReceived,
+      depositsRefunded: fin.depositsRefunded,
+      depositsHeldCount: fin.depositsHeldCount,
+      totalMoneyReceived: fin.totalMoneyReceived,
+      outstandingRent: fin.outstandingRent,
+      pendingTotal: fin.pendingRentAmount,
+      overdueTotal: fin.overdueRentAmount,
+      confirmedCount: fin.paidRentInvoicesCount,
+      pendingCount: fin.pendingRentInvoicesCount,
+      overdueCount: fin.overdueRentInvoicesCount,
       totalTenants: scopedData.scopedTenants.length,
       clearedTenantsCount,
       dueTenantsCount,
     };
-  }, [scopedData]);
+  }, [scopedData, activeProperty, properties]);
 
   // Open Add Payment Modal with initial property preselection
   const handleOpenAddPayment = (propertyId?: string) => {
@@ -494,14 +517,18 @@ export const RentPaymentsPage: React.FC<RentPaymentsPageProps> = ({
       setFormAmount(
         nextType === 'Security Deposit'
           ? currentTenant.securityDeposit || currentTenant.monthlyRent || 35000
+          : nextType === 'Other Income'
+          ? 2500
           : currentTenant.rentBalance > 0
           ? currentTenant.rentBalance
           : currentTenant.monthlyRent || 35000
       );
     }
-    if (nextType === 'Security Deposit' && (!formPaymentNote.trim() || formPaymentNote === 'M-Pesa / Bank Transfer')) {
+    if (nextType === 'Security Deposit') {
       setFormPaymentNote('Security Deposit — M-Pesa / Bank Transfer');
-    } else if (nextType === 'Rent' && formPaymentNote === 'Security Deposit — M-Pesa / Bank Transfer') {
+    } else if (nextType === 'Other Income') {
+      setFormPaymentNote('[Other Income] Late Fee / Service Charge');
+    } else {
       setFormPaymentNote('M-Pesa / Bank Transfer');
     }
   };
@@ -559,7 +586,7 @@ export const RentPaymentsPage: React.FC<RentPaymentsPageProps> = ({
         unitType: formUnitType,
         unitNumber: formUnitNumber.trim() || 'Unit 101',
         transactionType: formTransactionType,
-        paymentNote: normalizeNewPaymentNote(formTransactionType, formPaymentNote.trim()),
+        paymentNote: normalizeNewPaymentNote(formPaymentNote.trim(), formTransactionType),
         leaseTerm: formLeaseTerm.trim() || '12 Months',
         amount: Number(formAmount),
         status: formPayStatus,
@@ -822,78 +849,116 @@ export const RentPaymentsPage: React.FC<RentPaymentsPageProps> = ({
         </div>
       )}
 
-      {/* 3. FINANCIAL SUMMARY KPI CARDS */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      {/* 3. FINANCIAL SUMMARY KPI CARDS (STRICT REVENUE VS DEPOSIT LIABILITY SEPARATION) */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        {/* 1. Total Revenue */}
+        <div className="rms-card-hover bg-[#EAF4EE] rounded-3xl p-5 border border-[#CDE5D8] shadow-xs">
+          <div className="flex items-center justify-between text-xs font-semibold text-[#315243] mb-2">
+            <span>Total Revenue (Earned Only)</span>
+            <span className="px-2 py-0.5 rounded-lg bg-white text-[#145338] text-[10px] font-bold uppercase">
+              Rent + Other
+            </span>
+          </div>
+          <p className="text-2xl font-bold text-[#172B25] tabular-nums tracking-tight">
+            <AnimatedCounter value={kpiStats.totalRevenue} prefix="KSh " />
+          </p>
+          <div className="mt-2 flex items-center justify-between text-[11px] text-[#46544E]">
+            <span>Excludes Security Deposits Held</span>
+            <span className="text-[#145338] font-bold">Earned Income</span>
+          </div>
+        </div>
+
+        {/* 2. Rent Collected */}
         <div className="rms-card-hover bg-white rounded-3xl p-5 border border-[#E7ECE9] shadow-xs">
           <div className="flex items-center justify-between text-xs font-semibold text-[#7B8983] mb-2">
-            <span>Confirmed Rent Collections</span>
+            <span>Rent Collected</span>
             <span className="w-7 h-7 rounded-xl bg-[#EAF4EE] text-[#145338] flex items-center justify-center font-bold">
               ✓
             </span>
           </div>
           <p className="text-2xl font-bold text-[#172B25] tabular-nums tracking-tight">
-            <AnimatedCounter value={kpiStats.totalCollected} prefix="KSh " />
+            <AnimatedCounter value={kpiStats.rentCollected} prefix="KSh " />
           </p>
           <div className="mt-2 flex items-center justify-between text-[11px] text-[#7B8983]">
             <span>
-              <AnimatedCounter value={kpiStats.confirmedCount} suffix=" Paid Rent" />
+              <AnimatedCounter value={kpiStats.confirmedCount} suffix=" Paid Rent Invoices" />
             </span>
-            <span className="text-[#145338] font-bold">
-              {kpiStats.depositsCollected > 0
-                ? `+ KSh ${kpiStats.depositsCollected.toLocaleString()} Deposits`
-                : 'Verified Ledger'}
-            </span>
+            <span className="text-[#145338] font-bold">Verified Rent</span>
           </div>
         </div>
 
+        {/* 3. Other Income */}
         <div className="rms-card-hover bg-white rounded-3xl p-5 border border-[#E7ECE9] shadow-xs">
           <div className="flex items-center justify-between text-xs font-semibold text-[#7B8983] mb-2">
-            <span>Pending Invoices</span>
-            <span className="w-7 h-7 rounded-xl bg-[#FEF6D2] text-[#8A6508] flex items-center justify-center font-bold">
-              ⏳
+            <span>Other Income</span>
+            <span className="px-2 py-0.5 rounded-lg bg-[#EAF6BE] text-[#354B14] text-[10px] font-bold">
+              Fees &amp; Deductions
             </span>
           </div>
-          <p className="text-2xl font-bold text-[#8A6508] tabular-nums tracking-tight">
-            <AnimatedCounter value={kpiStats.pendingTotal} prefix="KSh " />
+          <p className="text-2xl font-bold text-[#172B25] tabular-nums tracking-tight">
+            <AnimatedCounter value={kpiStats.otherIncome} prefix="KSh " />
           </p>
           <div className="mt-2 flex items-center justify-between text-[11px] text-[#7B8983]">
-            <span>Awaiting Confirmation</span>
-            <span className="font-semibold">Review below</span>
+            <span>
+              Deposit Deductions: KSh {kpiStats.depositDeductions.toLocaleString()}
+            </span>
+            <span className="text-[#354B14] font-bold">Earned Fees</span>
           </div>
         </div>
 
+        {/* 4. Deposits Held (Liability) */}
+        <div className="rms-card-hover bg-white rounded-3xl p-5 border border-[#BAE6FD] shadow-xs">
+          <div className="flex items-center justify-between text-xs font-semibold text-[#7B8983] mb-2">
+            <span>Deposits Held</span>
+            <span className="px-2 py-0.5 rounded-lg bg-[#E0F2FE] text-[#0369A1] text-[10px] font-bold uppercase">
+              Liability
+            </span>
+          </div>
+          <p className="text-2xl font-bold text-[#0369A1] tabular-nums tracking-tight">
+            <AnimatedCounter value={kpiStats.depositsHeld} prefix="KSh " />
+          </p>
+          <div className="mt-2 flex items-center justify-between text-[11px] text-[#7B8983]">
+            <span>{kpiStats.depositsHeldCount} active deposit escrows</span>
+            <span className="text-[#0369A1] font-semibold">
+              Refunded: KSh {kpiStats.depositsRefunded.toLocaleString()}
+            </span>
+          </div>
+        </div>
+
+        {/* 5. Total Money Received */}
         <div className="rms-card-hover bg-white rounded-3xl p-5 border border-[#E7ECE9] shadow-xs">
           <div className="flex items-center justify-between text-xs font-semibold text-[#7B8983] mb-2">
-            <span>Overdue Arrears</span>
+            <span>Total Money Received</span>
+            <span className="px-2 py-0.5 rounded-lg bg-[#D5F267] text-[#172B25] text-[10px] font-bold">
+              All Inflows
+            </span>
+          </div>
+          <p className="text-2xl font-bold text-[#172B25] tabular-nums tracking-tight">
+            <AnimatedCounter value={kpiStats.totalMoneyReceived} prefix="KSh " />
+          </p>
+          <div className="mt-2 flex items-center justify-between text-[11px] text-[#7B8983]">
+            <span>Rent + Deposits + Other Payments</span>
+            <span className="font-semibold text-[#172B25]">Gross Cash In</span>
+          </div>
+        </div>
+
+        {/* 6. Outstanding Rent */}
+        <div className="rms-card-hover bg-white rounded-3xl p-5 border border-[#E7ECE9] shadow-xs">
+          <div className="flex items-center justify-between text-xs font-semibold text-[#7B8983] mb-2">
+            <span>Outstanding Rent</span>
             <span className="w-7 h-7 rounded-xl bg-[#FDE6E6] text-[#B91C1C] flex items-center justify-center font-bold">
               !
             </span>
           </div>
           <p className="text-2xl font-bold text-[#B91C1C] tabular-nums tracking-tight">
-            <AnimatedCounter value={kpiStats.overdueTotal} prefix="KSh " />
+            <AnimatedCounter value={kpiStats.outstandingRent} prefix="KSh " />
           </p>
           <div className="mt-2 flex items-center justify-between text-[11px] text-[#7B8983]">
-            <span>Unpaid Balances</span>
-            <span className="text-[#B91C1C] font-semibold">Action needed</span>
-          </div>
-        </div>
-
-        <div className="rms-card-hover bg-white rounded-3xl p-5 border border-[#E7ECE9] shadow-xs">
-          <div className="flex items-center justify-between text-xs font-semibold text-[#7B8983] mb-2">
-            <span>Tenants in Current Scope</span>
-            <span className="w-7 h-7 rounded-xl bg-[#F5F7F6] text-[#172B25] flex items-center justify-center font-bold">
-              👥
-            </span>
-          </div>
-          <p className="text-2xl font-bold text-[#172B25] tabular-nums tracking-tight">
-            <AnimatedCounter value={kpiStats.totalTenants} suffix=" Tenants" />
-          </p>
-          <div className="mt-2 flex items-center justify-between text-[11px] text-[#7B8983]">
-            <span className="text-[#145338] font-semibold">
-              <AnimatedCounter value={kpiStats.clearedTenantsCount} suffix=" Cleared" />
-            </span>
             <span className="text-[#8A6508] font-semibold">
-              <AnimatedCounter value={kpiStats.dueTenantsCount} suffix=" With Balance" />
+              Pending: KSh {kpiStats.pendingTotal.toLocaleString()}
+            </span>
+            <span className="text-[#B91C1C] font-semibold">
+              Overdue: KSh {kpiStats.overdueTotal.toLocaleString()}
             </span>
           </div>
         </div>
@@ -949,7 +1014,8 @@ export const RentPaymentsPage: React.FC<RentPaymentsPageProps> = ({
               >
                 <option value="All">All Types</option>
                 <option value="Rent">Rent Only</option>
-                <option value="Security Deposit">Security Deposit</option>
+                <option value="Security Deposit">Security Deposit (Liability)</option>
+                <option value="Other Income">Other Income</option>
               </select>
               <ChevronDown className="w-3.5 h-3.5 text-[#7B8983] absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
             </div>
@@ -1107,6 +1173,7 @@ export const RentPaymentsPage: React.FC<RentPaymentsPageProps> = ({
                         {(() => {
                           const rowType = classifyPaymentTransaction(row);
                           const isDeposit = rowType === 'Security Deposit';
+                          const isOther = rowType === 'Other Income';
                           const displayNote = formatTransactionDisplayNote(row);
                           return (
                             <>
@@ -1114,17 +1181,21 @@ export const RentPaymentsPage: React.FC<RentPaymentsPageProps> = ({
                                 className={`inline-block px-2 py-0.5 rounded-md text-[10px] font-bold mb-1 ${
                                   isDeposit
                                     ? 'bg-[#E0F2FE] text-[#0369A1] border border-[#BAE6FD]'
+                                    : isOther
+                                    ? 'bg-[#EAF6BE] text-[#354B14] border border-[#D5F267]'
                                     : 'bg-[#EAF4EE] text-[#145338] border border-[#CDE5D8]'
                                 }`}
                               >
-                                {rowType}
+                                {isDeposit ? 'Security Deposit (Liability)' : rowType}
                               </span>
                               <span className="block line-clamp-1 font-medium text-[#172B25]">
                                 {displayNote}
                               </span>
                               <span className="text-[10.5px] text-[#7B8983]">
                                 {isDeposit
-                                  ? 'Deposit Escrow'
+                                  ? 'Deposit Liability Escrow'
+                                  : isOther
+                                  ? 'Earned Other Income'
                                   : `Term: ${row.leaseTerm || '12 Months'}`}
                               </span>
                             </>
@@ -1472,18 +1543,20 @@ export const RentPaymentsPage: React.FC<RentPaymentsPageProps> = ({
                 <label className="block font-bold text-[#172B25] mb-1.5">
                   3. Transaction Type
                 </label>
-                <div className="grid grid-cols-2 gap-2">
-                  {(['Rent', 'Security Deposit'] as TransactionType[]).map((txOption) => {
+                <div className="grid grid-cols-3 gap-2">
+                  {(['Rent', 'Security Deposit', 'Other Income'] as TransactionType[]).map((txOption) => {
                     const active = formTransactionType === txOption;
                     return (
                       <button
                         key={txOption}
                         type="button"
                         onClick={() => handleModalTransactionTypeChange(txOption)}
-                        className={`px-3.5 py-2.5 rounded-2xl text-xs font-bold border transition-all cursor-pointer ${
+                        className={`px-3 py-2.5 rounded-2xl text-xs font-bold border transition-all cursor-pointer ${
                           active
                             ? txOption === 'Security Deposit'
                               ? 'bg-[#E0F2FE] text-[#0369A1] border-[#7DD3FC]'
+                              : txOption === 'Other Income'
+                              ? 'bg-[#EAF6BE] text-[#354B14] border-[#D5F267]'
                               : 'bg-[#172B25] text-[#BFEF43] border-[#172B25]'
                             : 'bg-[#F5F7F6] text-[#46544E] border-[#E7ECE9] hover:bg-[#EAF4EE]'
                         }`}
@@ -1495,8 +1568,10 @@ export const RentPaymentsPage: React.FC<RentPaymentsPageProps> = ({
                 </div>
                 <p className="text-[11px] text-[#7B8983] mt-1">
                   {formTransactionType === 'Security Deposit'
-                    ? 'Security Deposits are kept separate from monthly rent invoices and rent balances.'
-                    : 'Rent payments apply toward the tenant’s monthly anniversary rent invoices.'}
+                    ? 'Security Deposits are treated as a liability (Deposits Held) and kept separate from earned revenue.'
+                    : formTransactionType === 'Other Income'
+                    ? 'Other Income (late fees, service charges, utilities) counts toward Total Revenue separately from Rent Collected.'
+                    : 'Rent payments apply toward the tenant’s monthly anniversary rent invoices and Rent Collected.'}
                 </p>
               </div>
 

@@ -36,7 +36,7 @@ export interface LedgerHistoryEntry {
   code: string;
   period: string;
   description: string;
-  type?: 'Rent' | 'Security Deposit';
+  type?: 'Rent' | 'Security Deposit' | 'Other Income';
   billed: number;
   paid: number;
   balance: number;
@@ -218,7 +218,7 @@ function getCachedPayHeroContext(): {
 }
 
 export interface InvoiceDocumentData {
-  transactionType?: 'Rent' | 'Security Deposit';
+  transactionType?: 'Rent' | 'Security Deposit' | 'Other Income';
   invoiceNumber: string;
   issueDate: string;
   dueDate: string;

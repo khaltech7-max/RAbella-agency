@@ -128,7 +128,7 @@ export interface TenantPaymentHistoryItem {
   amount: number;
   status: 'Paid' | 'Pending' | 'Overdue';
   variant: 'standard' | 'deluxe' | 'suite';
-  transactionType?: 'Rent' | 'Security Deposit';
+  transactionType?: 'Rent' | 'Security Deposit' | 'Other Income';
   paymentNote?: string;
 }
 
@@ -197,7 +197,7 @@ export interface RentPaymentRecord {
   unitType: 'Standard' | 'Deluxe' | 'Suite' | 'Family' | 'Single';
   unitNumber: string;
   paymentNote: string;
-  transactionType?: 'Rent' | 'Security Deposit';
+  transactionType?: 'Rent' | 'Security Deposit' | 'Other Income';
   leaseTerm: string;
   dueDate: string;
   paidDate: string;
@@ -793,6 +793,25 @@ export interface RatingSummary {
   }[];
 }
 
+export interface PropertyFinancialStatementItem {
+  propertyId: string;
+  propertyName: string;
+  codePrefix: string;
+  rentCollected: number;
+  otherIncome: number;
+  otherIncomeFromPayments: number;
+  depositDeductions: number;
+  totalRevenue: number;
+  depositsHeld: number;
+  depositsReceived: number;
+  depositsRefunded: number;
+  depositsHeldCount: number;
+  totalMoneyReceived: number;
+  outstandingRent: number;
+  expenses: number;
+  netOperatingIncome: number;
+}
+
 export interface DashboardAnalytics {
   activeLeasesCount: number;
   rentCollectedCount: number;
@@ -803,14 +822,60 @@ export interface DashboardAnalytics {
   netBalance: number;
   collectionRatePct: number;
   occupancyRatePct: number;
+  /** Total Earned Revenue = rentCollected + otherIncome (strictly excludes Deposits Held) */
+  totalRevenue?: number;
+  /** Earned rental income collected from rent payments */
+  rentCollected?: number;
+  /** Other earned income = direct other income payments + retained security deposit deductions */
+  otherIncome?: number;
+  /** Direct 'Other Income' payments collected */
+  otherIncomeFromPayments?: number;
+  /** Retained security deposit deductions & forfeitures transferred from liability to Other Income */
+  depositDeductions?: number;
+  /** Current active tenant security deposit liability held in escrow */
+  depositsHeld?: number;
+  /** Gross security deposits collected from tenants */
+  depositsReceived?: number;
+  /** Security deposits refunded to tenants upon move-out (reduces liability, not revenue) */
+  depositsRefunded?: number;
+  /** Number of tenants with currently held security deposits */
+  depositsHeldCount?: number;
+  /** All actual incoming cash payments received (Rent + Deposits + Other payments) */
+  totalMoneyReceived?: number;
+  /** Total unpaid rent across pending and overdue rent invoices (excludes deposits) */
+  outstandingRent?: number;
+  /** Pending rent amount (not yet overdue) */
+  pendingRentAmount?: number;
+  /** Overdue rent amount */
+  overdueRentAmount?: number;
+  /** Count of overdue rent invoices */
+  overdueRentCount?: number;
+  /** Property-level financial statements following strict revenue vs deposit liability rules */
+  propertyFinancials?: PropertyFinancialStatementItem[];
   unitAvailability: {
     occupied: number;
     reserved: number;
     available: number;
     notReady: number;
   };
-  revenueChart6M: { month: string; revenue: number; projected: number }[];
-  revenueChart12M: { month: string; revenue: number; projected: number }[];
+  revenueChart6M: {
+    month: string;
+    revenue: number;
+    rentCollected?: number;
+    otherIncome?: number;
+    depositsReceived?: number;
+    totalMoneyReceived?: number;
+    projected: number;
+  }[];
+  revenueChart12M: {
+    month: string;
+    revenue: number;
+    rentCollected?: number;
+    otherIncome?: number;
+    depositsReceived?: number;
+    totalMoneyReceived?: number;
+    projected: number;
+  }[];
   rentCollection7D: { day: string; collected: number; pending: number }[];
   leasesByProperty: { name: string; value: number; color: string }[];
   earningsYearly: { month: string; income: number; expense: number }[];

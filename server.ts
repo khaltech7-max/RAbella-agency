@@ -38,8 +38,12 @@ import {
 import { buildDesignedInvoicePdfBytes } from "./src/lib/pdfInvoiceBuilder.js";
 import {
   classifyPaymentTransaction,
+  computePortfolioFinancialSummary,
   formatTransactionDisplayNote,
+  getCollectedPaymentAmount,
   isDepositTransaction,
+  isOtherIncomeTransaction,
+  isRentTransaction,
   normalizeNewPaymentNote,
 } from "./src/lib/paymentClassification.js";
 
@@ -4639,20 +4643,68 @@ async function fetchFullDatabaseState(forceRefresh = false) {
 }
 function computeRealAnalytics(properties, unitTypes, tenants, payments, expenses, maintenance, reviews) {
   const activeTenants = tenants.filter((t) => t.tenancyStatus !== "Vacated");
-  // Exclude Security Deposit transactions from monthly rent revenue, collection rate, and arrears analytics
-  const rentPayments = payments.filter((p) => !isDepositTransaction(p));
-  const paidPayments = rentPayments.filter((p) => p.status === "Paid");
-  const pendingOrOverdue = rentPayments.filter((p) => p.status !== "Paid");
-  const paidRentSum = paidPayments.reduce((s, p) => s + Number(p.amount || 0), 0);
-  const totalExpensesSum = expenses.reduce((s, e) => s + Number(e.amount || 0), 0);
+  const finSummary = computePortfolioFinancialSummary(
+    tenants.map((t) => ({
+      id: t.id || t.tenantRef,
+      name: t.name,
+      unitNumber: t.unitNumber,
+      propertyName: t.property,
+      status: t.tenancyStatus === "Vacated" ? "Past" : "Active",
+      monthlyRent: t.monthlyRent,
+      securityDeposit: t.securityDeposit,
+      depositStatus: t.depositStatus,
+      depositReturnedAmount: t.depositReturnedAmount,
+      depositDeductionAmount: t.depositDeductionAmount,
+      rentBalance: t.rentBalance,
+    })),
+    payments.map((p) => ({
+      id: p.id,
+      invoiceId: p.paymentId,
+      tenantId: p.tenantRef,
+      tenantName: p.tenantName,
+      unitNumber: p.unitNumber,
+      propertyName: p.property,
+      notes: p.paymentNote,
+      billingPeriodKey: p.billingPeriodKey,
+      transactionType: p.transactionType,
+      amount: p.amount,
+      amountPaid: p.amountPaid,
+      balanceDue: p.balanceDue,
+      status: p.status,
+      paymentDate: p.paidDate,
+      dueDate: p.dueDate,
+    })),
+    expenses.map((e) => ({
+      id: e.id,
+      propertyName: e.property,
+      category: e.category,
+      amount: e.amount,
+      date: e.date,
+    })),
+    properties.map((p) => ({
+      id: p.id,
+      name: p.name,
+      codePrefix: p.codePrefix,
+    }))
+  );
+
+  // Exclude Security Deposit and Other Income transactions from monthly rent collection rate & arrears
+  const rentPayments = payments.filter((p) => isRentTransaction(p));
+  const paidRentPayments = rentPayments.filter((p) => p.status === "Paid");
+  const pendingOrOverdueRent = rentPayments.filter((p) => p.status !== "Paid");
+
+  const rentCollected = finSummary.rentCollected;
+  const otherIncome = finSummary.otherIncome;
+  const totalRevenue = finSummary.totalRevenue;
+  const totalExpensesSum = finSummary.totalExpenses;
   const activeLeasesCount = activeTenants.length;
-  const rentCollectedCount = paidPayments.length;
-  const pendingRentCount = pendingOrOverdue.length;
-  const totalRentRevenue = paidRentSum;
-  const totalIncome = paidRentSum;
-  const netBalance = totalIncome - totalExpensesSum;
+  const rentCollectedCount = finSummary.paidRentInvoicesCount;
+  const pendingRentCount = finSummary.pendingRentInvoicesCount + finSummary.overdueRentInvoicesCount;
+  const totalRentRevenue = rentCollected;
+  const totalIncome = totalRevenue;
+  const netBalance = finSummary.netOperatingIncome;
   const totalPaymentsCount = rentPayments.length;
-  const collectionRatePct = totalPaymentsCount > 0 ? Number((paidPayments.length / totalPaymentsCount * 100).toFixed(1)) : 0;
+  const collectionRatePct = totalPaymentsCount > 0 ? Number((paidRentPayments.length / totalPaymentsCount * 100).toFixed(1)) : 0;
   const propTotalUnits = properties.reduce((s, p) => s + Number(p.totalUnits || 0), 0);
   const unitTypeTotalUnits = unitTypes.reduce((s, u) => s + Number(u.totalCount || 0), 0);
   const totalUnits = Math.max(propTotalUnits, unitTypeTotalUnits, activeTenants.length);
@@ -4660,7 +4712,7 @@ function computeRealAnalytics(properties, unitTypes, tenants, payments, expenses
   const unitTypeOccupied = unitTypes.reduce((s, u) => s + Number(u.occupiedCount || 0), 0);
   const occupied = Math.max(propOccupied, unitTypeOccupied, activeTenants.length);
   const notReady = maintenance.filter((m) => m.maintenanceStatus !== "Completed").length;
-  const reserved = pendingOrOverdue.length;
+  const reserved = pendingOrOverdueRent.length;
   const available = Math.max(0, totalUnits - occupied - notReady);
   const occupancyRatePct = totalUnits > 0 ? Number((occupied / totalUnits * 100).toFixed(1)) : 0;
   const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -4668,24 +4720,59 @@ function computeRealAnalytics(properties, unitTypes, tenants, payments, expenses
   const currentYear = now.getFullYear();
   const currentMonthIdx = now.getMonth();
   const activeLeaseMonthlyTarget = activeTenants.reduce((s, t) => s + Number(t.monthlyRent || 0), 0);
+
+  const paymentMatchesMonth = (p, mShort, mIdx, yr) => {
+    const dateText = `${p.paidDate} ${p.dueDate}`;
+    if (dateText.toLowerCase().includes(mShort.toLowerCase())) {
+      return yr ? dateText.includes(String(yr)) || !/\b20\d{2}\b/.test(dateText) : true;
+    }
+    if (p.createdAt) {
+      const cd = new Date(p.createdAt);
+      return cd.getMonth() === mIdx && (yr ? cd.getFullYear() === yr : true);
+    }
+    return false;
+  };
+
   const revenueChart12M = [];
   for (let offset = 11; offset >= 0; offset--) {
     const d = new Date(currentYear, currentMonthIdx - offset, 1);
     const mShort = monthNames[d.getMonth()];
     const yr = d.getFullYear();
     const label = `${mShort} ${yr}`;
-    const monthPaid = paidPayments.filter((p) => {
-      const dateText = `${p.paidDate} ${p.dueDate}`;
-      if (dateText.toLowerCase().includes(mShort.toLowerCase())) {
-        return true;
-      }
-      if (p.createdAt) {
-        const cd = new Date(p.createdAt);
-        return cd.getMonth() === d.getMonth() && cd.getFullYear() === yr;
-      }
-      return false;
-    }).reduce((s, p) => s + Number(p.amount || 0), 0);
-    revenueChart12M.push({ month: label, revenue: monthPaid, projected: activeLeaseMonthlyTarget });
+    const monthRentCollected = rentPayments
+      .filter((p) => paymentMatchesMonth(p, mShort, d.getMonth(), yr))
+      .reduce((s, p) => s + getCollectedPaymentAmount(p), 0);
+    const monthOtherPayments = payments
+      .filter((p) => isOtherIncomeTransaction(p) && paymentMatchesMonth(p, mShort, d.getMonth(), yr))
+      .reduce((s, p) => s + getCollectedPaymentAmount(p), 0);
+    const monthDepositDeductions = tenants
+      .filter((t) => {
+        if (!t.depositDeductionAmount || Number(t.depositDeductionAmount) <= 0) return false;
+        const settledRef = t.depositSettledAt || t.vacatedAt;
+        if (!settledRef) return offset === 0;
+        const sd = new Date(settledRef);
+        if (!Number.isNaN(sd.getTime())) {
+          return sd.getMonth() === d.getMonth() && sd.getFullYear() === yr;
+        }
+        return String(settledRef).toLowerCase().includes(mShort.toLowerCase());
+      })
+      .reduce((s, t) => s + Number(t.depositDeductionAmount || 0), 0);
+    const monthDepositsReceived = payments
+      .filter((p) => isDepositTransaction(p) && paymentMatchesMonth(p, mShort, d.getMonth(), yr))
+      .reduce((s, p) => s + getCollectedPaymentAmount(p), 0);
+    const monthOtherIncome = monthOtherPayments + monthDepositDeductions;
+    const monthEarnedRevenue = monthRentCollected + monthOtherIncome;
+    const monthTotalMoneyReceived = monthRentCollected + monthOtherPayments + monthDepositsReceived;
+
+    revenueChart12M.push({
+      month: label,
+      revenue: monthEarnedRevenue,
+      rentCollected: monthRentCollected,
+      otherIncome: monthOtherIncome,
+      depositsReceived: monthDepositsReceived,
+      totalMoneyReceived: monthTotalMoneyReceived,
+      projected: activeLeaseMonthlyTarget,
+    });
   }
   const revenueChart6M = revenueChart12M.slice(-6);
   const rentCollection7D = [];
@@ -4719,15 +4806,9 @@ function computeRealAnalytics(properties, unitTypes, tenants, payments, expenses
     return { name: p.name, value: properties.length > 0 ? Math.round(occVal / totalOccupiedAcrossProps * 100) : 0, color: palette[idx % palette.length] };
   });
   const earningsYearly = monthNames.map((mShort, mIdx) => {
-    const mIncome = paidPayments.filter((p) => {
-      if (`${p.paidDate} ${p.dueDate}`.toLowerCase().includes(mShort.toLowerCase())) {
-        return true;
-      }
-      if (p.createdAt) {
-        return new Date(p.createdAt).getMonth() === mIdx;
-      }
-      return false;
-    }).reduce((s, p) => s + Number(p.amount || 0), 0);
+    const mRentIncome = rentPayments.filter((p) => paymentMatchesMonth(p, mShort, mIdx)).reduce((s, p) => s + getCollectedPaymentAmount(p), 0);
+    const mOtherIncome = payments.filter((p) => isOtherIncomeTransaction(p) && paymentMatchesMonth(p, mShort, mIdx)).reduce((s, p) => s + getCollectedPaymentAmount(p), 0);
+    const mIncome = mRentIncome + mOtherIncome;
     const mExpense = expenses.filter((e) => {
       if (String(e.date).toLowerCase().includes(mShort.toLowerCase())) {
         return true;
@@ -4748,14 +4829,13 @@ function computeRealAnalytics(properties, unitTypes, tenants, payments, expenses
     const pct = totalExpensesSum > 0 ? (value / totalExpensesSum * 100).toFixed(1).replace(/\.0$/, "") : "0";
     return { name, percent: `${pct}%`, value, color: categoryColors[name] || "#D5F267" };
   });
-  const propIncomeMap = {};
-  for (const p of paidPayments) {
-    propIncomeMap[p.property] = (propIncomeMap[p.property] || 0) + Number(p.amount || 0);
-  }
-  const incomeBreakdown = Object.entries(propIncomeMap).sort((a, b) => b[1] - a[1]).map(([name, value], i) => {
-    const pct = paidRentSum > 0 ? (value / paidRentSum * 100).toFixed(1).replace(/\.0$/, "") : "0";
-    return { name, percent: `${pct}%`, value, color: palette[i % palette.length] };
-  });
+  const incomeBreakdown = finSummary.propertyFinancials
+    .filter((pf) => pf.totalRevenue > 0)
+    .sort((a, b) => b.totalRevenue - a.totalRevenue)
+    .map((pf, i) => {
+      const pct = totalRevenue > 0 ? (pf.totalRevenue / totalRevenue * 100).toFixed(1).replace(/\.0$/, "") : "0";
+      return { name: pf.propertyName, percent: `${pct}%`, value: pf.totalRevenue, color: palette[i % palette.length] };
+    });
   const reviewCount = reviews.length;
   const avg = (getter) => reviewCount > 0 ? Number((reviews.reduce((s, r) => s + getter(r), 0) / reviewCount).toFixed(1)) : 0;
   const overallScore = avg((r) => r.overallScore);
@@ -4765,7 +4845,52 @@ function computeRealAnalytics(properties, unitTypes, tenants, payments, expenses
   const comfortScore = avg((r) => r.comfortScore);
   const locScore = avg((r) => r.locationScore);
   const ratingLabel = reviewCount === 0 ? "No Reviews Yet" : overallScore >= 4.5 ? "Impressive" : overallScore >= 4 ? "Very Good" : overallScore >= 3 ? "Satisfactory" : "Needs Attention";
-  return { activeLeasesCount, rentCollectedCount, pendingRentCount, totalRentRevenue, totalIncome, totalExpenses: totalExpensesSum, netBalance, collectionRatePct, occupancyRatePct, unitAvailability: { occupied, reserved, available, notReady }, revenueChart6M, revenueChart12M, rentCollection7D, leasesByProperty, earningsYearly, expenseBreakdown, incomeBreakdown, ratingSummary: { overallScore, reviewCount, label: ratingLabel, categories: [{ label: "Maintenance", score: maintScore, pct: Math.round(maintScore / 5 * 100) }, { label: "Cleanliness", score: cleanScore, pct: Math.round(cleanScore / 5 * 100) }, { label: "Management", score: mgmtScore, pct: Math.round(mgmtScore / 5 * 100) }, { label: "Comfort", score: comfortScore, pct: Math.round(comfortScore / 5 * 100) }, { label: "Location", score: locScore, pct: Math.round(locScore / 5 * 100) }] } };
+  return {
+    activeLeasesCount,
+    rentCollectedCount,
+    pendingRentCount,
+    totalRentRevenue,
+    totalIncome,
+    totalExpenses: totalExpensesSum,
+    netBalance,
+    collectionRatePct,
+    occupancyRatePct,
+    totalRevenue,
+    rentCollected,
+    otherIncome,
+    otherIncomeFromPayments: finSummary.otherIncomeFromPayments,
+    depositDeductions: finSummary.depositDeductions,
+    depositsHeld: finSummary.depositsHeld,
+    depositsReceived: finSummary.depositsReceived,
+    depositsRefunded: finSummary.depositsRefunded,
+    depositsHeldCount: finSummary.depositsHeldCount,
+    totalMoneyReceived: finSummary.totalMoneyReceived,
+    outstandingRent: finSummary.outstandingRent,
+    pendingRentAmount: finSummary.pendingRentAmount,
+    overdueRentAmount: finSummary.overdueRentAmount,
+    overdueRentCount: finSummary.overdueRentInvoicesCount,
+    propertyFinancials: finSummary.propertyFinancials,
+    unitAvailability: { occupied, reserved, available, notReady },
+    revenueChart6M,
+    revenueChart12M,
+    rentCollection7D,
+    leasesByProperty,
+    earningsYearly,
+    expenseBreakdown,
+    incomeBreakdown,
+    ratingSummary: {
+      overallScore,
+      reviewCount,
+      label: ratingLabel,
+      categories: [
+        { label: "Maintenance", score: maintScore, pct: Math.round(maintScore / 5 * 100) },
+        { label: "Cleanliness", score: cleanScore, pct: Math.round(cleanScore / 5 * 100) },
+        { label: "Management", score: mgmtScore, pct: Math.round(mgmtScore / 5 * 100) },
+        { label: "Comfort", score: comfortScore, pct: Math.round(comfortScore / 5 * 100) },
+        { label: "Location", score: locScore, pct: Math.round(locScore / 5 * 100) }
+      ]
+    }
+  };
 }
 const activeSessions = /* @__PURE__ */ new Map();
 const revokedTokens = /* @__PURE__ */ new Set();

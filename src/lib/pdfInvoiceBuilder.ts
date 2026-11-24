@@ -8,7 +8,7 @@ export interface PdfInvoiceItem {
 }
 
 export interface PdfInvoicePayload {
-  transactionType?: 'Rent' | 'Security Deposit';
+  transactionType?: 'Rent' | 'Security Deposit' | 'Other Income';
   invoiceNumber: string;
   issueDate: string;
   dueDate: string;

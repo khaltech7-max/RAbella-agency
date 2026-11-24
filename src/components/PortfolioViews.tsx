@@ -46,8 +46,10 @@ import {
 } from '../lib/anniversaryBilling';
 import {
   classifyPaymentTransaction,
+  computePortfolioFinancialSummary,
   formatTransactionDisplayNote,
   isDepositTransaction,
+  isRentTransaction,
 } from '../lib/paymentClassification';
 import { useThemePalette } from '../lib/useThemeState';
 
@@ -847,14 +849,63 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
     };
   });
 
-  const rentPaymentsForReport = filteredPayments.filter((p) => !isDepositTransaction(p));
+  const rentPaymentsForReport = filteredPayments.filter((p) => isRentTransaction(p));
   const depositPaymentsForReport = filteredPayments.filter((p) => isDepositTransaction(p));
 
-  const paidTotal = rentPaymentsForReport
-    .filter((p) => p.status === 'Paid')
-    .reduce((s, p) => s + p.amount, 0);
-  const expTotal = filteredExpenses.reduce((s, e) => s + e.amount, 0);
-  const depositTotal = filteredTenants.reduce((s, t) => s + t.securityDeposit, 0);
+  const finSummary = computePortfolioFinancialSummary(
+    filteredTenants.map((t) => ({
+      id: t.id || t.tenantRef,
+      name: t.name,
+      unitNumber: t.unitNumber,
+      propertyName: t.property,
+      status: t.tenancyStatus === 'Vacated' ? 'Past' : 'Active',
+      monthlyRent: t.monthlyRent,
+      securityDeposit: t.securityDeposit,
+      depositStatus: t.depositStatus,
+      depositReturnedAmount: t.depositReturnedAmount,
+      depositDeductionAmount: t.depositDeductionAmount,
+      rentBalance: t.rentBalance,
+    })),
+    filteredPayments.map((p) => ({
+      id: p.id,
+      invoiceId: p.paymentId,
+      tenantId: p.tenantRef,
+      tenantName: p.tenantName,
+      unitNumber: p.unitNumber,
+      propertyName: p.property,
+      notes: p.paymentNote,
+      billingPeriodKey: p.billingPeriodKey,
+      transactionType: p.transactionType,
+      amount: p.amount,
+      amountPaid: p.amountPaid,
+      balanceDue: p.balanceDue,
+      status: p.status,
+      paymentDate: p.paidDate,
+      dueDate: p.dueDate,
+    })),
+    filteredExpenses.map((e) => ({
+      id: e.id,
+      propertyName: e.property,
+      category: e.category,
+      amount: e.amount,
+      date: e.date,
+    })),
+    filteredProperties.map((p) => ({
+      id: p.id,
+      name: p.name,
+      codePrefix: p.codePrefix,
+    }))
+  );
+
+  const paidTotal = finSummary.rentCollected;
+  const otherIncomeTotal = finSummary.otherIncome;
+  const totalRevenue = finSummary.totalRevenue;
+  const expTotal = finSummary.totalExpenses;
+  const depositHeldTotal = finSummary.depositsHeld;
+  const depositRefundedTotal = finSummary.depositsRefunded;
+  const depositDeductionsTotal = finSummary.depositDeductions;
+  const totalMoneyReceived = finSummary.totalMoneyReceived;
+  const outstandingRentTotal = finSummary.outstandingRent;
   const resolvedCount = filteredMaintenance.filter(
     (m) => m.maintenanceStatus === 'Completed'
   ).length;
@@ -875,7 +926,7 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
       <div className="bg-white rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
           <h2 className="text-[15px] font-bold text-[#17231E]">
-            Filter Reports & Export Scope
+            Filter Reports &amp; Export Scope
           </h2>
           <p className="text-[11.5px] text-[#7A8681]">
             Search by property, tenant ref (A-001), unit, or category to filter report analytics and CSV exports
@@ -902,12 +953,81 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
         </div>
       </div>
 
+      {/* 6-CARD ACCOUNTING SUMMARY STRIP (REVENUE VS DEPOSIT LIABILITY) */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3">
+        <div className="bg-[#D8F3E5] rounded-2xl p-3.5">
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] font-bold text-[#315243]">Total Revenue</span>
+            <span className="px-1.5 py-0.5 rounded bg-white/80 text-[#145338] text-[9px] font-bold uppercase">
+              Earned
+            </span>
+          </div>
+          <p className="text-[17px] font-extrabold text-[#17231E] mt-1 tabular-nums">
+            <AnimatedCounter value={totalRevenue} prefix="KSh " />
+          </p>
+          <p className="text-[10px] text-[#4A6358] mt-1">Rent + Other Income only</p>
+        </div>
+
+        <div className="bg-white rounded-2xl p-3.5">
+          <span className="text-[11px] font-semibold text-[#7A8681]">Rent Collected</span>
+          <p className="text-[17px] font-extrabold text-[#17231E] mt-1 tabular-nums">
+            <AnimatedCounter value={paidTotal} prefix="KSh " />
+          </p>
+          <p className="text-[10px] text-[#145338] font-semibold mt-1">
+            {finSummary.paidRentInvoicesCount} paid rent invoices
+          </p>
+        </div>
+
+        <div className="bg-white rounded-2xl p-3.5">
+          <span className="text-[11px] font-semibold text-[#7A8681]">Other Income</span>
+          <p className="text-[17px] font-extrabold text-[#17231E] mt-1 tabular-nums">
+            <AnimatedCounter value={otherIncomeTotal} prefix="KSh " />
+          </p>
+          <p className="text-[10px] text-[#354B14] font-semibold mt-1">
+            Incl. KSh {depositDeductionsTotal.toLocaleString()} deductions
+          </p>
+        </div>
+
+        <div className="bg-white rounded-2xl p-3.5 border border-[#BAE6FD]">
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] font-semibold text-[#7A8681]">Deposits Held</span>
+            <span className="px-1.5 py-0.5 rounded bg-[#E0F2FE] text-[#0369A1] text-[9px] font-bold uppercase">
+              Liability
+            </span>
+          </div>
+          <p className="text-[17px] font-extrabold text-[#0369A1] mt-1 tabular-nums">
+            <AnimatedCounter value={depositHeldTotal} prefix="KSh " />
+          </p>
+          <p className="text-[10px] text-[#6E7A75] mt-1">
+            Refunded: KSh {depositRefundedTotal.toLocaleString()}
+          </p>
+        </div>
+
+        <div className="bg-white rounded-2xl p-3.5">
+          <span className="text-[11px] font-semibold text-[#7A8681]">Total Money Received</span>
+          <p className="text-[17px] font-extrabold text-[#17231E] mt-1 tabular-nums">
+            <AnimatedCounter value={totalMoneyReceived} prefix="KSh " />
+          </p>
+          <p className="text-[10px] text-[#6E7A75] mt-1">All incoming payments</p>
+        </div>
+
+        <div className="bg-white rounded-2xl p-3.5">
+          <span className="text-[11px] font-semibold text-[#7A8681]">Outstanding Rent</span>
+          <p className="text-[17px] font-extrabold text-[#B91C1C] mt-1 tabular-nums">
+            <AnimatedCounter value={outstandingRentTotal} prefix="KSh " />
+          </p>
+          <p className="text-[10px] text-[#B91C1C] font-semibold mt-1">
+            Excludes security deposits
+          </p>
+        </div>
+      </div>
+
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
         <div className="rms-card-hover lg:col-span-7 bg-white rounded-2xl p-5">
           <div className="flex items-center justify-between mb-4">
             <div>
               <h2 className="text-[16px] font-bold text-[#17231E]">
-                Portfolio Occupancy & Retention Report
+                Portfolio Occupancy &amp; Retention Report
               </h2>
               <p className="text-[11.5px] text-[#7A8681]">
                 Live Occupancy % across <AnimatedCounter value={filteredProperties.length} /> database properties
@@ -995,7 +1115,7 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
               <div className="p-3 rounded-xl bg-[#F4F8F6] flex items-center justify-between gap-2">
                 <div>
                   <p className="text-[12px] font-bold text-[#17231E]">
-                    Monthly Rent Roll & Arrears Ledger
+                    Monthly Rent Roll &amp; Arrears Ledger
                   </p>
                   <p className="text-[10.5px] text-[#7A8681] tabular-nums">
                     <AnimatedCounter value={rentPaymentsForReport.length} /> rent records •{' '}
@@ -1029,25 +1149,43 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
               <div className="p-3 rounded-xl bg-[#F4F8F6] flex items-center justify-between gap-2">
                 <div>
                   <p className="text-[12px] font-bold text-[#17231E]">
-                    Owner Net Operating Income (NOI) Ledger
+                    Owner Net Operating Income (NOI) &amp; Revenue Statement
                   </p>
                   <p className="text-[10.5px] text-[#7A8681] tabular-nums">
-                    Income <AnimatedCounter value={paidTotal} prefix="KSh " /> vs Expenses{' '}
+                    Total Revenue <AnimatedCounter value={totalRevenue} prefix="KSh " /> vs Expenses{' '}
                     <AnimatedCounter value={expTotal} prefix="KSh " />
                   </p>
                 </div>
                 <button
                   onClick={() =>
-                    exportCsv('noi-expenses-export.csv', [
-                      ['Expense', 'Category', 'Property', 'Quantity', 'Amount (KSh)', 'Date', 'Status'],
-                      ...filteredExpenses.map((e) => [
-                        e.expense,
-                        e.category,
-                        e.property,
-                        String(e.quantity),
-                        `KSh ${e.amount}`,
-                        e.date,
-                        e.status,
+                    exportCsv('property-financial-statements-export.csv', [
+                      [
+                        'Property',
+                        'Prefix',
+                        'Rent Collected (KSh)',
+                        'Other Income (KSh)',
+                        'Deposit Deductions Transferred (KSh)',
+                        'Total Earned Revenue (KSh)',
+                        'Deposits Held Liability (KSh)',
+                        'Deposits Refunded (KSh)',
+                        'Total Money Received (KSh)',
+                        'Outstanding Rent (KSh)',
+                        'Expenses (KSh)',
+                        'Net Operating Income (KSh)',
+                      ],
+                      ...finSummary.propertyFinancials.map((pf) => [
+                        pf.propertyName,
+                        pf.codePrefix,
+                        String(pf.rentCollected),
+                        String(pf.otherIncome),
+                        String(pf.depositDeductions),
+                        String(pf.totalRevenue),
+                        String(pf.depositsHeld),
+                        String(pf.depositsRefunded),
+                        String(pf.totalMoneyReceived),
+                        String(pf.outstandingRent),
+                        String(pf.expenses),
+                        String(pf.netOperatingIncome),
                       ]),
                     ])
                   }
@@ -1060,7 +1198,7 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
               <div className="p-3 rounded-xl bg-[#F4F8F6] flex items-center justify-between gap-2">
                 <div>
                   <p className="text-[12px] font-bold text-[#17231E]">
-                    Maintenance SLA & Work Orders Report
+                    Maintenance SLA &amp; Work Orders Report
                   </p>
                   <p className="text-[10.5px] text-[#7A8681] tabular-nums">
                     <AnimatedCounter value={resolvedCount} /> of{' '}
@@ -1091,31 +1229,43 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
               <div className="p-3 rounded-xl bg-[#F4F8F6] flex items-center justify-between gap-2">
                 <div>
                   <p className="text-[12px] font-bold text-[#17231E]">
-                    Security Deposit Escrow Reconciliation
+                    Security Deposit Liability &amp; Escrow Reconciliation
                   </p>
                   <p className="text-[10.5px] text-[#7A8681] tabular-nums">
-                    <AnimatedCounter value={filteredTenants.length} /> active tenants •{' '}
-                    <AnimatedCounter value={depositTotal} prefix="KSh " /> held in escrow
+                    <AnimatedCounter value={finSummary.depositsHeldCount} /> active escrows •{' '}
+                    <AnimatedCounter value={depositHeldTotal} prefix="KSh " /> liability held •{' '}
+                    Refunded KSh {depositRefundedTotal.toLocaleString()}
                     {depositPaymentsForReport.length > 0
-                      ? ` • ${depositPaymentsForReport.length} deposit receipt(s)`
+                      ? ` • ${depositPaymentsForReport.length} receipt(s)`
                       : ''}
                   </p>
                 </div>
                 <button
                   onClick={() =>
-                    exportCsv('tenant-escrow-export.csv', [
-                      ['Tenant Ref', 'Transaction Type', 'Name', 'Email', 'Phone', 'Property', 'Unit', 'Monthly Rent (KSh)', 'Security Deposit (KSh)', 'Rent Balance (KSh)'],
+                    exportCsv('tenant-escrow-liability-export.csv', [
+                      [
+                        'Tenant Ref',
+                        'Accounting Classification',
+                        'Name',
+                        'Property',
+                        'Unit',
+                        'Deposit Status',
+                        'Gross Security Deposit (KSh)',
+                        'Refunded Amount (KSh)',
+                        'Deducted to Other Income (KSh)',
+                        'Outstanding Rent Balance (KSh)',
+                      ],
                       ...filteredTenants.map((t) => [
                         t.tenantRef,
-                        'Security Deposit',
+                        'Security Deposit (Liability)',
                         t.name,
-                        t.email,
-                        t.phone,
                         t.property,
                         t.unitNumber,
-                        `KSh ${t.monthlyRent}`,
-                        `KSh ${t.securityDeposit}`,
-                        `KSh ${t.rentBalance}`,
+                        t.depositStatus || 'Held',
+                        `KSh ${t.securityDeposit || 0}`,
+                        `KSh ${t.depositReturnedAmount || 0}`,
+                        `KSh ${t.depositDeductionAmount || 0}`,
+                        `KSh ${t.rentBalance || 0}`,
                       ]),
                     ])
                   }
@@ -1126,6 +1276,78 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
               </div>
             </div>
           </div>
+        </div>
+      </div>
+
+      {/* PROPERTY-LEVEL FINANCIAL STATEMENTS TABLE IN REPORTS */}
+      <div className="bg-white rounded-2xl p-5">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
+          <div>
+            <h2 className="text-[16px] font-bold text-[#17231E]">
+              Property-Level Financial &amp; Escrow Statements
+            </h2>
+            <p className="text-[11.5px] text-[#7A8681]">
+              Earned Revenue = Rent Collected + Other Income. Deposits Held are treated as liabilities; refunds reduce deposit liability, not rental revenue.
+            </p>
+          </div>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full text-left border-collapse">
+            <thead>
+              <tr className="bg-[#EEF4F1] text-[#6E7A75] text-[11px] font-semibold">
+                <th className="py-2.5 px-3 rounded-l-xl">Property</th>
+                <th className="py-2.5 px-3 text-right">Rent Collected</th>
+                <th className="py-2.5 px-3 text-right">Other Income</th>
+                <th className="py-2.5 px-3 text-right">Total Revenue</th>
+                <th className="py-2.5 px-3 text-right">Deposits Held (Liability)</th>
+                <th className="py-2.5 px-3 text-right">Deposits Refunded</th>
+                <th className="py-2.5 px-3 text-right">Total Money Received</th>
+                <th className="py-2.5 px-3 text-right">Outstanding Rent</th>
+                <th className="py-2.5 px-3 text-right">Expenses</th>
+                <th className="py-2.5 px-3 text-right rounded-r-xl">Net NOI</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[#EEF3F0] text-[12px]">
+              {finSummary.propertyFinancials.map((pf) => (
+                <tr key={pf.propertyId} className="hover:bg-[#F8FBF9]">
+                  <td className="py-3 px-3 font-bold text-[#17231E]">
+                    <span className="px-1.5 py-0.5 rounded bg-[#EAF4EE] text-[#145338] text-[10.5px] font-mono-num font-bold mr-2">
+                      {pf.codePrefix}
+                    </span>
+                    {pf.propertyName}
+                  </td>
+                  <td className="py-3 px-3 text-right font-semibold text-[#17231E] tabular-nums">
+                    KSh {pf.rentCollected.toLocaleString()}
+                  </td>
+                  <td className="py-3 px-3 text-right text-[#354B14] tabular-nums">
+                    KSh {pf.otherIncome.toLocaleString()}
+                  </td>
+                  <td className="py-3 px-3 text-right font-extrabold text-[#145338] tabular-nums bg-[#F4FAF7]">
+                    KSh {pf.totalRevenue.toLocaleString()}
+                  </td>
+                  <td className="py-3 px-3 text-right font-bold text-[#0369A1] tabular-nums">
+                    KSh {pf.depositsHeld.toLocaleString()}
+                  </td>
+                  <td className="py-3 px-3 text-right text-[#6E7A75] tabular-nums">
+                    KSh {pf.depositsRefunded.toLocaleString()}
+                  </td>
+                  <td className="py-3 px-3 text-right font-bold text-[#17231E] tabular-nums">
+                    KSh {pf.totalMoneyReceived.toLocaleString()}
+                  </td>
+                  <td className="py-3 px-3 text-right font-semibold text-[#B91C1C] tabular-nums">
+                    KSh {pf.outstandingRent.toLocaleString()}
+                  </td>
+                  <td className="py-3 px-3 text-right text-[#46544E] tabular-nums">
+                    KSh {pf.expenses.toLocaleString()}
+                  </td>
+                  <td className="py-3 px-3 text-right font-extrabold text-[#17231E] tabular-nums">
+                    KSh {pf.netOperatingIncome.toLocaleString()}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </div>
     </div>
