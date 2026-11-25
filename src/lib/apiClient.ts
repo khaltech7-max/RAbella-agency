@@ -2085,10 +2085,13 @@ async function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T
     ...((options.headers as Record<string, string>) || {}),
   });
 
-  const fetchWithTimeout = async (tokenOverride?: string | null): Promise<Response> => {
+  const timeoutMs = path === '/api/bootstrap' ? 25000 : 18000;
+  const fetchWithTimeout = async (
+    tokenOverride?: string | null,
+    customTimeoutMs = timeoutMs
+  ): Promise<Response> => {
     const controller = new AbortController();
-    const timeoutMs = 15000;
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const timer = setTimeout(() => controller.abort(), customTimeoutMs);
     const externalSignal = options.signal;
     const onExternalAbort = () => controller.abort();
     if (externalSignal) {
@@ -2111,7 +2114,15 @@ async function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T
 
   let response: Response;
   try {
-    response = await fetchWithTimeout(bearerToken);
+    try {
+      response = await fetchWithTimeout(bearerToken);
+    } catch (firstErr: any) {
+      if (firstErr?.name === 'AbortError' && method === 'GET' && !options.signal?.aborted) {
+        response = await fetchWithTimeout(bearerToken, 15000);
+      } else {
+        throw firstErr;
+      }
+    }
     if (response.status === 401 && supabase) {
       const { data } = await Promise.race([
         supabase.auth.getSession().catch(() => ({ data: null })),
@@ -2130,7 +2141,7 @@ async function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T
       statusCode: isAbort ? 'TIMEOUT' : 'NETWORK_ERROR',
       endpoint: path,
       supabaseError: isAbort
-        ? `Request to ${path} timed out after 15 seconds.`
+        ? `Request to ${path} timed out after ${Math.round(timeoutMs / 1000)} seconds.`
         : networkErr?.message || 'Network request failed.',
       category: 'Routing',
       hint: isAbort
@@ -2283,7 +2294,7 @@ export const rentalApi = {
       if (apiData) {
         return apiData;
       }
-      throw supaErr;
+      return await apiRequest<BootstrapPayload>('/api/bootstrap');
     }
   },
 

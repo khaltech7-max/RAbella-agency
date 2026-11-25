@@ -421,7 +421,7 @@ export const AuthGatePage: React.FC<AuthGatePageProps> = ({
       <div
         className="hidden md:block absolute inset-0 bg-cover bg-center bg-no-repeat pointer-events-none dark:opacity-15 dark:mix-blend-luminosity"
         style={{
-          backgroundImage: `url('/assets/aistudio/rentify_login_bg_clean.png')`,
+          backgroundImage: `url('/images/login-bg.png')`,
         }}
         aria-hidden="true"
       />

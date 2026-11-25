@@ -222,7 +222,11 @@ async function getCachedAuthUsers(forceRefresh = false) {
     return cachedAuthUsersList;
   }
   try {
-    const { data, error } = await supabaseAdmin.auth.admin.listUsers();
+    const { data, error } = await withTimeout(
+      supabaseAdmin.auth.admin.listUsers(),
+      3000,
+      { data: { users: cachedAuthUsersList }, error: null } as any
+    );
     if (error) markSupabaseIfQuotaRestricted(error);
     if (data?.users) {
       cachedAuthUsersList = data.users;
@@ -3977,10 +3981,14 @@ async function ensurePropertyMediaCache() {
   }
   propMediaFetchPromise = (async () => {
     try {
-      const [covRes, imgRes] = await Promise.all([
-        supabaseAdmin.from("properties").select("id, cover_image_url"),
-        supabaseAdmin.from("property_images").select("id, property_id, image_url, storage_path, is_cover, display_order, caption, created_at").order("display_order", { ascending: true }).limit(100)
-      ]);
+      const [covRes, imgRes] = await withTimeout(
+        Promise.all([
+          supabaseAdmin.from("properties").select("id, cover_image_url"),
+          supabaseAdmin.from("property_images").select("id, property_id, image_url, storage_path, is_cover, display_order, caption, created_at").order("display_order", { ascending: true }).limit(100)
+        ]),
+        3000,
+        [{ data: null, error: null }, { data: null, error: null }] as any
+      );
       if (covRes.error || imgRes.error) {
         markSupabaseIfQuotaRestricted(covRes.error || imgRes.error);
       }
@@ -4034,57 +4042,70 @@ async function fetchFullDatabaseState(forceRefresh = false) {
     let loadedFromSupabase = false;
     if (supabaseAdmin && !isSupabaseQuotaRestricted()) {
       const PROP_META_COLS = "id, code_prefix, property_code, name, address, description, status, total_units, occupied_units, monthly_revenue, manager_id, manager_name, caretaker_id, rating, variant, created_at";
-      const [authUsers, uRes, pRes, utRes, unRes, tRes, lRes, payRes, expRes, mRes, thRes, tkRes, rvRes, acRes] = await Promise.all([
-        getCachedAuthUsers(),
-        supabaseAdmin.from("profiles").select("*").order("created_at", { ascending: true }).limit(100),
-        supabaseAdmin.from("properties").select(PROP_META_COLS).order("created_at", { ascending: true }).limit(100),
-        supabaseAdmin.from("unit_types").select("*").order("created_at", { ascending: false }).limit(100),
-        supabaseAdmin.from("units").select("*").order("created_at", { ascending: true }).limit(250),
-        supabaseAdmin.from("tenants").select("*").order("tenant_ref", { ascending: true }).limit(250),
-        supabaseAdmin.from("leases").select("*").order("created_at", { ascending: false }).limit(250),
-        supabaseAdmin.from("rent_payments").select("*").order("created_at", { ascending: false }).limit(200),
-        supabaseAdmin.from("expenses").select("*").order("created_at", { ascending: false }).limit(100),
-        supabaseAdmin.from("maintenance_requests").select("*").order("created_at", { ascending: false }).limit(100),
-        supabaseAdmin.from("chat_threads").select("*").order("created_at", { ascending: false }).limit(50),
-        supabaseAdmin.from("property_tasks").select("*").order("created_at", { ascending: false }).limit(100),
-        supabaseAdmin.from("property_reviews").select("*").order("created_at", { ascending: false }).limit(50),
-        supabaseAdmin.from("activity_logs").select("*").order("created_at", { ascending: false }).limit(25),
-        ensurePropertyMediaCache()
-      ]);
-      const coreSupaErr = pRes.error || tRes.error || uRes.error || payRes.error;
-      if (coreSupaErr) {
-        markSupabaseIfQuotaRestricted(coreSupaErr);
-      } else {
-        authUsersList = authUsers || [];
-        usersRows = uRes.data || [];
-        propsRows = pRes.data || [];
-        if (propsRows.length === 0) {
-          const retryProps = await supabaseAdmin.from("properties").select("id, code_prefix, name, address, total_units, manager_name, rating, variant, created_at").order("created_at", { ascending: true });
-          if (retryProps.error) {
-            markSupabaseIfQuotaRestricted(retryProps.error);
-          } else if (Array.isArray(retryProps.data) && retryProps.data.length > 0) {
-            propsRows = retryProps.data;
+      const supaBatch = await withTimeout(
+        Promise.all([
+          getCachedAuthUsers(),
+          supabaseAdmin.from("profiles").select("*").order("created_at", { ascending: true }).limit(100),
+          supabaseAdmin.from("properties").select(PROP_META_COLS).order("created_at", { ascending: true }).limit(100),
+          supabaseAdmin.from("unit_types").select("*").order("created_at", { ascending: false }).limit(100),
+          supabaseAdmin.from("units").select("*").order("created_at", { ascending: true }).limit(250),
+          supabaseAdmin.from("tenants").select("*").order("tenant_ref", { ascending: true }).limit(250),
+          supabaseAdmin.from("leases").select("*").order("created_at", { ascending: false }).limit(250),
+          supabaseAdmin.from("rent_payments").select("*").order("created_at", { ascending: false }).limit(200),
+          supabaseAdmin.from("expenses").select("*").order("created_at", { ascending: false }).limit(100),
+          supabaseAdmin.from("maintenance_requests").select("*").order("created_at", { ascending: false }).limit(100),
+          supabaseAdmin.from("chat_threads").select("*").order("created_at", { ascending: false }).limit(50),
+          supabaseAdmin.from("property_tasks").select("*").order("created_at", { ascending: false }).limit(100),
+          supabaseAdmin.from("property_reviews").select("*").order("created_at", { ascending: false }).limit(50),
+          supabaseAdmin.from("activity_logs").select("*").order("created_at", { ascending: false }).limit(25),
+          ensurePropertyMediaCache()
+        ]),
+        4500,
+        null
+      );
+      if (supaBatch) {
+        const [authUsers, uRes, pRes, utRes, unRes, tRes, lRes, payRes, expRes, mRes, thRes, tkRes, rvRes, acRes] = supaBatch;
+        const coreSupaErr = pRes.error || tRes.error || uRes.error || payRes.error;
+        if (coreSupaErr) {
+          markSupabaseIfQuotaRestricted(coreSupaErr);
+        } else {
+          authUsersList = authUsers || [];
+          usersRows = uRes.data || [];
+          propsRows = pRes.data || [];
+          if (propsRows.length === 0) {
+            const retryProps = await withTimeout(
+              supabaseAdmin.from("properties").select("id, code_prefix, name, address, total_units, manager_name, rating, variant, created_at").order("created_at", { ascending: true }),
+              2500,
+              { data: [], error: null } as any
+            );
+            if (retryProps.error) {
+              markSupabaseIfQuotaRestricted(retryProps.error);
+            } else if (Array.isArray(retryProps.data) && retryProps.data.length > 0) {
+              propsRows = retryProps.data;
+            }
+          }
+          propsRows = propsRows.map((p) => ({
+            ...p,
+            cover_image_url: p.cover_image_url || cachedPropCoverUrlById.get(String(p.id)) || ""
+          }));
+          unitTypesRows = utRes.data || [];
+          unitsRows = unRes.data || [];
+          tenantsRows = tRes.data || [];
+          leasesRows = lRes.data || [];
+          paymentsRows = payRes.data || [];
+          expensesRows = expRes.data || [];
+          maintRows = mRes.data || [];
+          threadsRows = thRes.data || [];
+          tasksRows = tkRes.data || [];
+          reviewsRows = rvRes.data || [];
+          activitiesRows = acRes.data || [];
+          propImagesRows = cachedPropImagesRows;
+          if (propsRows.length > 0 || tenantsRows.length > 0 || paymentsRows.length > 0) {
+            loadedFromSupabase = true;
           }
         }
-        propsRows = propsRows.map((p) => ({
-          ...p,
-          cover_image_url: p.cover_image_url || cachedPropCoverUrlById.get(String(p.id)) || ""
-        }));
-        unitTypesRows = utRes.data || [];
-        unitsRows = unRes.data || [];
-        tenantsRows = tRes.data || [];
-        leasesRows = lRes.data || [];
-        paymentsRows = payRes.data || [];
-        expensesRows = expRes.data || [];
-        maintRows = mRes.data || [];
-        threadsRows = thRes.data || [];
-        tasksRows = tkRes.data || [];
-        reviewsRows = rvRes.data || [];
-        activitiesRows = acRes.data || [];
-        propImagesRows = cachedPropImagesRows;
-        if (propsRows.length > 0 || tenantsRows.length > 0 || paymentsRows.length > 0) {
-          loadedFromSupabase = true;
-        }
+      } else if (cachedFullDatabaseState) {
+        return cachedFullDatabaseState;
       }
     }
   if (!loadedFromSupabase && pg) {
@@ -5146,11 +5167,15 @@ async function resolveUserMiddleware(req, res, next) {
       } else {
         profileQuery = profileQuery.ilike("email", verifiedSession.email);
       }
-      const [profRes, authUsers, propsRes] = await Promise.all([
-        profileQuery.limit(1).maybeSingle(),
-        getCachedAuthUsers(),
-        supabaseAdmin.from("properties").select("id, name, manager_id, caretaker_id")
-      ]);
+      const [profRes, authUsers, propsRes] = await withTimeout(
+        Promise.all([
+          profileQuery.limit(1).maybeSingle(),
+          getCachedAuthUsers(),
+          supabaseAdmin.from("properties").select("id, name, manager_id, caretaker_id")
+        ]),
+        3000,
+        [{ data: null, error: null }, cachedAuthUsersList, { data: [], error: null }] as any
+      );
       if (profRes.error || propsRes.error) {
         markSupabaseIfQuotaRestricted(profRes.error || propsRes.error);
       }
@@ -5284,6 +5309,7 @@ function ensureDbInitialized(): Promise<void> {
       })
       .finally(() => {
         dbInitCompleted = true;
+        void fetchFullDatabaseState().catch(() => {});
       });
   }
   return dbInitPromise;
@@ -5307,7 +5333,7 @@ async function createApp() {
     if (req.path.startsWith("/api/") && !dbInitCompleted) {
       await Promise.race([
         ensureDbInitialized(),
-        new Promise((resolve) => setTimeout(resolve, 10000))
+        new Promise((resolve) => setTimeout(resolve, 4000))
       ]);
     }
     next();
