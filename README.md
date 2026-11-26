@@ -87,7 +87,14 @@ Displays the four separated financial summary cards (**Rental Revenue**, **Other
 
 ---
 
-### 2. Authentication & Staff Invitation Portal
+### 2. Properties & Portfolio Occupancy Management
+Displays portfolio-level KPI cards (**Active Estates**, **Total Units** with occupied vs. vacant breakdown, **Portfolio Occupancy** percentage, and **Monthly Rent Roll**), prefix group filtering (`Prefix A`, `Prefix B`), and property cards showing property codes (`A-001`), occupancy progress bars, monthly rent roll, and assigned property managers.
+
+![Properties & Portfolio Occupancy Management](public/images/screenshot/properties-units.png)
+
+---
+
+### 3. Authentication & Staff Invitation Portal
 Unified **ARabella agency** authentication gate supporting management and tenant sign-in (`Sign In`) as well as one-time staff invitation code activation (`Activate Invite`).
 
 ![Authentication & Staff Invitation Portal](public/images/screenshot/login-portal.png)
@@ -96,13 +103,13 @@ Unified **ARabella agency** authentication gate supporting management and tenant
 
 ### Additional Module Captures (Optional Expansion)
 
-The `public/images/screenshot/` directory currently contains `dashboard-overview.png` and `login-portal.png` (alongside the login background asset `public/images/login-bg.png`). To include visual captures for additional modules, place them in `public/images/screenshot/` using the paths below:
+The `public/images/screenshot/` directory currently contains `dashboard-overview.png`, `properties-units.png`, and `login-portal.png` (alongside the login background asset `public/images/login-bg.png`). To include visual captures for additional modules, place them in `public/images/screenshot/` using the paths below:
 
 | Module View | Path in Repository | Status |
 |---|---|---|
 | **Financial & Occupancy Dashboard** | `public/images/screenshot/dashboard-overview.png` | Embedded above |
+| **Properties & Portfolio Occupancy Management** | `public/images/screenshot/properties-units.png` | Embedded above |
 | **Authentication & Invitation Portal** | `public/images/screenshot/login-portal.png` | Embedded above |
-| **Properties & Unit Occupancy Manager** | `public/images/screenshot/properties-units.png` | *(Optional — add file to display)* |
 | **Tenant Profile & Anniversary Billing Ledger** | `public/images/screenshot/tenant-profile.png` | *(Optional — add file to display)* |
 | **Rent Payments & PayHero Reconciliation** | `public/images/screenshot/rent-payments.png` | *(Optional — add file to display)* |
 
@@ -204,7 +211,8 @@ arabella-rms/
 │   ├── images/
 │   │   ├── screenshot/
 │   │   │   ├── dashboard-overview.png # Financial summary & occupancy dashboard screenshot
-│   │   │   └── login-portal.png       # ARabella agency login & invitation portal screenshot
+│   │   │   ├── login-portal.png       # ARabella agency login & invitation portal screenshot
+│   │   │   └── properties-units.png   # Properties & portfolio occupancy manager screenshot
 │   │   └── login-bg.png          # Login screen architectural background asset
 │   └── uploads/                  # Local upload storage directory
 ├── scripts/
